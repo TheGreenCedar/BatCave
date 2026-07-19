@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const UPGRADE_JOURNAL_FILE_NAME: &str = "installer-upgrade.v1.json";
 pub(crate) const UPGRADE_JOURNAL_SCHEMA_VERSION: u16 = 1;
+pub(crate) const LEGACY_REPLACEMENT_WIN32_EXIT_CODE: u32 = 1_066;
+pub(crate) const LEGACY_REPLACEMENT_SERVICE_EXIT_CODE: u32 = 1;
+
+pub(crate) fn is_exact_legacy_replacement_stop(
+    win32_exit_code: u32,
+    service_specific_exit_code: u32,
+) -> bool {
+    win32_exit_code == LEGACY_REPLACEMENT_WIN32_EXIT_CODE
+        && service_specific_exit_code == LEGACY_REPLACEMENT_SERVICE_EXIT_CODE
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,6 +259,17 @@ mod tests {
             decide_upgrade_resume(&journal(UpgradePhase::Prepared), [1; 32], [2; 32], [0; 32],)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn legacy_replacement_stop_allowlist_is_exact() {
+        assert!(is_exact_legacy_replacement_stop(
+            LEGACY_REPLACEMENT_WIN32_EXIT_CODE,
+            LEGACY_REPLACEMENT_SERVICE_EXIT_CODE,
+        ));
+        for rejected in [(0, 0), (1_066, 0), (1_066, 2), (1_067, 1)] {
+            assert!(!is_exact_legacy_replacement_stop(rejected.0, rejected.1));
+        }
     }
 
     #[test]

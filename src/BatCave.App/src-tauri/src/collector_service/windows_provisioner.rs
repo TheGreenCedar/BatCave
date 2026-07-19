@@ -7,9 +7,9 @@ use super::{
     etw_lease::ProtectedEtwLeaseRoot,
     protocol::COLLECTOR_SERVICE_NAME,
     windows_upgrade::{
-        decide_upgrade_resume, is_staged_upgrade_name, staged_transaction_matches,
-        upgrade_backup_name, UpgradeJournalV1, UpgradePhase, UpgradeResumeAction,
-        UPGRADE_JOURNAL_FILE_NAME,
+        decide_upgrade_resume, is_exact_legacy_replacement_stop, is_staged_upgrade_name,
+        staged_transaction_matches, upgrade_backup_name, UpgradeJournalV1, UpgradePhase,
+        UpgradeResumeAction, UPGRADE_JOURNAL_FILE_NAME,
     },
 };
 
@@ -874,7 +874,7 @@ mod native {
             ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ALL_ASSIGNED,
             ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
             ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SERVICE_NOT_ACTIVE, ERROR_SHARING_VIOLATION,
-            ERROR_SUCCESS, FILETIME, HANDLE, LUID, WAIT_OBJECT_0,
+            ERROR_SUCCESS, FILETIME, HANDLE, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Security::{
             AclSizeInformation, AdjustTokenPrivileges,
@@ -936,7 +936,7 @@ mod native {
     };
     #[cfg(feature = "private-windows-lifecycle-proof")]
     use windows_sys::Win32::{
-        Foundation::{ERROR_LOCK_VIOLATION, ERROR_NO_MORE_ITEMS, PROPERTYKEY, WAIT_TIMEOUT},
+        Foundation::{ERROR_LOCK_VIOLATION, ERROR_NO_MORE_ITEMS, PROPERTYKEY},
         Storage::FileSystem::{SetFilePointerEx, FILE_BEGIN},
         System::{
             Com::{
@@ -2446,7 +2446,7 @@ mod native {
         retire_shortcuts_with_controller(staged)?;
         ensure_uninstaller_compatibility_alias(staged)?;
         let result = (|| {
-            settle_service_for_replacement(service)?;
+            settle_service_for_candidate_replacement(service)?;
             if prepared {
                 Ok(())
             } else {
@@ -6709,6 +6709,259 @@ mod native {
         }
     }
 
+    #[derive(Debug, Eq, PartialEq)]
+    struct ReplacementServiceContractSnapshot {
+        owner_marker: Option<String>,
+        service_type: u32,
+        start_type: u32,
+        error_control: u32,
+        image_path: PathBuf,
+        account: String,
+        delayed_auto_start: i32,
+        service_sid_type: u32,
+        required_privileges: Vec<String>,
+        dacl_sha256: String,
+    }
+
+    fn capture_replacement_service_contract(
+        service: &OwnedScHandle,
+        expected_image: &Path,
+    ) -> Result<ReplacementServiceContractSnapshot, String> {
+        validate_service_contract(service, expected_image)?;
+        let config = query_service_config(service)?;
+        let delayed: SERVICE_DELAYED_AUTO_START_INFO = query_config2_fixed(
+            service,
+            SERVICE_CONFIG_DELAYED_AUTO_START_INFO,
+            "collector_service_delayed_start_query_failed",
+        )?;
+        let sid: SERVICE_SID_INFO = query_config2_fixed(
+            service,
+            SERVICE_CONFIG_SERVICE_SID_INFO,
+            "collector_service_sid_query_failed",
+        )?;
+        let mut required_privileges = query_required_privileges(service)?;
+        required_privileges.sort();
+        let (dacl, dacl_sha256) = service_dacl_policy(service)?;
+        validate_service_dacl_policy(&dacl)?;
+        let snapshot = ReplacementServiceContractSnapshot {
+            owner_marker: read_owner_marker()?,
+            service_type: config.service_type,
+            start_type: config.start_type,
+            error_control: config.error_control,
+            image_path: config.image_path,
+            account: config.account,
+            delayed_auto_start: delayed.fDelayedAutostart,
+            service_sid_type: sid.dwServiceSidType,
+            required_privileges,
+            dacl_sha256,
+        };
+        if !fixed_path_eq(&snapshot.image_path, expected_image) {
+            return Err("collector_service_replacement_image_path_changed".to_string());
+        }
+        validate_service_contract(service, expected_image)?;
+        Ok(snapshot)
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ReplacementInstalledImageIdentity {
+        volume_serial: u32,
+        file_index: u64,
+        size: u64,
+        attributes: u32,
+        sha256: [u8; 32],
+    }
+
+    struct PinnedReplacementInstalledImage {
+        path: PathBuf,
+        handle: OwnedHandle,
+        identity: ReplacementInstalledImageIdentity,
+    }
+
+    impl PinnedReplacementInstalledImage {
+        fn open(path: &Path) -> Result<Self, String> {
+            let principals = SecurityPrincipals::load_base()?;
+            let handle =
+                open_file_for_hash(path, &principals, "collector_service_replacement_image")?;
+            let info = file_information(
+                handle.raw(),
+                "collector_service_replacement_image_info_failed",
+            )?;
+            let identity = ReplacementInstalledImageIdentity {
+                volume_serial: info.dwVolumeSerialNumber,
+                file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+                size: file_size(&info),
+                attributes: info.dwFileAttributes,
+                sha256: hash_open_file(handle.raw(), file_size(&info))?,
+            };
+            Ok(Self {
+                path: path.to_path_buf(),
+                handle,
+                identity,
+            })
+        }
+
+        fn revalidate(&self) -> Result<(), String> {
+            if !fixed_path_eq(
+                &final_path(
+                    &self.handle,
+                    "collector_service_replacement_image_final_path_failed",
+                )?,
+                &self.path,
+            ) {
+                return Err("collector_service_replacement_image_changed".to_string());
+            }
+            let principals = SecurityPrincipals::load_base()?;
+            let reopened = open_file_for_hash(
+                &self.path,
+                &principals,
+                "collector_service_replacement_image_reopen",
+            )?;
+            let info = file_information(
+                reopened.raw(),
+                "collector_service_replacement_image_revalidate_info_failed",
+            )?;
+            let current = ReplacementInstalledImageIdentity {
+                volume_serial: info.dwVolumeSerialNumber,
+                file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+                size: file_size(&info),
+                attributes: info.dwFileAttributes,
+                sha256: hash_open_file(reopened.raw(), file_size(&info))?,
+            };
+            if current != self.identity {
+                return Err("collector_service_replacement_image_changed".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    fn service_process_image_path(process: &OwnedHandle) -> Result<PathBuf, String> {
+        let mut path = vec![0_u16; 32_768];
+        let mut length = path.len() as u32;
+        if unsafe { QueryFullProcessImageNameW(process.raw(), 0, path.as_mut_ptr(), &mut length) }
+            == 0
+        {
+            return Err(last_error(
+                "collector_service_replacement_process_image_query_failed",
+            ));
+        }
+        path.truncate(length as usize);
+        Ok(strip_verbatim_disk_prefix(PathBuf::from(
+            OsString::from_wide(&path),
+        )))
+    }
+
+    struct ReplacementStopGuard {
+        process: OwnedHandle,
+        process_started_at_100ns: u64,
+        process_path: PathBuf,
+        service_contract: ReplacementServiceContractSnapshot,
+        installed_image: PinnedReplacementInstalledImage,
+    }
+
+    impl ReplacementStopGuard {
+        fn capture(
+            service: &OwnedScHandle,
+            status: &SERVICE_STATUS_PROCESS,
+        ) -> Result<Self, String> {
+            if !matches!(
+                status.dwCurrentState,
+                SERVICE_RUNNING | SERVICE_STOP_PENDING
+            ) || status.dwProcessId == 0
+            {
+                return Err("collector_service_replacement_generation_unproven".to_string());
+            }
+            let process = open_service_process(status)?;
+            let process_path = service_process_image_path(&process)?;
+            let process_started_at_100ns =
+                crate::collector_service::windows_transport::process_started_at(process.raw())
+                    .map_err(|error| {
+                        format!("collector_service_replacement_process_time_failed:{error}")
+                    })?;
+            let service_contract = capture_replacement_service_contract(service, &process_path)?;
+            let installed_image = PinnedReplacementInstalledImage::open(&process_path)?;
+            let current = query_service_status(service)?;
+            if !matches!(
+                current.dwCurrentState,
+                SERVICE_RUNNING | SERVICE_STOP_PENDING
+            ) || current.dwProcessId != status.dwProcessId
+                || unsafe { WaitForSingleObject(process.raw(), 0) } != WAIT_TIMEOUT
+            {
+                return Err("collector_service_replacement_generation_changed".to_string());
+            }
+            Ok(Self {
+                process,
+                process_started_at_100ns,
+                process_path,
+                service_contract,
+                installed_image,
+            })
+        }
+
+        fn prove_settled(&self, service: &OwnedScHandle) -> Result<(), String> {
+            if unsafe { WaitForSingleObject(self.process.raw(), 0) } != WAIT_OBJECT_0 {
+                return Err("collector_service_replacement_process_exit_unproven".to_string());
+            }
+            let started_at_100ns =
+                crate::collector_service::windows_transport::process_started_at(self.process.raw())
+                    .map_err(|error| {
+                        format!("collector_service_replacement_process_time_failed:{error}")
+                    })?;
+            if started_at_100ns != self.process_started_at_100ns {
+                return Err("collector_service_replacement_generation_changed".to_string());
+            }
+            let current_contract =
+                capture_replacement_service_contract(service, &self.process_path)?;
+            if current_contract != self.service_contract {
+                return Err("collector_service_replacement_configuration_changed".to_string());
+            }
+            self.installed_image.revalidate()
+        }
+    }
+
+    fn prepare_service_stop(service: &OwnedScHandle) -> Result<SERVICE_STATUS_PROCESS, String> {
+        let mut status = query_service_status(service)?;
+        if status.dwCurrentState == SERVICE_START_PENDING {
+            wait_service_state(service, SERVICE_RUNNING, SERVICE_OPERATION_TIMEOUT)?;
+            status = query_service_status(service)?;
+        }
+        Ok(status)
+    }
+
+    struct SettledActiveServiceStop {
+        status: SERVICE_STATUS_PROCESS,
+    }
+
+    fn stop_candidate_service_and_wait(
+        service: &OwnedScHandle,
+        status: &SERVICE_STATUS_PROCESS,
+        process: &OwnedHandle,
+    ) -> Result<SettledActiveServiceStop, String> {
+        let current = query_service_status(service)?;
+        if !matches!(
+            current.dwCurrentState,
+            SERVICE_RUNNING | SERVICE_STOP_PENDING
+        ) || current.dwProcessId != status.dwProcessId
+            || unsafe { WaitForSingleObject(process.raw(), 0) } != WAIT_TIMEOUT
+        {
+            return Err("collector_service_stop_generation_changed".to_string());
+        }
+        if current.dwCurrentState == SERVICE_RUNNING {
+            let mut basic = SERVICE_STATUS::default();
+            if unsafe { ControlService(service.raw(), SERVICE_CONTROL_STOP, &mut basic) } == 0 {
+                let error = unsafe { GetLastError() };
+                if error != ERROR_SERVICE_NOT_ACTIVE {
+                    return Err(format!("collector_service_stop_failed:{error}"));
+                }
+            }
+        }
+        wait_service_state(service, SERVICE_STOPPED, SERVICE_OPERATION_TIMEOUT)?;
+        prove_service_lifecycle_settled(true)?;
+        wait_service_process_exit(process)?;
+        Ok(SettledActiveServiceStop {
+            status: query_service_status(service)?,
+        })
+    }
+
     fn stop_service_and_wait(
         service: &OwnedScHandle,
         lifecycle_required_if_stopped: bool,
@@ -6765,6 +7018,38 @@ mod native {
         }
         stop_service_and_wait(service, true)?;
         Ok(was_active)
+    }
+
+    fn settle_service_for_candidate_replacement(service: &OwnedScHandle) -> Result<bool, String> {
+        let status = prepare_service_stop(service)?;
+        if status.dwCurrentState == SERVICE_STOPPED {
+            prove_service_lifecycle_settled(false)?;
+            return validate_clean_stopped_status(&status).map(|()| false);
+        }
+        if !matches!(
+            status.dwCurrentState,
+            SERVICE_RUNNING | SERVICE_STOP_PENDING
+        ) {
+            return Err(format!(
+                "collector_service_stop_state_invalid:{}",
+                status.dwCurrentState
+            ));
+        }
+        require_service_lifecycle_active()?;
+        let guard = ReplacementStopGuard::capture(service, &status)?;
+        let stopped = stop_candidate_service_and_wait(service, &status, &guard.process)?;
+        if stopped.status.dwCurrentState != SERVICE_STOPPED || stopped.status.dwProcessId != 0 {
+            return Err("collector_service_stop_settlement_unproven".to_string());
+        }
+        guard.prove_settled(service)?;
+        if is_exact_legacy_replacement_stop(
+            stopped.status.dwWin32ExitCode,
+            stopped.status.dwServiceSpecificExitCode,
+        ) {
+            Ok(true)
+        } else {
+            validate_clean_stopped_status(&stopped.status).map(|()| true)
+        }
     }
 
     pub(super) fn stopped_service_can_be_replaced(status: &SERVICE_STATUS_PROCESS) -> bool {
@@ -8601,7 +8886,20 @@ mod tests {
             native::validate_clean_stopped_status(&failed),
             Err("collector_service_stop_reported_failure:1066:1".to_string())
         );
+        assert!(is_exact_legacy_replacement_stop(
+            failed.dwWin32ExitCode,
+            failed.dwServiceSpecificExitCode,
+        ));
         assert!(native::stopped_service_can_be_replaced(&failed));
+
+        for (win32_exit_code, service_specific_exit_code) in
+            [(0, 0), (1_066, 0), (1_066, 2), (1_067, 1)]
+        {
+            assert!(!is_exact_legacy_replacement_stop(
+                win32_exit_code,
+                service_specific_exit_code,
+            ));
+        }
 
         let stale_specific = SERVICE_STATUS_PROCESS {
             dwServiceSpecificExitCode: 9,

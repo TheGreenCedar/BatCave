@@ -54,16 +54,16 @@ Only documented not-found results are `Absent`. Access denial, malformed registr
 The worker owns the sequence and does not improvise after failure:
 
 1. Capture the complete initial state.
-2. If the machine is in the allowlisted stopped `1066/1` legacy state, run the exact final candidate as `/S /UPDATE` so the new staged transaction repairs it.
+2. If the machine is in the allowlisted stopped `1066/1` legacy state, run the exact final candidate as `/S /UPDATE` so the new staged transaction repairs it. The staged forward-prepare path may tolerate that exact stop result only after it retained the prior service process, observed the handle signal, proved the trusted lifecycle lock released, and revalidated the unchanged service configuration, installed path, file identity, digest, PID-bound process path, and process start time. Strict stop, legacy prepare, ordinary replacement, commit, rollback, and uninstall paths do not receive this exception.
 3. Prove the exact final service process identity, path and digest, pipe server PID, production-shaped active ETW lease and observed session identities, lock ownership, zero loss counters, clean failure-marker state, standard-token desktop fallback/privileged state, and process-tree settlement.
 4. Run the protected copied final uninstaller with the direct `_?=` form and prove total product absence.
 5. Install the exact baseline.
 6. Exercise clean stop/start, second desktop instance, crash/retained ownership, restart/recovery, and standard-token desktop states.
 7. Seed the exact historical CLI bytes and known retired-helper artifacts plus an unknown helper sentinel.
-8. Upgrade to the exact final installer.
+8. Upgrade to the exact final installer, then run the same retained installer again as `/S /UPDATE` and prove the same-version retry settles on the exact final service, monitor, uninstaller, and machine App Paths registration.
 9. Prove the final service generation and that the historical CLI and known helper artifacts were removed while the unknown sentinel was preserved.
 10. Exercise final clean stop/start, crash/recovery, and incompatible/missing/stopped fallback states.
-11. Uninstall through the protected copied uninstaller and prove final residue and current-user retention policy.
+11. Uninstall through the protected copied uninstaller and prove final residue, App Paths absence, and current-user retention policy.
 
 Reboot and independent multi-user evidence remain separate attended packets when they cannot be completed inside the same worker lifetime.
 
@@ -76,6 +76,8 @@ The incompatible-service fixture is now plan-bound to exact retained bytes built
 An attended artifact refresh may set `BATCAVE_UNINSTALLER_EXPORT_PATH` to an absolute path whose parent already exists. The NSIS template copies the exact post-sign uninstaller bytes to that path and fails the bundle build if the copy fails; the proof plan then pins that sidecar identity instead of learning it through another installation.
 
 A successful production upgrade proves the commit path but cannot prove rollback. Rollback observation still requires a separate plan-bound candidate or fixed fault fixture; an ad hoc corruption or caller-selected failure is not allowed.
+
+The final-upgrade checkpoint now represents two ordered executions of the same retained final installer: the baseline-to-final upgrade and an immediate same-version `/S /UPDATE` retry. The worker does not publish the checkpoint or `final-upgrade-state.private.json` until both process trees settle and the final installed snapshot passes. If either execution fails, the existing stage restoration contract remains authoritative. An unproven process, service, lifecycle-lock, or controller Job settlement is `BlockedUnsettled`; it cannot be converted into successful rollback evidence.
 
 The stacked rollback lane defines one private, feature-gated failing service binary. With no arguments—the SCM candidate-start path—it writes the fixed execution marker and exits with fixed code `70`. Existing fixed `--provision` arguments delegate to the production provisioner. The binary is not packaged and exposes no new production verb, environment switch, or caller-selected failure mode. The selected fixture is pinned in the proof plan to source commit `c95fffc870226f0852048055d79fa4a18a14471c`, ProductVersion `0.2.0-rc.2`, size `1559040`, and SHA-256 `0f45cbb2d671bb7d5035cfaeefae016a08510d835225aa9f1cc4f955e57d2944`. Its ProductVersion is plan-bound rather than inherited from the current desktop package; rotating the app version cannot silently rewrite the authority of retained proof bytes. Its Cargo.lock SHA-256 is `693322cd3885ac4a9c823cd5facd13a9d995572e60f7b99af4cc49a39a5dd28b`, built with rustc/cargo `1.96.1`. `scripts/build-windows-lifecycle-service-fixture.ps1 -Fixture rollback-failing` accepts only that clean source commit and exact pinned output. The retained selected bytes are authoritative because cache-assisted Windows Rust builds are not byte-reproducible.
 

@@ -1296,7 +1296,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
-        let final_upgrade_state = execute_mutation(
+        let first_final_upgrade_state = execute_mutation(
             evidence,
             controller_bindings,
             "final-upgrade-failure.private.json",
@@ -1319,6 +1319,27 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         .map_err(|(failure, settled)| {
             (Some(LifecycleStage::LegacyResidueSeeded), failure, settled)
         })?;
+        let final_upgrade_state = execute_mutation(
+            evidence,
+            controller_bindings,
+            "final-upgrade-failure.private.json",
+            LifecycleStage::FinalUpgrade,
+            &first_final_upgrade_state,
+            final_copy,
+            FINAL_REPAIR_ARGUMENTS,
+            INSTALLER_TIMEOUT,
+            "final_same_version_retry",
+            "lifecycle_final_same_version_retry_failed",
+            |snapshot| {
+                require_elevated_installed_candidate(
+                    snapshot,
+                    &plan.final_candidate,
+                    true,
+                    "final_same_version_retry",
+                )
+            },
+        )
+        .map_err(|(failure, settled)| (Some(LifecycleStage::FinalUpgrade), failure, settled))?;
         write_machine_packet(
             evidence,
             "final-upgrade-state.private.json",
