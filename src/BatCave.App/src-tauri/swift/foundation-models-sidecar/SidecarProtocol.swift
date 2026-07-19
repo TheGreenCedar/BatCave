@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(FoundationModels) && !BATCAVE_FOUNDATION_MODELS_UNAVAILABLE
 import FoundationModels
+#endif
 
 let sidecarProtocolVersion = 1
 let maximumInputBytes = 32 * 1024
@@ -196,10 +198,15 @@ func normalizeOneSentence(_ generated: String) -> String? {
 }
 
 func currentModelAvailability() -> ProviderAvailability {
+#if canImport(FoundationModels) && !BATCAVE_FOUNDATION_MODELS_UNAVAILABLE
     guard #available(macOS 26.0, *) else { return .unsupported }
     return providerAvailability(SystemLanguageModel.default.availability)
+#else
+    return .unsupported
+#endif
 }
 
+#if canImport(FoundationModels) && !BATCAVE_FOUNDATION_MODELS_UNAVAILABLE
 @available(macOS 26.0, *)
 func providerAvailability(
     _ availability: SystemLanguageModel.Availability
@@ -220,6 +227,7 @@ func providerAvailability(
         return .runtimeMissing
     }
 }
+#endif
 
 func handleRequest(_ request: SidecarRequest) async -> SidecarResponse {
     let availability = currentModelAvailability()
@@ -232,12 +240,17 @@ func handleRequest(_ request: SidecarRequest) async -> SidecarResponse {
     else {
         return SidecarResponse(availability: availability, result: nil)
     }
+#if canImport(FoundationModels) && !BATCAVE_FOUNDATION_MODELS_UNAVAILABLE
     guard #available(macOS 26.0, *) else {
         return SidecarResponse(availability: .unsupported, result: nil)
     }
     return await generate(generation, facts: facts)
+#else
+    return SidecarResponse(availability: .unsupported, result: nil)
+#endif
 }
 
+#if canImport(FoundationModels) && !BATCAVE_FOUNDATION_MODELS_UNAVAILABLE
 @available(macOS 26.0, *)
 private func generate(_ request: GenerationRequest, facts: JSONValue) async -> SidecarResponse {
     do {
@@ -320,3 +333,4 @@ private func availability(
         return .runtimeMissing
     }
 }
+#endif

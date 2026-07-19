@@ -20,6 +20,7 @@ const nativeTest = fs.readFileSync(
 
 test("Swift provider weak-links guarded Foundation Models APIs", () => {
   assert.match(swift, /import FoundationModels/u);
+  assert.match(swift, /canImport\(FoundationModels\).*BATCAVE_FOUNDATION_MODELS_UNAVAILABLE/u);
   assert.match(swift, /@available\(macOS 26\.0, \*\)/u);
   assert.match(swift, /SystemLanguageModel\.default\.availability/u);
   assert.match(swift, /LanguageModelSession/u);
@@ -54,4 +55,6 @@ test("bundle and native checks pin architecture, weak linkage, and nested signin
   assert.match(verifier, /codesign --verify/u);
   assert.match(verifier, /TeamIdentifier/u);
   assert.match(nativeTest, /FOUNDATION_MODELS_AVAILABILITY=/u);
+  assert.match(nativeTest, /BATCAVE_FOUNDATION_MODELS_UNAVAILABLE/u);
+  assert.match(nativeTest, /availability !== "unsupported"/u);
 });

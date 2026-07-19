@@ -36,9 +36,30 @@ compile_swift() {
 
 protocol_tests="$test_root/foundation-models-sidecar-tests"
 sidecar="$test_root/batcave-foundation-models"
+unavailable_sidecar="$test_root/batcave-foundation-models-unavailable"
 compile_swift "$protocol_tests" "$source_root/SidecarProtocolTests.swift"
 compile_swift "$sidecar" "$source_root/FoundationModelsSidecar.swift"
 "$protocol_tests"
+
+xcrun --sdk macosx swiftc \
+  "$source_root/SidecarProtocol.swift" \
+  "$source_root/FoundationModelsSidecar.swift" \
+  -parse-as-library \
+  -D BATCAVE_FOUNDATION_MODELS_UNAVAILABLE \
+  -target arm64-apple-macos12.0 \
+  -sdk "$sdk_path" \
+  -O \
+  -framework Foundation \
+  -o "$unavailable_sidecar"
+unavailable_status_json="$(printf '%s\n' '{"version":1,"operation":"status"}' | "$unavailable_sidecar")"
+node -e '
+  const response = JSON.parse(process.argv[1]);
+  if (response.version !== 1 || response.availability !== "unsupported" || response.result !== undefined) process.exit(1);
+' "$unavailable_status_json"
+if otool -L "$unavailable_sidecar" | grep -q 'FoundationModels.framework'; then
+  echo "Unavailable Foundation Models sidecar unexpectedly links the framework." >&2
+  exit 1
+fi
 
 lipo "$sidecar" -verify_arch arm64
 if lipo "$sidecar" -verify_arch x86_64 >/dev/null 2>&1; then

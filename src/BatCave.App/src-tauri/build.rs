@@ -127,7 +127,11 @@ fn build_macos_foundation_models_sidecar() {
     fs::create_dir_all(&output_dir).expect("failed to create Foundation Models sidecar output");
     let output = output_dir.join(format!("{SIDECAR_NAME}-{target}"));
     let sdk = macos_sdk_path();
-    let compile = Command::new("xcrun")
+    let foundation_models_available = sdk
+        .join("System/Library/Frameworks/FoundationModels.framework")
+        .is_dir();
+    let mut compiler = Command::new("xcrun");
+    compiler
         .args(["--sdk", "macosx", "swiftc"])
         .arg(&protocol_source)
         .arg(&executable_source)
@@ -145,12 +149,17 @@ fn build_macos_foundation_models_sidecar() {
             "-whole-module-optimization",
             "-framework",
             "Foundation",
+        ]);
+    if foundation_models_available {
+        compiler.args([
             "-Xlinker",
             "-weak_framework",
             "-Xlinker",
             "FoundationModels",
-            "-o",
-        ])
+        ]);
+    }
+    let compile = compiler
+        .arg("-o")
         .arg(&output)
         .env("MACOSX_DEPLOYMENT_TARGET", MACOS_DEPLOYMENT_TARGET)
         .output()
