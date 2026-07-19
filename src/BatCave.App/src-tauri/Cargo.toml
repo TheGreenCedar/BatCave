@@ -42,6 +42,7 @@ path = "src/bin/batcave-windows-failing-service-fixture.rs"
 required-features = ["private-windows-lifecycle-service-fixtures"]
 
 [build-dependencies]
+sha2 = "0.11.0"
 tauri-build = { version = "2.6.3", features = [] }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.build-dependencies]

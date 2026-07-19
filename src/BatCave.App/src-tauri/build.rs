@@ -1,8 +1,9 @@
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=BATCAVE_SOURCE_COMMIT_SHA");
@@ -27,16 +28,42 @@ fn main() {
 }
 
 fn stage_foundry_native_libraries(target_os: &str) {
-    let expected_files: &[&str] = match target_os {
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH must be set");
+    assert_eq!(
+        target_arch, "x86_64",
+        "Foundry Local is supported only on BatCave's declared Windows/Linux x86_64 profiles"
+    );
+    // Exact runtime bytes from the SDK 1.2.0 NuGet dependency graph. Release
+    // signing separately preserves valid upstream signatures and signs every
+    // remaining unsigned PE before the installer is assembled.
+    let expected_files: &[(&str, &str)] = match target_os {
         "windows" => &[
-            "Microsoft.AI.Foundry.Local.Core.dll",
-            "onnxruntime.dll",
-            "onnxruntime-genai.dll",
+            (
+                "Microsoft.AI.Foundry.Local.Core.dll",
+                "316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea",
+            ),
+            (
+                "onnxruntime.dll",
+                "6a4129504501cbd615efddc897345ec9557390b408887165ab5faf9812a54b31",
+            ),
+            (
+                "onnxruntime-genai.dll",
+                "083ec558fd20ddb9734156aaeb078270b68c113d0c89ef1bbdb6e54d5b75edc5",
+            ),
         ],
         "linux" => &[
-            "Microsoft.AI.Foundry.Local.Core.so",
-            "libonnxruntime.so",
-            "libonnxruntime-genai.so",
+            (
+                "Microsoft.AI.Foundry.Local.Core.so",
+                "d9bc4ca1710ed5aeedcbecaccc43b76cef7a5d454f67288275382c69bd7c91e4",
+            ),
+            (
+                "libonnxruntime.so",
+                "ea322d74879c376217a310e4233e4f50ea9267a0e339963d0e1961f46b7a57d5",
+            ),
+            (
+                "libonnxruntime-genai.so",
+                "b616803542ec07dafd168808547f07da40f6a82e70feab128058b4737ba551be",
+            ),
         ],
         _ => return,
     };
@@ -53,7 +80,7 @@ fn stage_foundry_native_libraries(target_os: &str) {
         .parent()
         .and_then(Path::parent)
         .expect("OUT_DIR must be nested under Cargo's build directory");
-    let source = newest_foundry_native_dir(build_root, expected_files).unwrap_or_else(|| {
+    let source = verified_foundry_native_dir(build_root, expected_files).unwrap_or_else(|| {
         panic!(
             "foundry-local-sdk 1.2.0 native libraries were not found under {}",
             build_root.display()
@@ -64,7 +91,7 @@ fn stage_foundry_native_libraries(target_os: &str) {
         fs::remove_dir_all(&destination).expect("failed to clear staged Foundry native libraries");
     }
     fs::create_dir_all(&destination).expect("failed to create Foundry native staging directory");
-    for file_name in expected_files {
+    for (file_name, expected_sha256) in expected_files {
         let input = source.join(file_name);
         let metadata = fs::metadata(&input).expect("staged Foundry native library is missing");
         assert!(
@@ -72,13 +99,22 @@ fn stage_foundry_native_libraries(target_os: &str) {
             "staged Foundry native library must be a non-empty file: {}",
             input.display()
         );
-        fs::copy(&input, destination.join(file_name))
-            .expect("failed to stage Foundry native library");
+        let output = destination.join(file_name);
+        fs::copy(&input, &output).expect("failed to stage Foundry native library");
+        assert_eq!(
+            sha256_file(&output),
+            *expected_sha256,
+            "staged Foundry native library changed during copy: {}",
+            output.display()
+        );
     }
 }
 
-fn newest_foundry_native_dir(build_root: &Path, expected_files: &[&str]) -> Option<PathBuf> {
-    fs::read_dir(build_root)
+fn verified_foundry_native_dir(
+    build_root: &Path,
+    expected_files: &[(&str, &str)],
+) -> Option<PathBuf> {
+    let mut candidates = fs::read_dir(build_root)
         .ok()?
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -91,16 +127,42 @@ fn newest_foundry_native_dir(build_root: &Path, expected_files: &[&str]) -> Opti
         .filter(|candidate| {
             expected_files
                 .iter()
-                .all(|file_name| candidate.join(file_name).is_file())
+                .all(|(file_name, _)| candidate.join(file_name).is_file())
         })
-        .max_by_key(|candidate| {
-            expected_files
-                .iter()
-                .filter_map(|file_name| fs::metadata(candidate.join(file_name)).ok())
-                .filter_map(|metadata| metadata.modified().ok())
-                .max()
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    for candidate in &candidates {
+        for (file_name, expected_sha256) in expected_files {
+            let input = candidate.join(file_name);
+            assert_eq!(
+                sha256_file(&input),
+                *expected_sha256,
+                "Foundry native library does not match the pinned 1.2.0 artifact: {}",
+                input.display()
+            );
+        }
+    }
+    candidates.into_iter().next()
+}
+
+fn sha256_file(path: &Path) -> String {
+    let mut file = fs::File::open(path).expect("failed to open Foundry native library");
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .expect("failed to hash Foundry native library");
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn build_macos_foundation_models_sidecar() {

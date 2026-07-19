@@ -174,6 +174,13 @@ test("numbers are allowed only when they are part of the supplied identity", () 
       resultFor(invocation, "Code 2022 is the top CPU contributor right now."),
     ),
   );
+  assert.equal(
+    validateNarrativeResult(
+      invocation,
+      resultFor(invocation, "Code 2022 is the top CPU contributor with 2022 CPU load."),
+    ),
+    null,
+  );
 });
 
 test("controller caches exact facts and never runs more than one generation", async () => {

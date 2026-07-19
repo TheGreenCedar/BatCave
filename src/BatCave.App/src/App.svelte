@@ -808,12 +808,25 @@
     narrativeSettingsStatus = "Cancelling the download…";
     try {
       narrativeCapability = await cancelNarrativeModelDownload(invoke);
-      narrativeSettingsStatus = "Local model download cancelled.";
+      if (narrativeCapability.download_state === "downloading") {
+        narrativeSettingsStatus = "Cancelling the download…";
+        scheduleNarrativeCapabilityPoll();
+      } else {
+        narrativeModelAction = "idle";
+        stopNarrativeCapabilityPoll();
+        narrativeSettingsStatus = narrativeCapability.availability === "available"
+          ? "The local model is ready."
+          : "Local model download cancelled.";
+      }
     } catch (error) {
       narrativeSettingsStatus = commandErrorMessage(error, "Unable to cancel the download.");
-    } finally {
-      narrativeModelAction = "idle";
-      stopNarrativeCapabilityPoll();
+      if (narrativeCapability.download_state === "downloading") {
+        narrativeModelAction = "downloading";
+        scheduleNarrativeCapabilityPoll();
+      } else {
+        narrativeModelAction = "idle";
+        stopNarrativeCapabilityPoll();
+      }
     }
   }
 
@@ -821,15 +834,21 @@
     stopNarrativeCapabilityPoll();
     narrativeCapabilityPollId = window.setTimeout(async () => {
       narrativeCapabilityPollId = undefined;
-      if (narrativeModelAction !== "downloading") return;
+      if (narrativeModelAction === "idle") return;
+      const wasCancelling = narrativeModelAction === "cancelling";
       await refreshNarrativeCapability();
       if (narrativeCapability.download_state === "downloading") {
+        narrativeSettingsStatus = wasCancelling
+          ? "Cancelling the download…"
+          : "Downloading the local model…";
         scheduleNarrativeCapabilityPoll();
       } else {
         narrativeModelAction = "idle";
         narrativeSettingsStatus = narrativeCapability.availability === "available"
           ? "The local model is ready."
-          : narrativeCapabilityExplanation(narrativeCapability);
+          : wasCancelling
+            ? "Local model download cancelled."
+            : narrativeCapabilityExplanation(narrativeCapability);
       }
     }, 750);
   }

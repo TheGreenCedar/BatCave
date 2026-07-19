@@ -358,13 +358,8 @@ function sentenceBoundaryCount(text: string): number {
 }
 
 function hasUnsupportedNumericClaim(text: string, facts: NarrativeFactPacket): boolean {
-  const allowed = new Set(
-    `${facts.display_name}\n${facts.category}`
-      .match(/\d+(?:[.,]\d+)?/gu)
-      ?.map(normalizeNumericToken) ?? [],
-  );
-  const claims = text.match(/\d+(?:[.,]\d+)?/gu) ?? [];
-  return claims.some((claim) => !allowed.has(normalizeNumericToken(claim)));
+  const withoutExactIdentity = text.split(facts.display_name).join(" ");
+  return (withoutExactIdentity.match(/\d+(?:[.,]\d+)?/gu) ?? []).length > 0;
 }
 
 const genericNameTokens = new Set([
@@ -489,8 +484,4 @@ function normalizedWords(value: string): string[] {
       .toLocaleLowerCase("en-US")
       .match(/[\p{L}\p{N}]+/gu) ?? []
   );
-}
-
-function normalizeNumericToken(value: string): string {
-  return value.replace(/,/gu, "").replace(/^0+(?=\d)/u, "");
 }

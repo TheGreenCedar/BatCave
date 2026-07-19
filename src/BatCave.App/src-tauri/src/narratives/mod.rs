@@ -824,11 +824,8 @@ fn validate_generated_text(text: &str, facts: &NarrativeFactPacket) -> Result<()
     if sentence_boundary_count(trimmed) > 1 {
         return Err("narrative_result_not_one_sentence".to_string());
     }
-    let allowed_numbers = fact_label_numbers(facts);
-    if numeric_tokens(trimmed)
-        .into_iter()
-        .any(|number| !allowed_numbers.contains(&number))
-    {
+    let without_exact_identity = trimmed.replace(&facts.display_name, "");
+    if !numeric_tokens(&without_exact_identity).is_empty() {
         return Err("narrative_result_new_numeric_claim".to_string());
     }
     if !has_required_grounding(trimmed, facts) {
@@ -861,13 +858,6 @@ fn sentence_boundary_count(value: &str) -> usize {
                 .is_none_or(|(_, next)| next.is_whitespace())
         })
         .count()
-}
-
-fn fact_label_numbers(facts: &NarrativeFactPacket) -> HashSet<String> {
-    let mut numbers = HashSet::new();
-    numbers.extend(numeric_tokens(&facts.display_name));
-    numbers.extend(numeric_tokens(&facts.category));
-    numbers
 }
 
 fn has_required_grounding(text: &str, facts: &NarrativeFactPacket) -> bool {
@@ -1317,6 +1307,22 @@ mod tests {
         );
         assert_eq!(
             validate_generated_text("Safari uses 7% CPU.", &facts),
+            Err("narrative_result_new_numeric_claim".to_string())
+        );
+        let numeric_identity_facts = NarrativeFactPacket {
+            display_name: "SearchIndexer 211".to_string(),
+            ..facts.clone()
+        };
+        assert!(validate_generated_text(
+            "SearchIndexer 211 is the main source of CPU activity.",
+            &numeric_identity_facts
+        )
+        .is_ok());
+        assert_eq!(
+            validate_generated_text(
+                "SearchIndexer 211 is the main CPU contributor with 211 CPU load.",
+                &numeric_identity_facts
+            ),
             Err("narrative_result_new_numeric_claim".to_string())
         );
         assert_eq!(
