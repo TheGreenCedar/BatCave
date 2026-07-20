@@ -78,7 +78,7 @@ jobs:
           cache: npm
           cache-dependency-path: src/BatCave.App/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.97.1
         with:
           components: rustfmt
 
