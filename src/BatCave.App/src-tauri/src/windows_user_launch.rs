@@ -384,11 +384,17 @@ mod native {
             let actual_size = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
             if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
                 != 0
-                || info.nNumberOfLinks != 1
-                || actual_size != size
-                || !same_path(&final_path(handle)?, path)
             {
-                return Err("user_launch_created_entry_invalid".to_string());
+                return Err("user_launch_created_entry_attributes_invalid".to_string());
+            }
+            if info.nNumberOfLinks != 1 {
+                return Err("user_launch_created_entry_link_count_invalid".to_string());
+            }
+            if actual_size != size {
+                return Err("user_launch_created_entry_size_invalid".to_string());
+            }
+            if !same_path(&final_path(handle)?, path) {
+                return Err("user_launch_created_entry_path_invalid".to_string());
             }
             Ok(())
         }
@@ -505,7 +511,13 @@ mod native {
         #[test]
         fn pinned_creation_commits_only_complete_new_entry() {
             let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join(ENTRY_NAME);
+            // Temp directories may use a short-name alias. The production destination
+            // is a known-folder path that must pass the canonical ancestry check.
+            let root = crate::collector_service::windows_provisioner::strip_verbatim_disk_prefix(
+                directory.path().canonicalize().unwrap(),
+            );
+            let _ancestry = pin_ancestry(&root).unwrap();
+            let path = root.join(ENTRY_NAME);
             let bytes = b"complete shortcut bytes";
             let outcome = publish_missing_entry(
                 || NewEntry::create(&path),
@@ -520,6 +532,28 @@ mod native {
             .unwrap();
             assert_eq!(outcome, UserLaunchOutcome::Created);
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+
+        #[test]
+        fn pinned_creation_rejects_wrong_size_and_destination() {
+            let directory = tempfile::tempdir().unwrap();
+            let root = crate::collector_service::windows_provisioner::strip_verbatim_disk_prefix(
+                directory.path().canonicalize().unwrap(),
+            );
+            let path = root.join(ENTRY_NAME);
+            let mut entry = NewEntry::create(&path).unwrap().unwrap();
+            entry.file.write_all(b"complete").unwrap();
+            entry.file.sync_all().unwrap();
+            assert_eq!(
+                entry.validate(&path, 9),
+                Err("user_launch_created_entry_size_invalid".into())
+            );
+            assert_eq!(
+                entry.validate(&root.join("another entry.lnk"), 8),
+                Err("user_launch_created_entry_path_invalid".into())
+            );
+            drop(entry);
+            assert!(!path.exists());
         }
     }
 }
