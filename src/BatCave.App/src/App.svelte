@@ -415,12 +415,12 @@
       ariaLabel: "Open CPU logical core detail",
       label: "Machine CPU",
       value: metricValueLabel(snapshot.system.cpu_percent, systemQuality.cpu, formatPercent),
-      supportingLabel: "Peak logical core",
-      supportingValue: metricValueLabel(
-        corePeak,
-        logicalCpuMetricQuality(systemQuality),
-        formatPercent,
-      ),
+      supportingMetrics: [
+        {
+          label: "Peak logical core",
+          value: metricValueLabel(corePeak, logicalCpuMetricQuality(systemQuality), formatPercent),
+        },
+      ],
       statusLabel: resourceQualityStatus(systemQuality.cpu, collectionState),
       shortStatusLabel: resourceQualityStatus(systemQuality.cpu, collectionState),
       values: history.cpu,
@@ -433,12 +433,12 @@
       ariaLabel: "Open memory detail",
       label: "Memory",
       value: metricValueLabel(memoryPercent, systemQuality.memory, formatPercent),
-      supportingLabel: "Used",
-      supportingValue: metricValueLabel(
-        snapshot.system.memory_used_bytes,
-        systemQuality.memory,
-        formatBytes,
-      ),
+      supportingMetrics: [
+        {
+          label: "Used",
+          value: metricValueLabel(snapshot.system.memory_used_bytes, systemQuality.memory, formatBytes),
+        },
+      ],
       statusLabel: resourceQualityStatus(systemQuality.memory, collectionState),
       shortStatusLabel: resourceQualityStatus(systemQuality.memory, collectionState),
       values: history.memory,
@@ -451,10 +451,10 @@
       ariaLabel: "Open disk throughput detail",
       label: "Disk",
       value: metricValueLabel(diskReadRate + diskWriteRate, systemQuality.disk, formatRate),
-      supportingLabel: "Read / write",
-      supportingValue: !metricCanDisplay(systemQuality.disk)
-        ? "No trusted sample"
-        : `${formatRate(diskReadRate)} / ${formatRate(diskWriteRate)}`,
+      supportingMetrics: [
+        { label: "Read", value: metricValueLabel(diskReadRate, systemQuality.disk, formatRate) },
+        { label: "Write", value: metricValueLabel(diskWriteRate, systemQuality.disk, formatRate) },
+      ],
       statusLabel: resourceQualityStatus(systemQuality.disk, collectionState),
       shortStatusLabel: resourceQualityStatus(systemQuality.disk, collectionState),
       values: diskTotalHistory,
@@ -467,10 +467,10 @@
       ariaLabel: "Open network throughput detail",
       label: "Network",
       value: metricValueLabel(networkDownRate + networkUpRate, systemQuality.network, formatRate),
-      supportingLabel: "Down / up",
-      supportingValue: !metricCanDisplay(systemQuality.network)
-        ? "No trusted sample"
-        : `${formatRate(networkDownRate)} / ${formatRate(networkUpRate)}`,
+      supportingMetrics: [
+        { label: "Down", value: metricValueLabel(networkDownRate, systemQuality.network, formatRate) },
+        { label: "Up", value: metricValueLabel(networkUpRate, systemQuality.network, formatRate) },
+      ],
       statusLabel: resourceQualityStatus(systemQuality.network, collectionState),
       shortStatusLabel: resourceQualityStatus(systemQuality.network, collectionState),
       values: networkTotalHistory,

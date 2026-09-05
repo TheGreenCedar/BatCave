@@ -1,5 +1,18 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+type RateFixture = {
+  event: {
+    kind: string;
+    payload: {
+      descriptors: { semantic: string }[];
+      system: { metrics: [number, number | null, number, number | null, number | null][] };
+      quality_codes: string[];
+      sampled_at_ms: number | null;
+    };
+  };
+};
 
 type FixtureState =
   | "overview"
@@ -408,6 +421,215 @@ test("Overview resource selection and leading rows survive an Explore filter", a
     )
     .toEqual(leadingIds);
 });
+
+for (const viewport of [
+  { width: 1280, textScale: 100 },
+  { width: 1280, textScale: 200 },
+  { width: 760, textScale: 100 },
+  { width: 360, textScale: 200 },
+] as const) {
+  test(`Overview rate pairs remain readable as samples change at ${viewport.width}px and ${viewport.textScale}% text`, async ({
+    page,
+  }) => {
+    const fixtureUrl = "/src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json?import";
+    const fixture: unknown = JSON.parse(
+      readFileSync(
+        new URL(
+          "../src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    // Substitute data only. The real fixture decoder, sampling action, formatter, and UI still run.
+    await page.route("**/browser-macos.json?import", (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: `export default ${JSON.stringify(fixture)};`,
+      }),
+    );
+    await page.setViewportSize({ width: viewport.width, height: 1000 });
+    await openFixture(page, "overview");
+    if (viewport.textScale !== 100) {
+      await page.addStyleTag({
+        content: `:root { font-size: ${viewport.textScale}% !important; }`,
+      });
+    }
+
+    const heights = new Map<string, number>();
+    const samples = [
+      {
+        rates: [12 * 1024, 4 * 1024, 8 * 1024, 3 * 1024],
+        disk: ["18 KB/s", "6.1 KB/s"],
+        network: ["12 KB/s", "4.6 KB/s"],
+      },
+      {
+        rates: [196 * 1024 ** 2, 131 * 1024 ** 2, 123 * 1024 ** 2, 87 * 1024 ** 2],
+        disk: ["314 MB/s", "210 MB/s"],
+        network: ["197 MB/s", "139 MB/s"],
+      },
+      {
+        rates: [0, 1024 ** 2, 99.4 * 1024 ** 2, 999 * 1024],
+        disk: ["0 B/s", "1.7 MB/s"],
+        network: ["167 MB/s", "1.6 MB/s"],
+      },
+    ];
+
+    for (const [index, sample] of samples.entries()) {
+      await page.evaluate(
+        async ({ fixtureUrl, rates }) => {
+          const imported = (await import(fixtureUrl)) as { default: RateFixture };
+          if (imported.default.event.kind !== "runtime_snapshot")
+            throw new Error("Expected snapshot fixture");
+          const payload = imported.default.event.payload;
+          const semantics = [
+            "physical_disk_read_rate",
+            "physical_disk_write_rate",
+            "network_receive_rate",
+            "network_transmit_rate",
+          ];
+          for (const observation of payload.system.metrics) {
+            const semantic = payload.descriptors[observation[0]].semantic;
+            const rateIndex = semantics.indexOf(semantic);
+            const diskTotal =
+              semantic === "physical_disk_read_total" || semantic === "physical_disk_write_total";
+            if (rateIndex < 0 && !diskTotal) continue;
+            observation[1] = diskTotal ? 1024 ** 3 : rates[rateIndex];
+            observation[2] = payload.quality_codes.indexOf("native");
+            observation[3] = payload.sampled_at_ms;
+            observation[4] = null;
+          }
+        },
+        { fixtureUrl, rates: sample.rates },
+      );
+      await page.locator(".settings-action").click();
+      await page
+        .getByRole("dialog", { name: "Settings" })
+        .getByRole("button", { name: "Refresh now", exact: true })
+        .click();
+      await page.keyboard.press("Escape");
+
+      // The explicit oracle covers the fixture's next three animated samples (ticks 9, 10, 11).
+      for (const [mode, expectedRates, labels] of [
+        ["disk", sample.disk, ["Read", "Write"]],
+        ["network", sample.network, ["Down", "Up"]],
+      ] as const) {
+        const card = page.locator(`.overview-resource-card[data-resource-mode="${mode}"]`);
+        for (const rate of expectedRates) {
+          await expect(card.locator(".resource-card-copy")).toContainText(rate);
+        }
+        for (const label of labels)
+          await expect(card.locator(".resource-card-copy")).toContainText(new RegExp(label, "i"));
+
+        const geometry = await card.evaluate((element, expectedRates) => {
+          const copy = element.querySelector(".resource-card-copy")!;
+          const rect = (value: DOMRect) => ({
+            left: value.left,
+            right: value.right,
+            top: value.top,
+            bottom: value.bottom,
+            height: value.height,
+          });
+          const textNodes: Text[] = [];
+          const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+          const text = textNodes
+            .map((node) => node.textContent ?? "")
+            .join("")
+            .replaceAll("\u00a0", " ");
+          function rangeRects(start: number, end: number) {
+            const range = document.createRange();
+            let position = 0;
+            let started = false;
+            for (const node of textNodes) {
+              const next = position + node.length;
+              if (!started && start < next) {
+                range.setStart(node, start - position);
+                started = true;
+              }
+              if (started && end <= next) {
+                range.setEnd(node, end - position);
+                break;
+              }
+              position = next;
+            }
+            return Array.from(range.getClientRects())
+              .filter((item) => item.width > 0 && item.height > 0)
+              .map(rect);
+          }
+          return {
+            card: rect(element.getBoundingClientRect()),
+            copy: rect(copy.getBoundingClientRect()),
+            obstacles: [".resource-icon", ".resource-card-chart", ".resource-card-value"].flatMap(
+              (selector) => {
+                const node = element.querySelector(selector);
+                return node && getComputedStyle(node).display !== "none"
+                  ? [rect(node.getBoundingClientRect())]
+                  : [];
+              },
+            ),
+            textRects: textNodes.flatMap((node) => {
+              const range = document.createRange();
+              range.selectNodeContents(node);
+              return Array.from(range.getClientRects())
+                .filter((item) => item.width > 0 && item.height > 0)
+                .map(rect);
+            }),
+            rates: expectedRates.map((value) => {
+              const start = text.indexOf(value);
+              return { value, rects: start < 0 ? [] : rangeRects(start, start + value.length) };
+            }),
+          };
+        }, expectedRates);
+        const context = `${mode}, sample ${index}, ${viewport.width}px, ${viewport.textScale}% text`;
+        for (const rate of geometry.rates) {
+          expect
+            .soft(rate.rects.length, `${context}: ${rate.value} must render`)
+            .toBeGreaterThan(0);
+          const lines = new Set(rate.rects.map((item) => Math.round(item.top)));
+          expect
+            .soft(lines.size, `${context}: ${rate.value} must keep its value and unit together`)
+            .toBe(1);
+        }
+        for (const rect of geometry.textRects) {
+          expect
+            .soft(rect.left, `${context}: text leaves card left`)
+            .toBeGreaterThanOrEqual(geometry.card.left - 1);
+          expect
+            .soft(rect.right, `${context}: text leaves card right`)
+            .toBeLessThanOrEqual(geometry.card.right + 1);
+          expect
+            .soft(rect.left, `${context}: text clips left`)
+            .toBeGreaterThanOrEqual(geometry.copy.left - 1);
+          expect
+            .soft(rect.right, `${context}: text clips right`)
+            .toBeLessThanOrEqual(geometry.copy.right + 1);
+          expect
+            .soft(rect.top, `${context}: text clips top`)
+            .toBeGreaterThanOrEqual(geometry.card.top - 1);
+          expect
+            .soft(rect.bottom, `${context}: text clips bottom`)
+            .toBeLessThanOrEqual(geometry.card.bottom + 1);
+          for (const obstacle of geometry.obstacles) {
+            const overlaps =
+              Math.min(rect.right, obstacle.right) - Math.max(rect.left, obstacle.left) > 1 &&
+              Math.min(rect.bottom, obstacle.bottom) - Math.max(rect.top, obstacle.top) > 1;
+            expect
+              .soft(overlaps, `${context}: supporting text overlaps icon, chart, or total`)
+              .toBe(false);
+          }
+        }
+        if (heights.has(mode)) {
+          expect
+            .soft(geometry.card.height, `${context}: changing rates must not resize the card`)
+            .toBeCloseTo(heights.get(mode)!, 0);
+        } else {
+          heights.set(mode, geometry.card.height);
+        }
+      }
+    }
+  });
+}
 
 test("Overview drill-down and Explore controls preserve the workload task", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });

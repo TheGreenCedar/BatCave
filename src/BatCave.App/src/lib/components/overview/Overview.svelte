@@ -156,7 +156,14 @@
         <span class={`resource-icon resource-${resource.mode}`}><Icon size={24} weight="regular" aria-hidden="true" /></span>
         <span class="resource-card-copy">
           <span>{resource.label}</span>
-          <small>{resource.supportingLabel}: {resource.supportingValue}</small>
+          <small class="resource-card-supporting">
+            {#each resource.supportingMetrics as metric (metric.label)}
+              <span class="resource-card-reading">
+                <span>{metric.label}</span>
+                <span class="resource-card-reading-value">{metric.value}</span>
+              </span>
+            {/each}
+          </small>
         </span>
         <span class="resource-card-chart"><MiniChart values={resource.values} max={resource.max} stroke={resource.stroke} fill={resource.fill} /></span>
         <span class="resource-card-value">
