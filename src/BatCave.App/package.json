@@ -2,6 +2,14 @@
   "name": "batcave-monitor",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "overrides": {
+    "postcss": {
+      "nanoid": "5.1.16"
+    }
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "vite build",

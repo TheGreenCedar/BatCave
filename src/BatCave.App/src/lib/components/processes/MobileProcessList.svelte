@@ -195,6 +195,7 @@
           class="mobile-group-expand"
           type="button"
           aria-expanded={expanded}
+          data-workload-group-key={row.detail.group_key}
           onclick={() => onToggleGroup(row.detail.group_key)}
         >
           <CaretRight class={expanded ? "expanded" : ""} size={15} weight="bold" aria-hidden="true" />

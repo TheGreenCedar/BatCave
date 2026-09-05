@@ -1154,10 +1154,6 @@
   text-align: center;
 }
 
-.mobile-process-list {
-  display: none;
-}
-
 .detail-pane {
   display: flex;
   flex-direction: column;
@@ -2644,10 +2640,6 @@ button:disabled {
 
   .ranking-update {
     margin-left: auto;
-  }
-
-  .attention-table-wrap {
-    display: none;
   }
 
   .mobile-process-list {

@@ -17,6 +17,8 @@ Product screenshots and verification screenshots must come from the native Tauri
 - Ubuntu/Debian plus the native Tauri packages
 - macOS 12 or newer on Apple Silicon plus Xcode Command Line Tools; Intel Macs are unsupported
 
+PostCSS's Nano ID dependency is pinned through a scoped override to 5.1.16 for its published security fixes. This relies on Node.js 24 loading synchronous ES modules through `require()`; older Node versions are unsupported. Remove the override when PostCSS resolves a patched compatible release. The dependency audit continues to fail on remaining advisories.
+
 Install Linux native prerequisites from the repository root:
 
 ```bash

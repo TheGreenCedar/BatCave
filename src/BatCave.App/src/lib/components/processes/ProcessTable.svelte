@@ -185,6 +185,7 @@
                       class:expanded
                       type="button"
                       aria-expanded={expanded}
+                      data-workload-group-key={row.detail.group_key}
                       aria-label={`${expanded ? "Collapse" : "Expand"} ${row.detail.label} group, ${processCountLabel(row.detail.process_count)}`}
                       onclick={() => onToggleGroup(row.detail.group_key)}
                     >

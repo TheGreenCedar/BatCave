@@ -245,6 +245,45 @@ for (const drawer of ["Settings", "Diagnostics"] as const) {
   });
 }
 
+test("only the active workload layout is mounted and resizing preserves exploration state", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "group");
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await expect(page.locator(".attention-table-wrap")).toHaveCount(1);
+  await expect(page.locator(".mobile-process-list")).toHaveCount(0);
+
+  const expand = page.locator(".group-expand").first();
+  await expand.click();
+  const groupKey = await expand.getAttribute("data-workload-group-key");
+  expect(groupKey).toBeTruthy();
+  await page.setViewportSize({ width: 899, height: 900 });
+  await expect(page.locator(".attention-table-wrap")).toHaveCount(0);
+  await expect(page.locator(".mobile-process-list")).toHaveCount(1);
+  const mobileExpand = page.locator(`[data-workload-group-key="${groupKey}"]`);
+  await expect(mobileExpand).toHaveAttribute("aria-expanded", "true");
+  await expect(mobileExpand).toBeFocused();
+
+  const workload = page.locator(".mobile-card-select[data-workload-id]").first();
+  const workloadId = await workload.getAttribute("data-workload-id");
+  await workload.focus();
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect(page.locator(".attention-table-wrap")).toHaveCount(1);
+  await expect(page.locator(".mobile-process-list")).toHaveCount(0);
+  await expect(page.locator(`[data-workload-group-key="${groupKey}"]`)).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
+
+  await page.locator('[data-view="overview"]').click();
+  await page.setViewportSize({ width: 899, height: 900 });
+  await page.locator('[data-view="explore"]').click();
+  await expect(page.locator(".attention-table-wrap")).toHaveCount(0);
+  await expect(page.locator(".mobile-process-list")).toHaveCount(1);
+});
+
 test("compact resource detail closes with Escape and restores the selected workload", async ({
   page,
 }) => {
