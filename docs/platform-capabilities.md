@@ -19,7 +19,7 @@ The macOS host-disk number is a physical block-driver aggregate, not a sum of mo
 
 The macOS host-network source includes loopback because that is the scope exposed by sysinfo. Protocol v4 publishes `all_interface_aggregate` for those observations. Windows and Linux host-network observations publish `non_loopback_interface_aggregate`. macOS process rates come from XNU NStat TCP, UDP, and QUIC counters and publish `ip_socket_payload`.
 
-NStat is a private XNU wire interface, not a private-framework dependency. BatCave qualifies the revision-9 layout on Darwin 21 through 25, opens one unprivileged nonblocking control socket, and fails closed on an unqualified OS layout, rejected provider, malformed message, truncation, or counter regression. The first complete query establishes a baseline; no historical bytes are emitted as a live rate.
+NStat is a private XNU wire interface, not a private-framework dependency. BatCave opens one unprivileged nonblocking control socket and checks the revision-9 fields it consumes against small local TCP and UDP transfers on every session. All four socket endpoints, libproc process identity, and exact payload counters must match before a complete query can establish the baseline. The probes are excluded from app rates. This permits compatible descriptor growth without an OS-version cutoff. Rejected providers, unknown messages, unrequested extensions, malformed data, truncation, or failed qualification make attribution unavailable. Counter regression and dropped final counts mark the affected interval partial. No historical bytes are emitted as a live rate.
 
 ## Process failure semantics
 

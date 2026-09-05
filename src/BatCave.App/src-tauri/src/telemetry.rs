@@ -1557,16 +1557,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_collector_reports_native_process_and_honest_system_sources() {
-        let network_qualified = match crate::macos_network::ensure_qualified_darwin_layout() {
-            Ok(()) => true,
-            Err(error) => {
-                assert!(
-                    error.starts_with("nstat_darwin_layout_unqualified:"),
-                    "unexpected native qualification failure: {error}"
-                );
-                false
-            }
-        };
         let mut collector = TelemetryCollector::new();
         let first = collector
             .collect()
@@ -1596,19 +1586,12 @@ mod tests {
                         .and_then(|quality| quality.network.as_ref())
                         .is_some_and(|quality| quality.quality == MetricQuality::Native)
             });
-            if network_ready || !network_qualified || Instant::now() >= deadline {
+            if network_ready || Instant::now() >= deadline {
                 break sample;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
-        assert_eq!(
-            sample.collector_state,
-            if network_qualified {
-                RuntimeCollectorState::Healthy
-            } else {
-                RuntimeCollectorState::Limited
-            }
-        );
+        assert_eq!(sample.collector_state, RuntimeCollectorState::Healthy);
 
         assert!(sample.system.memory_available_bytes.is_some());
         let system_quality = sample.system.quality.as_ref().expect("system quality");
@@ -1646,18 +1629,14 @@ mod tests {
         );
         assert_eq!(
             quality.network.as_ref().map(|quality| quality.quality),
-            Some(if network_qualified {
-                MetricQuality::Native
-            } else {
-                MetricQuality::Unavailable
-            })
+            Some(MetricQuality::Native)
         );
         assert_eq!(
             quality.network.as_ref().and_then(|quality| quality.source),
             Some(MetricSource::Nstat)
         );
-        assert_eq!(current.network_received_bps.is_some(), network_qualified);
-        assert_eq!(current.network_transmitted_bps.is_some(), network_qualified);
+        assert!(current.network_received_bps.is_some());
+        assert!(current.network_transmitted_bps.is_some());
     }
 
     fn sample_process(pid: &str) -> ProcessSample {

@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    ffi::CStr,
     io,
     mem::{size_of, zeroed},
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
@@ -17,10 +16,16 @@ use crate::network_attribution::{
 };
 
 // Minimal client for Apple's APSL-licensed XNU NStat wire protocol. BatCave does
-// not link a private framework or copy XNU implementation code. These message
-// layouts and descriptor offsets are qualified against ntstat.h revision 9 in
-// XNU tags 8019.41.5 through 12377.1.9 (Darwin 21-25). Fail closed elsewhere.
+// not link a private framework or copy XNU implementation code. Its consumed
+// message prefixes follow ntstat.h revision 9. Every control-socket session
+// validates them against its own TCP/UDP traffic before publishing any rates.
+// Aligned descriptor tails can grow; incompatible prefixes fail qualification.
 // Source: https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/net/ntstat.h
+mod qualification;
+#[cfg(test)]
+mod wire_tests;
+use qualification::ProtocolQualification;
+
 const CONTROL_NAME: &[u8] = b"com.apple.network.statistics\0";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SOCKET_POLL_TIMEOUT_MS: i32 = 250;
@@ -39,10 +44,11 @@ const NSTAT_MSG_TYPE_ADD_ALL_SRCS: u32 = 1002;
 const NSTAT_MSG_TYPE_GET_UPDATE: u32 = 1007;
 const NSTAT_MSG_TYPE_SRC_ADDED: u32 = 10_001;
 const NSTAT_MSG_TYPE_SRC_REMOVED: u32 = 10_002;
+const NSTAT_MSG_TYPE_SRC_DESCRIPTION: u32 = 10_003;
 const NSTAT_MSG_TYPE_SRC_UPDATE: u32 = 10_006;
-const NSTAT_MSG_TYPE_SRC_EXTENDED_UPDATE: u32 = 10_007;
 
-const NSTAT_MSG_HDR_FLAG_CONTINUATION: u16 = 1 << 0;
+const NSTAT_MSG_HDR_FLAG_CONTINUATION: u16 = 1 << 1;
+const NSTAT_MSG_HDR_FLAG_CLOSED_AFTER_DROP: u16 = 1 << 3;
 const NSTAT_MSG_HDR_FLAG_CLOSING: u16 = 1 << 2;
 const NSTAT_EVENT_SRC_PREV_EVENT_DISCARDED: u64 = 0x8000_0000;
 const NSTAT_FILTER_PROVIDER_NOZEROBYTES: u64 = 0x0040_0000;
@@ -70,8 +76,8 @@ const UPDATE_TX_BYTES_OFFSET: usize = 56;
 const UPDATE_PROVIDER_OFFSET: usize = 144;
 const TCP_DESCRIPTOR_PID_OFFSET: usize = 116;
 const UDP_DESCRIPTOR_PID_OFFSET: usize = 128;
-const MIN_QUALIFIED_DARWIN_MAJOR: u32 = 21;
-const MAX_QUALIFIED_DARWIN_MAJOR: u32 = 25;
+const TCP_DESCRIPTOR_MIN_LEN: usize = 344;
+const UDP_DESCRIPTOR_MIN_LEN: usize = 280;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MessageHeader {
@@ -443,11 +449,6 @@ impl Drop for MacosNetworkAttribution {
 }
 
 fn run_collector(shared: Arc<Mutex<SharedSample>>, stop: Arc<AtomicBool>) {
-    if let Err(error) = ensure_qualified_darwin_layout() {
-        set_failure(&shared, error);
-        return;
-    }
-
     run_supervisor_with(
         &shared,
         &stop,
@@ -507,6 +508,7 @@ fn run_collector_session(
             .map_err(|error| format!("nstat_subscribe_failed:provider={provider}:{error}"))?;
     }
     let subscription_deadline = Instant::now() + SUBSCRIPTION_TIMEOUT;
+    let mut qualification = ProtocolQualification::new()?;
 
     let mut engine = AttributionEngine::default();
     let mut event_clock = EventClock::default();
@@ -516,6 +518,7 @@ fn run_collector_session(
     let mut next_query_at = Instant::now();
 
     while !stop.load(Ordering::Acquire) {
+        qualification.check_deadline()?;
         if let Some(error) = subscription_timeout_error(
             &pending_subscriptions,
             Instant::now(),
@@ -601,6 +604,7 @@ fn run_collector_session(
                 &mut event_clock,
                 shared,
                 &mut next_query_at,
+                &mut qualification,
             )?;
         }
     }
@@ -646,35 +650,6 @@ fn subscription_timeout_error(
     ))
 }
 
-pub(crate) fn ensure_qualified_darwin_layout() -> Result<(), String> {
-    // SAFETY: zero is a valid initial representation for utsname and uname fills it.
-    let mut system: libc::utsname = unsafe { zeroed() };
-    // SAFETY: system points to writable storage of the exact type uname expects.
-    if unsafe { libc::uname(&mut system) } != 0 {
-        return Err(format!(
-            "nstat_darwin_version_unavailable:{}",
-            io::Error::last_os_error()
-        ));
-    }
-    // SAFETY: uname guarantees a NUL-terminated release field.
-    let release = unsafe { CStr::from_ptr(system.release.as_ptr()) }
-        .to_str()
-        .map_err(|_| "nstat_darwin_version_invalid_utf8".to_string())?;
-    let major = release
-        .split('.')
-        .next()
-        .and_then(|value| value.parse::<u32>().ok())
-        .ok_or_else(|| format!("nstat_darwin_version_invalid:{release}"))?;
-    if !darwin_layout_is_qualified(major) {
-        return Err(format!("nstat_darwin_layout_unqualified:{major}"));
-    }
-    Ok(())
-}
-
-fn darwin_layout_is_qualified(major: u32) -> bool {
-    (MIN_QUALIFIED_DARWIN_MAJOR..=MAX_QUALIFIED_DARWIN_MAJOR).contains(&major)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn handle_datagram(
     datagram: &[u8],
@@ -685,6 +660,7 @@ fn handle_datagram(
     event_clock: &mut EventClock,
     shared: &Arc<Mutex<SharedSample>>,
     next_query_at: &mut Instant,
+    qualification: &mut ProtocolQualification,
 ) -> Result<(), String> {
     let mut offset = 0;
     while offset < datagram.len() {
@@ -694,6 +670,17 @@ fn handle_datagram(
             .filter(|end| *end <= datagram.len())
             .ok_or_else(|| "nstat_message_length_out_of_bounds".to_string())?;
         let message = &datagram[offset..end];
+        validate_message_shape(message, header)?;
+        if matches!(
+            header.message_type,
+            NSTAT_MSG_TYPE_SRC_UPDATE | NSTAT_MSG_TYPE_SRC_REMOVED
+        ) && header.context != 0
+            && !active_query
+                .as_ref()
+                .is_some_and(|query| query.context == header.context)
+        {
+            return Err(format!("nstat_event_context_unexpected:{}", header.context));
+        }
 
         match header.message_type {
             NSTAT_MSG_TYPE_SUCCESS => {
@@ -714,7 +701,8 @@ fn handle_datagram(
                             .expect("active query checked before completion");
                         commit_events(engine, query.events, shared)?;
                         engine.prune_tombstones();
-                        if !engine.baseline_complete {
+                        if !engine.baseline_complete && qualification.complete() {
+                            qualification.finish();
                             engine.finish_baseline();
                             let mut sample = shared
                                 .lock()
@@ -723,7 +711,7 @@ fn handle_datagram(
                             sample.interval_complete = false;
                             sample.interval_bytes_by_process.clear();
                             sample.interval_started_at = Instant::now();
-                        } else {
+                        } else if engine.baseline_complete {
                             let mut sample = shared
                                 .lock()
                                 .map_err(|_| "nstat_shared_lock_poisoned".to_string())?;
@@ -747,8 +735,13 @@ fn handle_datagram(
                     return Err(format!("nstat_update_rejected:errno={error}"));
                 }
             }
-            NSTAT_MSG_TYPE_SRC_UPDATE | NSTAT_MSG_TYPE_SRC_EXTENDED_UPDATE => {
+            NSTAT_MSG_TYPE_SRC_UPDATE => {
                 let update = parse_source_update(message, header)?;
+                qualification.observe(message, update)?;
+                if qualification.excludes(update.source_ref) {
+                    offset = end;
+                    continue;
+                }
                 route_event(
                     SourceEvent::Update(update),
                     header.context,
@@ -760,6 +753,18 @@ fn handle_datagram(
             }
             NSTAT_MSG_TYPE_SRC_REMOVED => {
                 let source_ref = read_u64(message, HEADER_LEN)?;
+                if qualification.excludes(source_ref) {
+                    offset = end;
+                    continue;
+                }
+                if header.flags & NSTAT_MSG_HDR_FLAG_CLOSED_AFTER_DROP != 0 {
+                    shared
+                        .lock()
+                        .map_err(|_| "nstat_shared_lock_poisoned".to_string())?
+                        .data_loss = Some(format!(
+                        "nstat_final_counts_dropped:source_ref={source_ref}"
+                    ));
+                }
                 route_event(
                     SourceEvent::Removed(source_ref),
                     header.context,
@@ -769,8 +774,13 @@ fn handle_datagram(
                     shared,
                 )?;
             }
-            NSTAT_MSG_TYPE_SRC_ADDED => {}
-            _ => {}
+            NSTAT_MSG_TYPE_SRC_ADDED | NSTAT_MSG_TYPE_SRC_DESCRIPTION => {}
+            _ => {
+                return Err(format!(
+                    "nstat_message_type_unexpected:{}",
+                    header.message_type
+                ))
+            }
         }
         offset = end;
     }
@@ -964,20 +974,36 @@ fn parse_source_update(bytes: &[u8], header: MessageHeader) -> Result<SourceUpda
         return Err("nstat_source_update_truncated".to_string());
     }
     let provider = read_u32(bytes, UPDATE_PROVIDER_OFFSET)?;
-    let descriptor_pid_offset = match provider {
+    let (descriptor_pid_offset, descriptor_min_len) = match provider {
         NSTAT_PROVIDER_TCP_KERNEL | NSTAT_PROVIDER_TCP_USERLAND | NSTAT_PROVIDER_QUIC_USERLAND => {
-            TCP_DESCRIPTOR_PID_OFFSET
+            (TCP_DESCRIPTOR_PID_OFFSET, TCP_DESCRIPTOR_MIN_LEN)
         }
-        NSTAT_PROVIDER_UDP_KERNEL | NSTAT_PROVIDER_UDP_USERLAND => UDP_DESCRIPTOR_PID_OFFSET,
+        NSTAT_PROVIDER_UDP_KERNEL | NSTAT_PROVIDER_UDP_USERLAND => {
+            (UDP_DESCRIPTOR_PID_OFFSET, UDP_DESCRIPTOR_MIN_LEN)
+        }
         _ => return Err(format!("nstat_provider_unexpected:{provider}")),
     };
+    if bytes.len() != header.length
+        || bytes.len() < UPDATE_PREFIX_LEN + descriptor_min_len
+        || !bytes.len().is_multiple_of(8)
+        || read_u32(bytes, UPDATE_PROVIDER_OFFSET + 4)? != 0
+    {
+        return Err(format!(
+            "nstat_source_layout_incompatible:provider={provider}:length={}",
+            bytes.len()
+        ));
+    }
     let pid = read_u32(bytes, UPDATE_PREFIX_LEN + descriptor_pid_offset)?;
     let unique_pid = read_u64(bytes, UPDATE_PREFIX_LEN)?;
-    if pid == 0 {
-        return Err(format!("nstat_source_pid_missing:provider={provider}"));
+    if pid == 0 || unique_pid == 0 {
+        return Err(format!("nstat_source_identity_missing:provider={provider}"));
+    }
+    let source_ref = read_u64(bytes, UPDATE_SOURCE_REF_OFFSET)?;
+    if source_ref == 0 || source_ref == NSTAT_SRC_REF_ALL {
+        return Err("nstat_source_reference_invalid".to_string());
     }
     Ok(SourceUpdate {
-        source_ref: read_u64(bytes, UPDATE_SOURCE_REF_OFFSET)?,
+        source_ref,
         pid,
         unique_pid,
         received_bytes: read_u64(bytes, UPDATE_RX_BYTES_OFFSET)?,
@@ -987,6 +1013,57 @@ fn parse_source_update(bytes: &[u8], header: MessageHeader) -> Result<SourceUpda
             & NSTAT_EVENT_SRC_PREV_EVENT_DISCARDED
             != 0,
     })
+}
+
+fn validate_message_shape(bytes: &[u8], header: MessageHeader) -> Result<(), String> {
+    // No extensions are requested. Do not turn a new source-bearing message
+    // type into an empty but apparently healthy interval by ignoring it.
+    let valid = match header.message_type {
+        NSTAT_MSG_TYPE_SUCCESS => bytes.len() == HEADER_LEN,
+        NSTAT_MSG_TYPE_ERROR => bytes.len() >= 24 && read_u32(bytes, 20)? == 0,
+        NSTAT_MSG_TYPE_SRC_ADDED => {
+            bytes.len() == 32
+                && PROVIDERS.contains(&read_u32(bytes, 24)?)
+                && read_u32(bytes, 28)? == 0
+        }
+        NSTAT_MSG_TYPE_SRC_REMOVED => bytes.len() == 24,
+        NSTAT_MSG_TYPE_SRC_DESCRIPTION => {
+            // Subscriptions can emit descriptions before the first GET_UPDATE.
+            // They carry no counts and cannot qualify or complete an interval.
+            if bytes.len() < 40 {
+                false
+            } else {
+                let minimum = match read_u32(bytes, 32)? {
+                    NSTAT_PROVIDER_TCP_KERNEL
+                    | NSTAT_PROVIDER_TCP_USERLAND
+                    | NSTAT_PROVIDER_QUIC_USERLAND => TCP_DESCRIPTOR_MIN_LEN,
+                    NSTAT_PROVIDER_UDP_KERNEL | NSTAT_PROVIDER_UDP_USERLAND => {
+                        UDP_DESCRIPTOR_MIN_LEN
+                    }
+                    _ => return Err("nstat_description_provider_unexpected".to_string()),
+                };
+                bytes.len() >= 40 + minimum
+                    && bytes.len().is_multiple_of(8)
+                    && read_u32(bytes, 36)? == 0
+            }
+        }
+        NSTAT_MSG_TYPE_SRC_UPDATE => true, // Provider prefix is checked by its parser.
+        _ => {
+            return Err(format!(
+                "nstat_message_type_unexpected:{}",
+                header.message_type
+            ))
+        }
+    };
+    if !valid || header.flags & !0x005f != 0 {
+        return Err(format!(
+            "nstat_message_shape_incompatible:type={}:length={}:flags={}",
+            header.message_type,
+            bytes.len(),
+            header.flags
+        ));
+    }
+    Ok(())
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
@@ -1056,7 +1133,7 @@ mod tests {
         received: u64,
         transmitted: u64,
     ) -> Vec<u8> {
-        let length = UPDATE_PREFIX_LEN + TCP_DESCRIPTOR_PID_OFFSET + size_of::<u32>();
+        let length = UPDATE_PREFIX_LEN + TCP_DESCRIPTOR_MIN_LEN;
         let mut message = Vec::with_capacity(length);
         write_header(
             &mut message,
@@ -1123,6 +1200,7 @@ mod tests {
             event_clock,
             shared,
             next_query_at,
+            &mut ProtocolQualification::qualified_fixture(),
         )
         .expect("synthetic NStat datagram");
     }
@@ -1139,19 +1217,8 @@ mod tests {
         assert_eq!(query.len(), 24);
         assert_eq!(read_u64(&query, 0).unwrap(), 77);
         assert_eq!(read_u32(&query, 8).unwrap(), NSTAT_MSG_TYPE_GET_UPDATE);
-        assert_eq!(
-            read_u16(&query, 14).unwrap(),
-            NSTAT_MSG_HDR_FLAG_CONTINUATION
-        );
+        assert_eq!(read_u16(&query, 14).unwrap(), 0x0002);
         assert_eq!(read_u64(&query, 16).unwrap(), NSTAT_SRC_REF_ALL);
-    }
-
-    #[test]
-    fn only_source_qualified_darwin_layouts_are_enabled() {
-        assert!(!darwin_layout_is_qualified(20));
-        assert!(darwin_layout_is_qualified(21));
-        assert!(darwin_layout_is_qualified(25));
-        assert!(!darwin_layout_is_qualified(26));
     }
 
     #[test]
@@ -1465,35 +1532,9 @@ mod tests {
         ));
     }
 
-    fn assert_unqualified_layout_fails_closed(attribution: &mut MacosNetworkAttribution) -> bool {
-        let Err(expected) = ensure_qualified_darwin_layout() else {
-            return false;
-        };
-        assert!(
-            expected.starts_with("nstat_darwin_layout_unqualified:"),
-            "unexpected native qualification failure: {expected}"
-        );
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match attribution.sample() {
-                NetworkAttributionSample::Failed(error) => {
-                    assert_eq!(error, expected);
-                    return true;
-                }
-                NetworkAttributionSample::PendingBaseline(_) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(10))
-                }
-                sample => panic!("Unqualified NStat layout must fail closed: {sample:?}"),
-            }
-        }
-    }
-
     #[test]
     fn native_control_socket_reaches_a_complete_baseline() {
         let mut attribution = MacosNetworkAttribution::new();
-        if assert_unqualified_layout_fails_closed(&mut attribution) {
-            return;
-        }
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match attribution.sample() {
@@ -1513,9 +1554,6 @@ mod tests {
     #[test]
     fn native_control_socket_attributes_loopback_bytes_to_the_process() {
         let mut attribution = MacosNetworkAttribution::new();
-        if assert_unqualified_layout_fails_closed(&mut attribution) {
-            return;
-        }
         wait_for_baseline(&mut attribution);
 
         const PAYLOAD_BYTES: usize = 512 * 1024;
@@ -1536,13 +1574,34 @@ mod tests {
         client.shutdown(Shutdown::Write).expect("finish upload");
         let mut response = Vec::with_capacity(PAYLOAD_BYTES);
         client.read_to_end(&mut response).expect("read download");
-        assert_eq!(response.len(), PAYLOAD_BYTES);
+        assert_eq!(response, vec![0x5a; PAYLOAD_BYTES]);
         server.join().expect("loopback server");
 
         let pid = std::process::id();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             thread::sleep(Duration::from_millis(100));
+            // Both endpoints belong to this process: one upload and download
+            // must yield at least two payloads in each direction. Checking the
+            // accumulated bytes prevents unrelated tiny flows from passing.
+            let attributed_payload = attribution
+                .shared
+                .lock()
+                .unwrap()
+                .interval_bytes_by_process
+                .iter()
+                .any(|(identity, bytes)| {
+                    identity.pid == pid
+                        && bytes.received_bps >= (2 * PAYLOAD_BYTES) as u64
+                        && bytes.transmitted_bps >= (2 * PAYLOAD_BYTES) as u64
+                });
+            if !attributed_payload && Instant::now() < deadline {
+                continue;
+            }
+            assert!(
+                attributed_payload,
+                "NStat did not attribute the full loopback payload"
+            );
             match attribution.sample() {
                 NetworkAttributionSample::Ready { rates_by_process }
                 | NetworkAttributionSample::Partial {
