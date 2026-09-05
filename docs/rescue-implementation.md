@@ -41,6 +41,7 @@ Windows creates a missing current-user Start entry on an unelevated installed GU
 
 - Rust library tests pass, including generation reuse, clock/freshness transitions, archive budget and reply lifetime, independent detail lookup, queued persistence, failed writes, and blocked storage.
 - Frontend behavior, protocol decoding, type checks, lint, and production build pass. Browser accessibility checks cover selection switching, same-ID reselection, filtered Explore to Overview, process exit, and compact detail. These are layout checks.
+- All 26 browser accessibility checks pass after making the icon fixture choose its donor from the canonical Overview ranking. The direct, matched, and fallback icon assertions remain intact.
 - Windows-only launch and COM code passed a Windows-target metadata check. The installed-image wrapper was stubbed for that check; it does not establish a full Windows build or execution.
 - The Rust audit reports zero vulnerabilities and matches the unchanged 17-warning review baseline. Targeted updates cover h2, event-listener, and a yanked chacha20 version.
 - npm still reports one high and five moderate findings. Updated nanoid and PostCSS versions are the newest compatible versions currently available from the registry, while the advisories name newer unavailable fixes. The audit remains failing and retains its JSON report.
@@ -56,3 +57,5 @@ To capture a native run, select one-second sampling and the intended AI preferen
 Fresh native candidate screenshots, keyboard investigation, and interactive performance evidence remain open. The configured Windows and Linux proof hosts timed out. This Mac's Darwin 27 process-network layout is unqualified; its expected behavior is explicit unavailable process traffic while other telemetry continues. No new NStat layout was enabled.
 
 All three package builds and exact-byte installed lifecycle evidence remain release gates. The repository currently lacks the independent reviewer and platform signing credentials required by its release controls. Those controls remain in force. Building a candidate or passing source tests does not complete public release verification.
+
+macOS 27 exposed a compiler-tooling failure before application compilation: the loader rejects a stripped proc-macro library's misaligned string table, matching [Rust issue 157750](https://github.com/rust-lang/rust/issues/157750). The release profile now preserves build-tool metadata. The same release compilation passes with that override; application optimization settings are unchanged.

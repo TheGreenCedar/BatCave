@@ -120,3 +120,8 @@ png = "0.18.1"
 tauri = { version = "2.11.5", features = ["test"] }
 tempfile = "3.27.0"
 ts-rs = "12.0.1"
+
+# macOS 27 rejects misaligned stripped proc-macro dylibs (rust-lang/rust#157750).
+# Build tools are not shipped; keep their metadata without changing app codegen.
+[profile.release.build-override]
+strip = "none"

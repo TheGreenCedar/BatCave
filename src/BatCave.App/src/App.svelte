@@ -678,7 +678,9 @@
   }
 
   function seedAccessibilityProcessIcon(next: RuntimeSnapshot): void {
-    const donor = next.processes.find(
+    const donor = next.overview_rows.flatMap((row) =>
+      row.kind === "process" ? [row.detail.process] : [],
+    ).find(
       (process) => processIconFamily(process.name) === "fixtureworker",
     );
     if (donor) nativeProcessIcons = { [processIconKey(donor)]: fixtureProcessIcon };
