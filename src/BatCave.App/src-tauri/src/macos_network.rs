@@ -45,14 +45,13 @@ const NSTAT_MSG_TYPE_GET_UPDATE: u32 = 1007;
 const NSTAT_MSG_TYPE_SRC_ADDED: u32 = 10_001;
 const NSTAT_MSG_TYPE_SRC_REMOVED: u32 = 10_002;
 const NSTAT_MSG_TYPE_SRC_DESCRIPTION: u32 = 10_003;
+const NSTAT_MSG_TYPE_SRC_COUNTS: u32 = 10_004;
 const NSTAT_MSG_TYPE_SRC_UPDATE: u32 = 10_006;
 
 const NSTAT_MSG_HDR_FLAG_CONTINUATION: u16 = 1 << 1;
 const NSTAT_MSG_HDR_FLAG_CLOSED_AFTER_DROP: u16 = 1 << 3;
 const NSTAT_MSG_HDR_FLAG_CLOSING: u16 = 1 << 2;
 const NSTAT_EVENT_SRC_PREV_EVENT_DISCARDED: u64 = 0x8000_0000;
-const NSTAT_FILTER_PROVIDER_NOZEROBYTES: u64 = 0x0040_0000;
-const NSTAT_FILTER_PROVIDER_NOZERODELTAS: u64 = 0x0080_0000;
 const NSTAT_SRC_REF_ALL: u64 = u64::MAX;
 
 const NSTAT_PROVIDER_TCP_KERNEL: u32 = 2;
@@ -775,6 +774,10 @@ fn handle_datagram(
                 )?;
             }
             NSTAT_MSG_TYPE_SRC_ADDED | NSTAT_MSG_TYPE_SRC_DESCRIPTION => {}
+            // Before the first GET_UPDATE, XNU can close a source using the
+            // older counts-only notification. It has no process descriptor and
+            // belongs to baseline history. It must never qualify or bill bytes.
+            NSTAT_MSG_TYPE_SRC_COUNTS if !engine.baseline_complete => {}
             _ => {
                 return Err(format!(
                     "nstat_message_type_unexpected:{}",
@@ -915,9 +918,9 @@ fn add_all_request(provider: u32) -> Vec<u8> {
         56,
         0,
     );
-    request.extend_from_slice(
-        &(NSTAT_FILTER_PROVIDER_NOZEROBYTES | NSTAT_FILTER_PROVIDER_NOZERODELTAS).to_le_bytes(),
-    );
+    // Request all cumulative counters. XNU can turn a zero-byte filter's EAGAIN
+    // on close into CLOSED_AFTER_DROP, indistinguishable from lost final counts.
+    request.extend_from_slice(&0_u64.to_le_bytes());
     request.extend_from_slice(&0_u64.to_le_bytes());
     request.extend_from_slice(&provider.to_le_bytes());
     request.extend_from_slice(&0_i32.to_le_bytes());
@@ -1027,6 +1030,7 @@ fn validate_message_shape(bytes: &[u8], header: MessageHeader) -> Result<(), Str
                 && read_u32(bytes, 28)? == 0
         }
         NSTAT_MSG_TYPE_SRC_REMOVED => bytes.len() == 24,
+        NSTAT_MSG_TYPE_SRC_COUNTS => bytes.len() == 144,
         NSTAT_MSG_TYPE_SRC_DESCRIPTION => {
             // Subscriptions can emit descriptions before the first GET_UPDATE.
             // They carry no counts and cannot qualify or complete an interval.
@@ -1212,6 +1216,11 @@ mod tests {
         assert_eq!(read_u32(&add, 8).unwrap(), NSTAT_MSG_TYPE_ADD_ALL_SRCS);
         assert_eq!(read_u16(&add, 12).unwrap(), 56);
         assert_eq!(read_u32(&add, 32).unwrap(), NSTAT_PROVIDER_TCP_KERNEL);
+        assert_eq!(
+            read_u64(&add, 16).unwrap(),
+            0,
+            "zero-byte close updates must not be filtered into CLOSED_AFTER_DROP"
+        );
 
         let query = update_request(77, true);
         assert_eq!(query.len(), 24);

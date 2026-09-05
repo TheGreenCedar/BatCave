@@ -249,3 +249,30 @@ fn unknown_source_messages_extensions_and_malformed_envelopes_fail_before_comple
         assert!(!harness.shared.lock().unwrap().baseline_complete);
     }
 }
+
+#[test]
+fn subscription_counts_are_baseline_history_and_cannot_be_accepted_as_live_updates() {
+    let mut harness = WireHarness::new(ProtocolQualification::qualified_fixture());
+    let mut counts = message(10_004, 0, 0x0004, 144);
+    counts[16..24].copy_from_slice(&27_u64.to_le_bytes());
+    counts[40..48].copy_from_slice(&999_u64.to_le_bytes());
+    harness.feed(&counts, -1).unwrap();
+    assert!(!harness.engine.baseline_complete);
+    assert!(harness.engine.sources.is_empty());
+    assert!(harness
+        .shared
+        .lock()
+        .unwrap()
+        .interval_bytes_by_process
+        .is_empty());
+    harness.query(201);
+    harness.feed(&message(0, 201, 0, 16), -1).unwrap();
+    assert!(harness.engine.baseline_complete);
+    assert!(harness.feed(&counts, -1).is_err());
+    assert!(harness
+        .shared
+        .lock()
+        .unwrap()
+        .interval_bytes_by_process
+        .is_empty());
+}
