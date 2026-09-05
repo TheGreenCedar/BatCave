@@ -6,7 +6,7 @@ use crate::{
         encode::encode_workloads,
         types::{
             LimitationEntry, MeasurementDescriptor, MetricQualityV4, MetricSemantic,
-            MetricSourceV4, NetworkScopeV4, WorkloadDetailV4,
+            MetricSourceV4, NetworkScopeV4, ProcessIdentityStabilityV4, WorkloadDetailV4,
         },
     },
 };
@@ -82,6 +82,7 @@ pub struct WorkloadInspection {
 struct Entry {
     bundle_id: u64,
     last_sample_seq: u64,
+    identity_stability: ProcessIdentityStabilityV4,
     history: VecDeque<WorkloadHistoryPoint>,
     truncated: bool,
 }
@@ -343,6 +344,11 @@ impl WorkloadArchive {
             .map(|row| {
                 (
                     stable_id(row).to_string(),
+                    match row {
+                        WorkloadDetailV4::Process(detail) => detail.identity_stability,
+                        // Group identities encode their verified process membership.
+                        WorkloadDetailV4::Group(_) => ProcessIdentityStabilityV4::Stable,
+                    },
                     history_point(row, &catalog, snapshot.settings.sample_interval_ms),
                 )
             })
@@ -356,7 +362,7 @@ impl WorkloadArchive {
                 bytes,
             },
         );
-        for (id, mut point) in points {
+        for (id, identity_stability, mut point) in points {
             let mut entry = if let Some(mut previous) = self.entries.remove(&id) {
                 self.allocated -= entry_heap(&id, &previous);
                 self.release_bundle(previous.bundle_id);
@@ -370,11 +376,13 @@ impl WorkloadArchive {
                 });
                 previous.bundle_id = bundle_id;
                 previous.last_sample_seq = point.sample_seq;
+                previous.identity_stability = identity_stability;
                 previous
             } else {
                 Entry {
                     bundle_id,
                     last_sample_seq: point.sample_seq,
+                    identity_stability,
                     history: VecDeque::new(),
                     truncated: self.evicted.contains(&id),
                 }
@@ -445,7 +453,15 @@ impl WorkloadArchive {
             let oldest = self
                 .entries
                 .iter()
-                .min_by_key(|(_, entry)| entry.last_sample_seq)
+                .min_by_key(|(_, entry)| {
+                    let expired_publication = matches!(
+                        entry.identity_stability,
+                        ProcessIdentityStabilityV4::Publication
+                    ) && entry.last_sample_seq < self.sample_seq;
+                    // Unknown-start identities cannot accumulate history across samples;
+                    // reclaim their obsolete observations before generation-bound history.
+                    (!expired_publication, entry.last_sample_seq)
+                })
                 .map(|(id, _)| id.clone());
             if let Some(id) = oldest {
                 self.evict_id(&id);
@@ -1220,6 +1236,91 @@ mod tests {
         assert!(unknown.catalog.is_none());
         assert!(unknown.history.is_empty());
         assert!(archive.inspect("x", 73).is_err());
+    }
+    #[test]
+    fn publication_identity_churn_preserves_verified_exit_history_under_pressure() {
+        let mut snapshot = fixture();
+        let mut verified = snapshot.processes[0].clone();
+        verified.pid = "90001".into();
+        verified.parent_pid = None;
+        verified.start_time_ms = 1_000;
+        verified.name = "verified-worker".into();
+        verified.exe = "/usr/bin/verified-worker".into();
+        let id = "process:90001:1000";
+        let mut archive = WorkloadArchive::with_budget(2 * 1024 * 1024);
+        let mut sample = |archive: &mut WorkloadArchive, processes: &[ProcessSample]| {
+            snapshot.sample_seq += 1;
+            snapshot.publication_seq += 1;
+            snapshot.sampled_at_ms = snapshot.sampled_at_ms.map(|time| time + 1_000);
+            snapshot.published_at_ms = snapshot.sampled_at_ms.unwrap();
+            archive.begin_ingress(processes).unwrap();
+            let rows = crate::runtime_store::shape_full_process_view(processes);
+            archive.observe(&snapshot, &rows, true).unwrap();
+            assert!(
+                archive.retained_bytes() + archive.ingress_reserved + archive.budget / 8
+                    <= archive.budget
+            );
+            drop(rows);
+            archive.end_ingress();
+        };
+        for _ in 0..40 {
+            sample(&mut archive, std::slice::from_ref(&verified));
+        }
+        let initial = archive.inspect(id, 72).unwrap();
+        assert_eq!(initial.status, InspectionStatus::Current);
+        assert_eq!(initial.history.len(), 40);
+        let last_verified_time = initial.history.last().unwrap().sampled_at_ms;
+        archive.acknowledge(&initial.response_token).unwrap();
+        let unknown = (0..24)
+            .map(|index| {
+                let mut process = verified.clone();
+                process.pid = (91_000 + index).to_string();
+                process.start_time_ms = 0;
+                process.name = format!("unknown-worker-{index}");
+                process.exe = format!("/usr/bin/unknown-worker-{index}");
+                process
+            })
+            .collect::<Vec<_>>();
+        for _ in 0..30 {
+            sample(&mut archive, &unknown);
+            let retained = archive.inspect(id, 72).unwrap();
+            assert_eq!(
+                retained.status,
+                InspectionStatus::Exited,
+                "obsolete publication-only observations must yield before verified history"
+            );
+            assert_eq!(retained.history.len(), 40);
+            assert_eq!(
+                retained.history.last().unwrap().sampled_at_ms,
+                last_verified_time
+            );
+            archive.acknowledge(&retained.response_token).unwrap();
+            let current = archive
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.last_sample_seq == archive.sample_seq)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                current.len(),
+                unknown.len(),
+                "current unknown-start rows remain inspectable"
+            );
+            for (id, entry) in current {
+                assert_eq!(
+                    entry.history.len(),
+                    1,
+                    "publication identities never join histories"
+                );
+                let inspected = archive.inspect(id, 72).unwrap();
+                assert_eq!(inspected.status, InspectionStatus::Current);
+                archive.acknowledge(&inspected.response_token).unwrap();
+            }
+        }
+        assert!(
+            !archive.evicted.is_empty(),
+            "the fixture must reach actual eviction pressure"
+        );
+        assert!(archive.retained_bytes() + archive.budget / 8 <= archive.budget);
     }
     #[test]
     fn timestamps_cadence_gaps_quality_and_zero_survive_retention() {
