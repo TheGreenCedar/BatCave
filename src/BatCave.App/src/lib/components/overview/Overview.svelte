@@ -4,8 +4,8 @@
   import Memory from "phosphor-svelte/lib/Memory";
   import WifiHigh from "phosphor-svelte/lib/WifiHigh";
   import MiniChart from "../../MiniChart.svelte";
-  import { formatBytes, formatPercent, formatRate } from "../../format";
-  import type { OverviewStatus } from "../../overview";
+  import { displayProcessName } from "../../cockpit";
+  import { OverviewRanking, overviewMetricValue, type OverviewStatus } from "../../overview";
   import {
     resolvedProcessIcon,
     type ResolvedProcessIcon,
@@ -14,31 +14,49 @@
   import {
     processRowSecondaryLabel,
     processViewRowKey,
-    processViewRowMetrics,
     type ProcessIconKind,
   } from "../../process";
   import type { ProcessViewRow } from "../../types";
   import type { DetailMode, ResourceSummaryOption } from "../metrics/types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
 
-  export let status: OverviewStatus;
+  export let status: OverviewStatus = {
+    headline: "Waiting for measurements.",
+    summary: "Waiting for the first local system sample.",
+    tone: "neutral",
+    attention: null,
+    primaryResource: "cpu",
+  };
   export let resources: ResourceSummaryOption[] = [];
   export let leadingRows: ProcessViewRow[] = [];
   export let processIcons: ResolvedProcessIconCatalog = {};
-  export let primaryCpuValue = 0;
-  export let primaryCpuHistory: number[] = [];
-  export let primaryCpuStroke = "#2aa88f";
-  export let primaryCpuFill = "rgba(42, 168, 143, 0.12)";
-  export let leadingCpuName: string | null = null;
-  export let leadingCpuValue: string | null = null;
-  export let leadingCpuNarrativeGenerated = false;
-  export let leadingCpuIconKind: ProcessIconKind = "process";
-  export let leadingCpuIconSrc: string | undefined = undefined;
-  export let leadingCpuIconMatched = false;
-  export let leadingCpuSelection: string | null = null;
+  export let primaryMetric: ResourceSummaryOption | undefined = undefined;
+  export let leadingName: string | null = null;
+  export let leadingValue: string | null = null;
+  export let leadingNarrativeGenerated = false;
+  export let leadingIconKind: ProcessIconKind = "process";
+  export let leadingIconSrc: string | undefined = undefined;
+  export let leadingIconMatched = false;
+  export let leadingSelection: string | null = null;
+  export let onInspectResource: () => void;
+  export let onOpenDiagnostics: () => void;
   export let onSelectResource: (mode: DetailMode) => void;
   export let onSelectWorkload: (selection: string) => void;
   export let onOpenExplore: () => void;
+
+  const ranking = new OverviewRanking();
+  let displayRows: ProcessViewRow[] = [];
+  $: displayRows = ranking.update(status.primaryResource, leadingRows);
+
+  function setInteraction(source: "pointer" | "focus", active: boolean): void {
+    displayRows = ranking.setInteraction(source, active);
+  }
+
+  function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
+    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+      setInteraction("focus", false);
+    }
+  }
 
   function resourceIcon(mode: DetailMode) {
     if (mode === "cpu") return Cpu;
@@ -64,21 +82,7 @@
   }
 
   function rowLabel(row: ProcessViewRow): string {
-    return row.kind === "group" ? row.detail.label : row.detail.process.name;
-  }
-
-  function memoryLabel(row: ProcessViewRow): string {
-    return formatBytes(processViewRowMetrics(row).memoryBytes);
-  }
-
-  function ioLabel(row: ProcessViewRow): string {
-    const ioBps = processViewRowMetrics(row).ioBps;
-    return Number.isFinite(ioBps) ? formatRate(ioBps) : "Unavailable";
-  }
-
-  function networkLabel(row: ProcessViewRow): string {
-    const networkBps = processViewRowMetrics(row).networkBps;
-    return Number.isFinite(networkBps) ? formatRate(networkBps) : "Unavailable";
+    return displayProcessName(row.kind === "group" ? row.detail.label : row.detail.process.name);
   }
 
   function secondaryLabel(row: ProcessViewRow): string | null {
@@ -92,50 +96,47 @@
 <main class="overview-view" aria-labelledby="overview-heading">
   <section class="overview-hero">
     <div class="overview-status-copy">
-      <span class={`overview-state tone-${status.tone}`}>System overview</span>
       <h2 id="overview-heading">{status.headline}</h2>
       <p>{status.summary}</p>
     </div>
 
-    <div class="overview-primary-metric" aria-label={`Total CPU ${formatPercent(primaryCpuValue)}`}>
-      <div class="overview-primary-heading">
-        <span>Total CPU</span>
-        <strong>{formatPercent(primaryCpuValue)}</strong>
+    {#if primaryMetric}
+      <div class="overview-primary-metric" aria-label={`${primaryMetric.label} ${primaryMetric.value}. ${primaryMetric.statusLabel}`}>
+        <div class="overview-primary-heading">
+          <span>{primaryMetric.label}</span>
+          <strong class:text-readout={!/^[0-9]/.test(primaryMetric.value)}>{primaryMetric.value}</strong>
+        </div>
+        <MiniChart values={primaryMetric.values} max={primaryMetric.max} stroke={primaryMetric.stroke} fill={primaryMetric.fill} />
+        <div class="overview-primary-actions">
+          <span class={`overview-metric-state tone-${status.tone}`}>{primaryMetric.shortStatusLabel}</span>
+          <button type="button" onclick={onInspectResource}>Inspect resource</button>
+        </div>
       </div>
-      <MiniChart
-        values={primaryCpuHistory}
-        max={100}
-        stroke={primaryCpuStroke}
-        fill={primaryCpuFill}
-      />
-      <span class={`overview-metric-state tone-${status.tone}`}>
-        {status.pressuredResource === "cpu" ? "Needs attention" : status.tone === "healthy" ? "Normal" : "Current"}
-      </span>
-    </div>
+    {/if}
 
     <div class="overview-contributor">
-      <span>Top CPU contributor</span>
-      {#if leadingCpuName}
+      <span>{status.primaryResource === "disk" ? "Process attribution" : `Leading ${status.primaryResource} process`}</span>
+      {#if leadingName}
         <button
           type="button"
           onclick={() =>
-            leadingCpuSelection ? onSelectWorkload(leadingCpuSelection) : onOpenExplore()}
+            leadingSelection ? onSelectWorkload(leadingSelection) : onOpenExplore()}
         >
           <ProcessIcon
-            kind={leadingCpuIconKind}
-            src={leadingCpuIconSrc}
-            matched={leadingCpuIconMatched}
+            kind={leadingIconKind}
+            src={leadingIconSrc}
+            matched={leadingIconMatched}
           />
           <span>
-            <strong>{leadingCpuName}</strong>
-            <small>{leadingCpuValue ?? "Current contribution available in Explore"}</small>
-            {#if leadingCpuNarrativeGenerated}
+            <strong title={leadingName}>{leadingName}</strong>
+            <small>{leadingValue ?? "Current contribution available in Explore"}</small>
+            {#if leadingNarrativeGenerated}
               <small class="narrative-origin">Locally generated explanation</small>
             {/if}
           </span>
         </button>
       {:else}
-        <p>No compatible process attribution is available for this sample.</p>
+        <p>{leadingValue ?? "No compatible process attribution is available for this sample."}</p>
       {/if}
     </div>
   </section>
@@ -145,16 +146,17 @@
       {@const Icon = resourceIcon(resource.mode)}
       <button
         class="overview-resource-card"
-        class:pressured={status.pressuredResource === resource.mode}
+        class:active={status.primaryResource === resource.mode}
         type="button"
         data-resource-mode={resource.mode}
-        aria-label={`${resource.ariaLabel}. ${resource.value}. ${resource.statusLabel}`}
+        aria-pressed={status.primaryResource === resource.mode}
+        aria-label={`Select ${resource.label}. ${resource.value}. ${resource.statusLabel}`}
         onclick={() => onSelectResource(resource.mode)}
       >
         <span class={`resource-icon resource-${resource.mode}`}><Icon size={24} weight="regular" aria-hidden="true" /></span>
         <span class="resource-card-copy">
           <span>{resource.label}</span>
-          <small>{resource.supportingLabel}</small>
+          <small>{resource.supportingLabel}: {resource.supportingValue}</small>
         </span>
         <span class="resource-card-chart"><MiniChart values={resource.values} max={resource.max} stroke={resource.stroke} fill={resource.fill} /></span>
         <span class="resource-card-value">
@@ -168,25 +170,27 @@
   {#if status.attention}
     <section class={`overview-attention tone-${status.attention.tone}`} aria-labelledby="overview-attention-heading">
       <div>
-        <span>Attention</span>
         <h3 id="overview-attention-heading">{status.attention.title}</h3>
         <p>{status.attention.detail}</p>
       </div>
-      <button type="button" onclick={onOpenExplore}>Review in Explore</button>
+      <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
     </section>
   {/if}
 
   <section class="overview-workloads" aria-labelledby="leading-workloads-heading">
     <header>
       <div>
-        <h3 id="leading-workloads-heading">Worth a look</h3>
-        <p>These workloads are leading the current ranking.</p>
+        <h3 id="leading-workloads-heading">Leading workloads</h3>
+        <p>Sorted by {status.primaryResource === "disk" ? "process read/write I/O" : status.primaryResource === "cpu" ? "CPU use per core" : status.primaryResource === "memory" ? "resident memory" : "process network traffic"} across the sample.</p>
       </div>
       <button type="button" onclick={onOpenExplore}>View all in Explore</button>
     </header>
-    <div class="overview-workload-list">
-      {#each leadingRows as row (processViewRowKey(row))}
-        {@const metrics = processViewRowMetrics(row)}
+    <div class="overview-workload-list" role="group" aria-label="Leading workloads"
+      onpointerenter={() => setInteraction("pointer", true)}
+      onpointerleave={() => setInteraction("pointer", false)}
+      onfocusin={() => setInteraction("focus", true)}
+      onfocusout={handleFocusOut}>
+      {#each displayRows as row (processViewRowKey(row))}
         {@const resolvedIcon = rowIcon(row)}
         <button
           type="button"
@@ -200,17 +204,17 @@
             matched={resolvedIcon.origin === "name_match"}
           />
           <span class="overview-workload-name">
-            <strong>{rowLabel(row)}</strong>
+            <strong title={row.kind === "process" ? row.detail.process.exe || row.detail.process.name : row.detail.label}>{rowLabel(row)}</strong>
             {#if secondaryLabel(row)}<small>{secondaryLabel(row)}</small>{/if}
           </span>
-          <span><small>CPU</small><strong>{formatPercent(metrics.cpuPercent)}</strong></span>
-          <span><small>Memory</small><strong>{memoryLabel(row)}</strong></span>
-          <span class="overview-workload-io"><small>I/O</small><strong>{ioLabel(row)}</strong></span>
-          <span class="overview-workload-network"><small>Network</small><strong>{networkLabel(row)}</strong></span>
-          <span class="overview-workload-link">View in Explore</span>
+          <span><small>CPU / core</small><strong>{overviewMetricValue(row, "cpu")}</strong></span>
+          <span><small>Memory</small><strong>{overviewMetricValue(row, "memory")}</strong></span>
+          <span class="overview-workload-io"><small>I/O</small><strong>{overviewMetricValue(row, "disk")}</strong></span>
+          <span class="overview-workload-network"><small>Network</small><strong>{overviewMetricValue(row, "network")}</strong></span>
+          <span class="overview-workload-link" aria-hidden="true">Inspect</span>
         </button>
       {:else}
-        <p class="overview-empty">No workloads are available in this sample.</p>
+        <p class="overview-empty">No workloads have an available {status.primaryResource === "disk" ? "read/write I/O" : status.primaryResource} measurement in this sample.</p>
       {/each}
     </div>
   </section>

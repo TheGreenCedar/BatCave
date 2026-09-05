@@ -5,6 +5,7 @@ import "./styles/base.css";
 import "./styles/redesign.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import { installDesktopProbe } from "./lib/desktopProbe";
 
 const target = document.getElementById("app");
 
@@ -13,3 +14,4 @@ if (!target) {
 }
 
 export default mount(App, { target });
+void installDesktopProbe();

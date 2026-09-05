@@ -3244,8 +3244,9 @@ button:disabled {
   background: var(--accent-muted);
 }
 
-.overview-resource-card.pressured {
-  background: var(--warning-soft);
+.overview-resource-card.active {
+  background: var(--accent-muted);
+  box-shadow: inset 3px 0 var(--accent);
 }
 
 .resource-icon {
@@ -3947,4 +3948,64 @@ button:disabled {
   .overview-workload-list button > span:nth-of-type(3) {
     display: none;
   }
+}
+
+/* Keep workload names readable when metric quality needs more room. */
+.overview-contributor strong,
+.overview-contributor small,
+.overview-workload-name strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.overview-primary-heading strong.text-readout {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.overview-primary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.overview-primary-actions .overview-metric-state {
+  margin-top: 0;
+}
+
+.overview-primary-actions button {
+  padding: 8px 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: var(--text-xs);
+}
+
+.overview-workload-list
+  > button
+  > span:not(.overview-workload-name):not(.overview-workload-link)
+  > strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.process-name-stack > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.detail-freshness {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  color: var(--warning-text);
+  background: var(--warning-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
 }

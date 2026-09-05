@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
-import { buildResourceBrief, resolveContributorProcess } from "../src/lib/cockpit.ts";
+import {
+  buildResourceBrief,
+  displayProcessName,
+  resolveContributorProcess,
+} from "../src/lib/cockpit.ts";
 import { nativeLifecycleDiagnosticLabels } from "../src/lib/diagnostics.ts";
 import {
   displayMetricValue,
@@ -168,6 +172,15 @@ test("native lifecycle diagnostics do not call paused stale or missing samples c
   assert.equal(nativeLifecycleDiagnosticLabels(fallback, "native").standardFallback, "No sample");
 });
 
+test("workload display names preserve useful names while dropping executable paths", () => {
+  assert.equal(
+    displayProcessName("C:\\Program Files\\Microsoft VS Code\\Code.exe"),
+    "Visual Studio Code",
+  );
+  assert.equal(displayProcessName("/Applications/Codex.app/Contents/MacOS/Codex"), "Codex");
+  assert.equal(displayProcessName("Code Helper (Renderer)"), "Code Helper (Renderer)");
+});
+
 test("selected resource brief keeps machine and process CPU scopes explicit", () => {
   const brief = buildResourceBrief(
     resourceSnapshot("Code.exe"),
@@ -222,6 +235,7 @@ test("backend contributor identity disambiguates duplicate display names", () =>
   const duplicate = process({ pid: "43", name: "worker", cpu_percent: 5 });
   snapshot.processes = [winner, duplicate];
   snapshot.process_view_rows = [processRow(winner), processRow(duplicate)];
+  snapshot.overview_rows = snapshot.process_view_rows;
   snapshot.total_process_count = 2;
   snapshot.process_contributors.cpu_coverage = { available: 2, total: 2 };
 
@@ -260,6 +274,7 @@ test("off-list contributor identity is never resolved by display name", () => {
   const snapshot = resourceSnapshot("worker");
   snapshot.processes = [process({ pid: "99", name: "worker", cpu_percent: 99 })];
   snapshot.process_view_rows = [processRow(snapshot.processes[0])];
+  snapshot.overview_rows = snapshot.process_view_rows;
 
   const brief = buildResourceBrief(
     snapshot,
@@ -275,6 +290,20 @@ test("off-list contributor identity is never resolved by display name", () => {
     "Contributor value is outside the current workload view",
   );
   assert.equal(resolveContributorProcess(snapshot, brief.leadingProcessId), null);
+});
+
+test("Overview resolves the canonical contributor after Explore is filtered", () => {
+  const snapshot = resourceSnapshot("canonical winner");
+  snapshot.process_view_rows = [];
+  snapshot.processes = [];
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+  assert.equal(brief.contributorStatusLabel, "40% of one core");
+  assert.equal(resolveContributorProcess(snapshot, brief.leadingProcessId)?.pid, "42");
 });
 
 test("physical disk summary rejects process I/O as compatible attribution", () => {
@@ -396,7 +425,7 @@ test("Linux first system sample keeps CPU disk network and core history pending"
       { memoryPercent: 20, diskRate: 8 * 1024 * 1024, networkRate: 4 * 1024 * 1024 },
       "live",
     );
-    assert.equal(brief.valueLabel, "Waiting", `${mode} readout`);
+    assert.equal(brief.valueLabel, "Pending", `${mode} readout`);
     assert.equal(brief.confidence, "Unavailable", `${mode} confidence`);
     assert.match(brief.headline, /no trusted sample/, `${mode} headline`);
   }
@@ -409,7 +438,7 @@ test("Linux first system sample keeps CPU disk network and core history pending"
   assert.equal(aggregateHeldCoreQuality?.quality, "held");
   assert.equal(
     displayMetricValue(0, aggregateHeldCoreQuality, snapshot.sampled_at_ms, formatPercent),
-    "Waiting",
+    "Pending",
   );
   assert.deepEqual(nextMetricHistory([12], 90, aggregateHeldCoreQuality, 30), []);
   snapshot.system.quality!.cpu = { quality: "unavailable", source: "procfs" };
@@ -460,7 +489,7 @@ test("overview states cannot turn missing or retained samples into a reassuring 
     "live",
   );
   assert.equal(limited.valueLabel, "90%");
-  assert.equal(limited.stateLabel, "Partial");
+  assert.equal(limited.stateLabel, "Limited");
   assert.equal(limited.confidence, "Limited");
 
   const degraded = resourceSnapshot(null);
@@ -495,6 +524,8 @@ test("overview states cannot turn missing or retained samples into a reassuring 
 });
 
 test("unavailable resource samples clear trusted history and its current window label", () => {
+  assert.deepEqual(nextMetricHistory([12], 0, undefined, 30), []);
+  assert.equal(resourceHistoryWindowLabel(12, 1000, undefined, true), "No trusted history");
   assert.deepEqual(
     nextMetricHistory([12, 18], 0, { quality: "unavailable", source: "runtime" }, 30),
     [],
@@ -549,9 +580,9 @@ test("unavailable metrics remain explicit in compact and detailed labels", () =>
   assert.equal(metricQualityShortLabel(unavailable, "Aggregate"), "Unavailable");
   assert.equal(metricQualityLabel(unavailable, "Aggregate"), "Unavailable / runtime");
   assert.equal(displayMetricValue(0, unavailable, 1, String), "Unavailable");
-  assert.equal(displayMetricValue(0, { quality: "held" }, 1, String), "Waiting");
+  assert.equal(displayMetricValue(0, { quality: "held" }, 1, String), "Pending");
   assert.equal(displayMetricValue(0, { quality: "native" }, 1, String), "0");
-  assert.equal(displayMetricValue(0, { quality: "native" }, null, String), "Unavailable");
+  assert.equal(displayMetricValue(0, { quality: "native" }, null, String), "No sample");
 });
 
 test("Linux first-sample and denied Windows rows never publish placeholder CPU or I/O zeros", () => {
@@ -815,7 +846,7 @@ test("native high network activity is never described as normal", () => {
   assert.equal(processTrustLabel(networked), "Native");
   assert.equal(
     processFindingLabel(networked, 0, networkRate, "Working set"),
-    "High network activity relative to other workloads.",
+    "Process network traffic is 100 MB/s.",
   );
 });
 
@@ -882,7 +913,7 @@ test("group findings include native network activity and explicit network limita
 
   const nativeHigh = structuredClone(row.detail);
   nativeHigh.network_bps = 2 * 1024 * 1024;
-  assert.equal(groupFindingLabel(nativeHigh), "Aggregate network use is high right now.");
+  assert.equal(groupFindingLabel(nativeHigh), "Aggregate network traffic is 2.0 MB/s.");
 
   const held = structuredClone(nativeHigh);
   held.network_bps = 0;
@@ -902,7 +933,7 @@ test("group findings include native network activity and explicit network limita
   partial.coverage.network = { available: 1, total: 2 };
   assert.equal(
     groupFindingLabel(partial),
-    "Aggregate network use is high right now. Coverage is limited to 1 of 2 processes.",
+    "Aggregate network traffic is 2.0 MB/s. Coverage is limited to 1 of 2 processes.",
   );
 
   const partialLow = structuredClone(partial);
@@ -916,7 +947,7 @@ test("group findings include native network activity and explicit network limita
   estimated.quality.network = { quality: "estimated", source: "process_aggregate" };
   assert.equal(
     groupFindingLabel(estimated),
-    "Aggregate network use is high right now. This aggregate is estimated.",
+    "Aggregate network traffic is 2.0 MB/s. This aggregate is estimated.",
   );
 });
 
@@ -1049,6 +1080,9 @@ function resourceSnapshot(contributor: string | null): RuntimeSnapshot {
   const contributorProcess = contributor ? process({ name: contributor }) : null;
   snapshot.processes = contributorProcess ? [contributorProcess] : [];
   snapshot.process_view_rows = contributorProcess ? [processRow(contributorProcess)] : [];
+  snapshot.overview_rows = snapshot.process_view_rows;
+  snapshot.health.freshness = "live";
+  snapshot.health.reason_codes = [];
   snapshot.total_process_count = contributorProcess ? 1 : 0;
   snapshot.system.process_count = snapshot.total_process_count;
   snapshot.process_contributors.cpu_process_id = contributorProcess

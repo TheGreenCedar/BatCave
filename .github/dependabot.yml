@@ -12,3 +12,21 @@ updates:
         patterns:
           - "*"
     open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /src/BatCave.App
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      frontend-compatible:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+  - package-ecosystem: cargo
+    directory: /src/BatCave.App/src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      rust-compatible:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5

@@ -29,7 +29,10 @@ test("Swift provider weak-links guarded Foundation Models APIs", () => {
   assert.match(swift, /SystemLanguageModel\.default\.availability/u);
   assert.match(swift, /LanguageModelSession/u);
   assert.match(swift, /DynamicGenerationSchema/u);
-  assert.match(swift, /maximumNarrativeCharacters = 180/u);
+  assert.match(swift, /candidateIDs/u);
+  assert.match(swift, /validateSelection/u);
+  assert.match(swift, /name: "explanation_id"/u);
+  assert.doesNotMatch(swift, /normalizeOneSentence|name: "sentence"/u);
   assert.doesNotMatch(swift, /SystemLanguageModel\s*\(\s*adapter:/u);
   assert.doesNotMatch(swift, /URLSession|Network\.framework|com\.apple\.security\.network/u);
   assert.doesNotMatch(swift, /subject_stable_id|subjectStableID/u);

@@ -1,3 +1,4 @@
+import { RUNTIME_PROTOCOL_VERSION } from "../src/lib/generated/runtime-protocol-v4.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
@@ -10,7 +11,7 @@ export const groupRowCount = groupedProcessCount / groupSize;
 export const minimumSizeReduction = 0.5;
 export const maximumTimingRatio = 3;
 
-const productionFixtureUrl = new URL("./fixtures/runtime-snapshot.v3.json", import.meta.url);
+const productionFixtureUrl = new URL("./fixtures/runtime-snapshot.v4.json", import.meta.url);
 const canonicalV2 = JSON.parse(
   readFileSync(new URL("./fixtures/runtime-snapshot.v2.json", import.meta.url), "utf8"),
 ) as JsonObject;
@@ -37,7 +38,7 @@ export function loadProductionFixture(fixturePath?: string): ProductionFixture {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Unable to read the production v3 protocol fixture at ${resolvedPath}: ${reason}. ` +
+      `Unable to read the production v4 protocol fixture at ${resolvedPath}: ${reason}. ` +
         "Pass --fixture <path> to a checked ProtocolEnvelope fixture if it lives elsewhere.",
     );
   }
@@ -48,12 +49,18 @@ export function loadProductionFixture(fixturePath?: string): ProductionFixture {
 
 export function assertProductionFixture(
   value: unknown,
-  source = "v3 fixture",
+  source = "production fixture",
 ): asserts value is JsonObject {
   const envelope = object(value, source);
-  assert(envelope.protocol_version === 3, `${source}: protocol_version must be 3`);
+  assert(
+    envelope.protocol_version === RUNTIME_PROTOCOL_VERSION,
+    `${source}: protocol_version must be ${RUNTIME_PROTOCOL_VERSION}`,
+  );
   const compatibility = object(envelope.compatibility, `${source}.compatibility`);
-  assert(compatibility.minimum_reader_version === 3, `${source}: minimum_reader_version must be 3`);
+  assert(
+    compatibility.minimum_reader_version === RUNTIME_PROTOCOL_VERSION,
+    `${source}: minimum_reader_version must be ${RUNTIME_PROTOCOL_VERSION}`,
+  );
 
   const event = object(envelope.event, `${source}.event`);
   assert(event.kind === "runtime_snapshot", `${source}: event.kind must be runtime_snapshot`);
@@ -130,7 +137,7 @@ export function assertProductionFixture(
   }
 }
 
-export function buildProductionV3(fixture: JsonObject, rowCount = processRowCount): JsonObject {
+export function buildProductionV4(fixture: JsonObject, rowCount = processRowCount): JsonObject {
   assert(
     rowCount >= groupSize * 5,
     "rowCount must be large enough to include representative groups",
@@ -195,6 +202,13 @@ export function buildProductionV3(fixture: JsonObject, rowCount = processRowCoun
   });
 
   payload.workloads = [...processes, ...groups];
+  // Four independent top-five lists can select twenty distinct groups.
+  const overviewGroups = groups.slice(0, 20);
+  const overviewMemberIds = new Set(overviewGroups.flatMap((group) => group.detail.member_ids));
+  payload.overview_workloads = [
+    ...overviewGroups,
+    ...processes.filter((process) => overviewMemberIds.has(process.detail.stable_id)),
+  ];
   payload.total_process_count = rowCount;
   payload.visible_process_count = rowCount;
   if (payload.settings?.query) payload.settings.query.limit = rowCount;
@@ -360,28 +374,28 @@ function sum<T>(values: T[], select: (value: T) => number): number {
 
 export function measurePayloadPair(baseline: JsonObject, candidate: JsonObject, sampleCount = 21) {
   assert(sampleCount >= 3, "sampleCount must be at least 3");
-  const payloads = { baseline_v2: baseline, production_v3: candidate };
+  const payloads = { baseline_v2: baseline, production_v4: candidate };
   const encoded = {
     baseline_v2: JSON.stringify(baseline),
-    production_v3: JSON.stringify(candidate),
+    production_v4: JSON.stringify(candidate),
   };
   const samples: Record<keyof typeof payloads, TimingSamples> = {
     baseline_v2: { stringify: [], parse: [] },
-    production_v3: { stringify: [], parse: [] },
+    production_v4: { stringify: [], parse: [] },
   };
 
   for (let iteration = 0; iteration < 3; iteration += 1) {
     JSON.stringify(baseline);
     JSON.stringify(candidate);
     JSON.parse(encoded.baseline_v2);
-    JSON.parse(encoded.production_v3);
+    JSON.parse(encoded.production_v4);
   }
 
   for (let iteration = 0; iteration < sampleCount; iteration += 1) {
     const order =
       iteration % 2 === 0
-        ? (["baseline_v2", "production_v3"] as const)
-        : (["production_v3", "baseline_v2"] as const);
+        ? (["baseline_v2", "production_v4"] as const)
+        : (["production_v4", "baseline_v2"] as const);
     for (const name of order) {
       const stringifyStart = performance.now();
       JSON.stringify(payloads[name]);
@@ -395,7 +409,7 @@ export function measurePayloadPair(baseline: JsonObject, candidate: JsonObject, 
 
   return {
     baseline_v2: measurement(encoded.baseline_v2, samples.baseline_v2),
-    production_v3: measurement(encoded.production_v3, samples.production_v3),
+    production_v4: measurement(encoded.production_v4, samples.production_v4),
   };
 }
 
@@ -423,19 +437,19 @@ function roundedPercentile(samples: number[], fraction: number): number {
 export function buildGuardrailEvidence(fixturePath?: string, sampleCount = 21) {
   const fixture = loadProductionFixture(fixturePath);
   const baseline = buildEquivalentV2();
-  const candidate = buildProductionV3(fixture.envelope);
+  const candidate = buildProductionV4(fixture.envelope);
   const measured = measurePayloadPair(baseline, candidate, sampleCount);
-  const sizeReduction = 1 - measured.production_v3.bytes / measured.baseline_v2.bytes;
+  const sizeReduction = 1 - measured.production_v4.bytes / measured.baseline_v2.bytes;
   const stringifyRatio =
-    measured.production_v3.stringify_ms.p95 / measured.baseline_v2.stringify_ms.p95;
-  const parseRatio = measured.production_v3.parse_ms.p95 / measured.baseline_v2.parse_ms.p95;
+    measured.production_v4.stringify_ms.p95 / measured.baseline_v2.stringify_ms.p95;
+  const parseRatio = measured.production_v4.parse_ms.p95 / measured.baseline_v2.parse_ms.p95;
 
   return {
     guardrail: "BatCave issue #67 production protocol payload",
-    contract_versions: { baseline: 2, production: 3 },
+    contract_versions: { baseline: 2, production: RUNTIME_PROTOCOL_VERSION },
     fixtures: {
       baseline_v2: "scripts/fixtures/runtime-snapshot.v2.json",
-      production_v3: fixture.fixturePath,
+      production_v4: fixture.fixturePath,
     },
     workload: {
       process_rows: processRowCount,
@@ -465,17 +479,17 @@ export function assertGuardrail(evidence: ReturnType<typeof buildGuardrailEviden
   const { comparison, budgets } = evidence;
   assert(
     comparison.size_reduction_percent >= budgets.minimum_size_reduction_percent,
-    `production v3 is only ${comparison.size_reduction_percent}% smaller than v2; budget is ` +
+    `production v4 is only ${comparison.size_reduction_percent}% smaller than v2; budget is ` +
       `${budgets.minimum_size_reduction_percent}%`,
   );
   assert(
     comparison.stringify_p95_ratio <= budgets.maximum_stringify_p95_ratio,
-    `production v3 stringify p95 is ${comparison.stringify_p95_ratio}x v2; budget is ` +
+    `production v4 stringify p95 is ${comparison.stringify_p95_ratio}x v2; budget is ` +
       `${budgets.maximum_stringify_p95_ratio}x`,
   );
   assert(
     comparison.parse_p95_ratio <= budgets.maximum_parse_p95_ratio,
-    `production v3 parse p95 is ${comparison.parse_p95_ratio}x v2; budget is ` +
+    `production v4 parse p95 is ${comparison.parse_p95_ratio}x v2; budget is ` +
       `${budgets.maximum_parse_p95_ratio}x`,
   );
 }

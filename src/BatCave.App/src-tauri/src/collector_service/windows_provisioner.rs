@@ -179,6 +179,14 @@ pub(crate) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, S
     native::open_protected_etw_lease_root()
 }
 
+/// Read-only authority for a current-user GUI launch entry; pins the installed image
+/// and install directories for the duration of the callback.
+pub(crate) fn with_verified_current_monitor<T>(
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    native::with_verified_current_monitor(action)
+}
+
 pub(crate) fn record_service_failure(category: &str) -> Result<(), String> {
     native::record_service_failure(category)
 }
@@ -8145,6 +8153,17 @@ mod native {
     fn verify_current_binary_path() -> Result<VerifiedServiceImage, String> {
         let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
         verify_current_binary_at(&expected_service_path(&program_files), &program_files)
+    }
+
+    pub(super) fn with_verified_current_monitor<T>(
+        action: impl FnOnce(&Path) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
+        let expected = program_files
+            .join(PRODUCT_DIRECTORY_NAME)
+            .join(MONITOR_EXECUTABLE_NAME);
+        let monitor = verify_current_binary_at(&expected, &program_files)?;
+        action(monitor.path())
     }
 
     fn verify_current_staged_binary_path() -> Result<VerifiedServiceImage, String> {

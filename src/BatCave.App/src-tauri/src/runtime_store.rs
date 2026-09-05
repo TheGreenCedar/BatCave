@@ -1,3 +1,4 @@
+use crate::background_persistence::BackgroundPersistence;
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
@@ -32,15 +33,16 @@ use crate::{
         ProcessContributorIdentity, ProcessContributorSummary, ProcessDetail, ProcessDetailKind,
         ProcessFocusMode, ProcessSample, ProcessViewRow, RuntimeAdminModeState,
         RuntimeAdminModeStatus, RuntimeCollectorServiceState, RuntimeCollectorState,
-        RuntimeEngineState, RuntimeEnvironment, RuntimeFatalError, RuntimeHealth,
-        RuntimePersistence, RuntimePersistenceState, RuntimePlatform, RuntimePrivilegedSource,
-        RuntimeProcessElevation, RuntimeQuery, RuntimeSettings, RuntimeSnapshot,
-        RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection, SystemMemoryAccounting,
-        SystemMetricsSnapshot, WarmCache,
+        RuntimeEngineState, RuntimeEnvironment, RuntimeFatalError, RuntimeFreshness, RuntimeHealth,
+        RuntimeHealthReason, RuntimePersistence, RuntimePersistenceState, RuntimePlatform,
+        RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeQuery, RuntimeSettings,
+        RuntimeSnapshot, RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection,
+        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     persistence::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
     },
+    runtime_health::evaluate_snapshot_health,
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetrySampleProvenance},
 };
@@ -68,6 +70,7 @@ const PROCESS_OTHER_IO_BASELINE_PENDING: &str =
 type SnapshotReply = mpsc::Sender<Result<Arc<RuntimeSnapshot>, String>>;
 
 struct PublishedRuntime {
+    workload_archive: Arc<Mutex<crate::workload_history::WorkloadArchive>>,
     snapshot: Arc<RuntimeSnapshot>,
     process_exe_authoritative: bool,
 }
@@ -178,13 +181,17 @@ impl RuntimeState {
     }
 
     fn from_store_with_collector(
-        store: RuntimeStore,
+        mut store: RuntimeStore,
         automatic_sampling: bool,
         collector: Option<Box<dyn RawCollector>>,
     ) -> Result<Self, String> {
+        store.persistence.start()?;
         let clock = Arc::clone(&store.clock);
         let published = Arc::new(RwLock::new(PublishedRuntime {
             snapshot: Arc::new(store.snapshot.clone()),
+            workload_archive: Arc::new(Mutex::new(
+                crate::workload_history::WorkloadArchive::default(),
+            )),
             process_exe_authoritative: store.live_process_snapshot,
         }));
         let refresh_gate = Arc::new(RefreshGate::default());
@@ -254,6 +261,28 @@ impl RuntimeState {
 
     pub fn snapshot(&self) -> Result<RuntimeSnapshot, String> {
         self.published_snapshot()
+    }
+
+    pub fn workload_inspection(
+        &self,
+        stable_id: &str,
+        point_limit: u16,
+    ) -> Result<crate::workload_history::WorkloadInspection, String> {
+        inspect_published_workload(&self.published, stable_id, point_limit)
+    }
+
+    pub fn acknowledge_workload_inspection(&self, response_token: &str) -> Result<(), String> {
+        let archive = {
+            let published = self
+                .published
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(&published.workload_archive)
+        };
+        let archive = archive
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        archive.acknowledge(response_token)
     }
 
     pub fn refresh_now(&self) -> Result<RuntimeSnapshot, String> {
@@ -748,20 +777,78 @@ fn reply_with_publication(
     let _ = reply.send(Ok(publish_store(store, published)));
 }
 
+fn inspect_published_workload(
+    published: &Arc<RwLock<PublishedRuntime>>,
+    stable_id: &str,
+    point_limit: u16,
+) -> Result<crate::workload_history::WorkloadInspection, String> {
+    let archive = {
+        let current = published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(&current.workload_archive)
+    };
+    let archive = archive
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Publishing never waits on the archive while holding the snapshot lock. Re-read after
+    // this wait so a completed publication cannot be mistaken for an unpublished future sample.
+    let publication_seq = published
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .snapshot
+        .publication_seq;
+    archive.inspect_published(stable_id, point_limit, publication_seq)
+}
+
+fn publish_workload_archive(
+    store: &RuntimeStore,
+    snapshot: &RuntimeSnapshot,
+    published: &Arc<RwLock<PublishedRuntime>>,
+) {
+    let archive = {
+        let current = published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(&current.workload_archive)
+    };
+    let mut archive = archive
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if store.live_process_snapshot && archive.wants_sample(snapshot.sample_seq) {
+        match archive.begin_ingress(&store.previous_processes) {
+            Ok(()) => {
+                {
+                    let rows = shape_full_process_view(&store.previous_processes);
+                    if let Err(error) = archive.observe(snapshot, &rows, true) {
+                        eprintln!("workload history publication failed: {error}");
+                    }
+                }
+                archive.end_ingress();
+            }
+            Err(error) => eprintln!("workload history admission failed: {error}"),
+        }
+    } else {
+        let _ = archive.observe(snapshot, &[], false);
+    }
+}
+
 fn publish_store(
     store: &mut RuntimeStore,
     published: &Arc<RwLock<PublishedRuntime>>,
 ) -> Arc<RuntimeSnapshot> {
+    let started = Instant::now();
     store.refresh_snapshot_health();
-    let snapshot = Arc::new(store.snapshot.clone());
+    let mut snapshot = store.snapshot.clone();
+    publish_workload_archive(store, &snapshot, published);
+    store.record_publication_latency(started.elapsed());
+    snapshot.health = store.snapshot.health.clone();
+    let snapshot = Arc::new(snapshot);
     let mut target = published
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *target = PublishedRuntime {
-        snapshot: Arc::clone(&snapshot),
-        process_exe_authoritative: store.live_process_snapshot,
-    };
-    drop(target);
+    target.snapshot = Arc::clone(&snapshot);
+    target.process_exe_authoritative = store.live_process_snapshot;
     snapshot
 }
 
@@ -772,16 +859,15 @@ fn publish_store_measured(
 ) -> (Arc<RuntimeSnapshot>, f64) {
     store.refresh_snapshot_health();
     let mut snapshot = store.snapshot.clone();
+    publish_workload_archive(store, &snapshot, published);
     store.record_publication_latency(publication_started.elapsed());
     snapshot.health = store.snapshot.health.clone();
     let snapshot = Arc::new(snapshot);
     let mut target = published
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *target = PublishedRuntime {
-        snapshot: Arc::clone(&snapshot),
-        process_exe_authoritative: store.live_process_snapshot,
-    };
+    target.snapshot = Arc::clone(&snapshot);
+    target.process_exe_authoritative = store.live_process_snapshot;
     drop(target);
     let publication_latency_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
     (snapshot, publication_latency_ms)
@@ -813,13 +899,21 @@ fn publish_fatal_from_latest(
         message: message.to_string(),
         occurred_at_ms: snapshot.published_at_ms,
     });
+    let archive = {
+        let current = published
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(&current.workload_archive)
+    };
+    let _ = archive
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .observe(&snapshot, &[], false);
     let mut target = published
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *target = PublishedRuntime {
-        snapshot: Arc::new(snapshot),
-        process_exe_authoritative: false,
-    };
+    target.snapshot = Arc::new(snapshot);
+    target.process_exe_authoritative = false;
 }
 
 fn fatal_control_loop(receiver: &Receiver<EngineControl>, shutdown_requested: &AtomicBool) {
@@ -945,52 +1039,6 @@ fn metric_window(metric_window_seconds: u32) -> Duration {
     Duration::from_secs(u64::from(metric_window_seconds.clamp(15, 600)))
 }
 
-fn evaluate_snapshot_health(snapshot: &mut RuntimeSnapshot, evaluated_at_ms: u64) {
-    let evaluated_at_ms = evaluated_at_ms
-        .max(snapshot.published_at_ms)
-        .max(snapshot.health.last_heartbeat_at_ms.unwrap_or_default());
-    snapshot.health.updated_at_ms = evaluated_at_ms;
-    match snapshot.health.engine_state {
-        Some(RuntimeEngineState::Fatal) => {
-            snapshot.health.degraded = true;
-            snapshot.health.status_summary =
-                "Sampling engine stopped after a fatal error.".to_string();
-        }
-        Some(RuntimeEngineState::Running) => {
-            let interval_ms = u64::from(snapshot.settings.sample_interval_ms.clamp(500, 5_000));
-            let heartbeat_stale = snapshot
-                .health
-                .last_heartbeat_at_ms
-                .is_none_or(|heartbeat| {
-                    evaluated_at_ms.saturating_sub(heartbeat) > interval_ms * 2
-                });
-            let publication_stale =
-                evaluated_at_ms.saturating_sub(snapshot.published_at_ms) > interval_ms * 2;
-            let collection_budget_ms = snapshot
-                .health
-                .collection_latency_ms
-                .unwrap_or_default()
-                .ceil()
-                .max(interval_ms as f64) as u64;
-            let sample_stale = snapshot.sampled_at_ms.is_none_or(|sampled_at_ms| {
-                evaluated_at_ms.saturating_sub(sampled_at_ms)
-                    > interval_ms.saturating_add(collection_budget_ms)
-            });
-            if heartbeat_stale || publication_stale || sample_stale {
-                snapshot.health.degraded = true;
-                snapshot.health.status_summary = if heartbeat_stale {
-                    "Sampling engine heartbeat is stale.".to_string()
-                } else if publication_stale {
-                    "Snapshot publication is stale.".to_string()
-                } else {
-                    "Telemetry sample is stale.".to_string()
-                };
-            }
-        }
-        Some(RuntimeEngineState::Paused | RuntimeEngineState::Starting) | None => {}
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsWriteIntent {
     Automatic,
@@ -999,7 +1047,7 @@ enum SettingsWriteIntent {
 
 struct RuntimeStore {
     clock: Arc<MonotonicWireClock>,
-    persistence: RuntimePersistenceCoordinator,
+    persistence: BackgroundPersistence,
     provenance: RuntimeProvenance,
     settings: RuntimeSettings,
     // Runtime-only shaping can differ from the last user-authored query.
@@ -1031,7 +1079,10 @@ struct RuntimeStore {
     settings_rewrite_blocked: bool,
     #[cfg(windows)]
     legacy_helper_migration_pending: bool,
+    #[cfg(windows)]
+    legacy_helper_migration_reply: Option<Receiver<Result<(), String>>>,
     persistence_flushed: bool,
+    persistence_shutdown_result: Option<Result<(), String>>,
 }
 
 impl RuntimeStore {
@@ -1215,6 +1266,13 @@ impl RuntimeStore {
         let persistence_degraded = persistence_health.state != RuntimePersistenceState::Healthy;
         let initial_health = RuntimeHealth {
             engine_state: Some(engine_state),
+            reason_codes: match persistence_health.state {
+                RuntimePersistenceState::Unavailable => {
+                    vec![RuntimeHealthReason::PersistenceUnavailable]
+                }
+                RuntimePersistenceState::Degraded => vec![RuntimeHealthReason::PersistenceDegraded],
+                RuntimePersistenceState::Healthy => Vec::new(),
+            },
             degraded: persistence_degraded,
             status_summary: if persistence_health.state == RuntimePersistenceState::Unavailable {
                 "Local persistence is unavailable; monitoring is starting with session-only state."
@@ -1248,7 +1306,7 @@ impl RuntimeStore {
 
         Self {
             clock,
-            persistence,
+            persistence: persistence.into(),
             provenance,
             settings,
             durable_query,
@@ -1278,7 +1336,10 @@ impl RuntimeStore {
             settings_rewrite_blocked,
             #[cfg(windows)]
             legacy_helper_migration_pending,
+            #[cfg(windows)]
+            legacy_helper_migration_reply: None,
             persistence_flushed: false,
+            persistence_shutdown_result: None,
         }
     }
 
@@ -1637,6 +1698,10 @@ impl RuntimeStore {
     }
 
     fn refresh_snapshot_health(&mut self) {
+        #[cfg(windows)]
+        if self.legacy_helper_migration_reply.is_some() {
+            self.retry_legacy_helper_migration();
+        }
         let app_metrics = current_app_metrics(&self.previous_processes);
         self.snapshot.health = self.build_health(
             self.collection_latency_ms.unwrap_or_default().round() as u64,
@@ -1672,7 +1737,12 @@ impl RuntimeStore {
         let fatal = self.engine_state == RuntimeEngineState::Fatal;
         let cadence_degraded = self.recent_deadline_misses > 0;
         let persistence_state = self.persistence.health().state;
-        let persistence_degraded = persistence_state != RuntimePersistenceState::Healthy;
+        let persistence_warning = self
+            .warnings
+            .iter()
+            .any(|warning| warning.category == "persistence");
+        let persistence_degraded =
+            persistence_state != RuntimePersistenceState::Healthy || persistence_warning;
         let last_warning = self.warnings.back().map(|warning| warning.message.clone());
         let status_summary = if fatal {
             "Sampling engine stopped after a fatal error.".to_string()
@@ -1713,6 +1783,42 @@ impl RuntimeStore {
         };
 
         RuntimeHealth {
+            freshness: RuntimeFreshness::Starting,
+            reason_codes: [
+                (
+                    self.collector_state == Some(RuntimeCollectorState::Unavailable),
+                    RuntimeHealthReason::CollectorUnavailable,
+                ),
+                (
+                    self.collector_state == Some(RuntimeCollectorState::Limited),
+                    RuntimeHealthReason::CollectorLimited,
+                ),
+                (
+                    collector_warning_count > 0
+                        || self
+                            .warnings
+                            .iter()
+                            .any(|warning| warning.category == "admin_mode"),
+                    RuntimeHealthReason::CollectorWarning,
+                ),
+                (
+                    persistence_state == RuntimePersistenceState::Unavailable,
+                    RuntimeHealthReason::PersistenceUnavailable,
+                ),
+                (
+                    persistence_state == RuntimePersistenceState::Degraded
+                        || (persistence_warning
+                            && persistence_state == RuntimePersistenceState::Healthy),
+                    RuntimeHealthReason::PersistenceDegraded,
+                ),
+                (cadence_degraded, RuntimeHealthReason::CadenceMissed),
+                (cpu_degraded, RuntimeHealthReason::RuntimeCpuBudget),
+                (rss_degraded, RuntimeHealthReason::RuntimeMemoryBudget),
+                (fatal, RuntimeHealthReason::EngineFatal),
+            ]
+            .into_iter()
+            .filter_map(|(active, reason)| active.then_some(reason))
+            .collect(),
             tick_count: self.sample_seq,
             snapshot_latency_ms: latency_ms,
             degraded: fatal
@@ -1815,15 +1921,17 @@ impl RuntimeStore {
             self.clock.now_ms(),
         ) {
             Ok(()) => {
-                self.persistence.retry_diagnostics();
-                let event = serde_json::json!({
-                    "ts_ms": self.clock.now_ms(),
-                    "category": "persistence",
-                    "payload": { "message": "settings persisted" },
-                });
-                let _ = self
-                    .persistence
-                    .record_diagnostic(&event, self.clock.now_ms());
+                if !self.persistence.is_background() {
+                    self.persistence.retry_diagnostics();
+                    let event = serde_json::json!({
+                        "ts_ms": self.clock.now_ms(),
+                        "category": "persistence",
+                        "payload": { "message": "settings persisted" },
+                    });
+                    let _ = self
+                        .persistence
+                        .record_diagnostic(&event, self.clock.now_ms());
+                }
                 self.clear_persistence_warnings_if_healthy();
                 Ok(())
             }
@@ -1927,12 +2035,31 @@ impl RuntimeStore {
         }
 
         let base_dir = self.persistence.runtime_directory().to_path_buf();
-        let result = run_legacy_helper_migration(
-            &base_dir,
-            &mut self.persistence,
-            self.provenance.environment().process_elevation,
-            self.clock.now_ms(),
-        );
+        let elevation = self.provenance.environment().process_elevation;
+        let now_ms = self.clock.now_ms();
+        let result = if let Some(coordinator) = self.persistence.inline_mut() {
+            run_legacy_helper_migration(&base_dir, coordinator, elevation, now_ms)
+        } else if let Some(receiver) = &self.legacy_helper_migration_reply {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.legacy_helper_migration_reply = None;
+                    result
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.legacy_helper_migration_reply = None;
+                    Err("legacy_helper_migration_writer_disconnected".to_string())
+                }
+            }
+        } else {
+            let elevation = self.provenance.environment().process_elevation;
+            let now_ms = self.clock.now_ms();
+            self.legacy_helper_migration_reply =
+                Some(self.persistence.migration(move |coordinator| {
+                    run_legacy_helper_migration(&base_dir, coordinator, elevation, now_ms)
+                }));
+            return;
+        };
         match result {
             Ok(()) => {
                 self.legacy_helper_migration_pending = false;
@@ -1956,6 +2083,9 @@ impl RuntimeStore {
     }
 
     fn shutdown_owned_resources(&mut self) -> Result<(), String> {
+        if let Some(result) = &self.persistence_shutdown_result {
+            return result.clone();
+        }
         let mut errors = Vec::new();
         if !self.persistence_flushed {
             self.persistence_flushed = true;
@@ -1971,14 +2101,19 @@ impl RuntimeStore {
                 errors.push(error);
             }
         }
-        if errors.is_empty() {
+        if let Err(error) = self.persistence.flush(Duration::from_secs(5)) {
+            errors.push(error);
+        }
+        let result = if errors.is_empty() {
             Ok(())
         } else {
             Err(format!(
                 "runtime_resource_cleanup_failed:{}",
                 errors.join(";")
             ))
-        }
+        };
+        self.persistence_shutdown_result = Some(result.clone());
+        result
     }
 }
 
@@ -2147,7 +2282,7 @@ fn build_snapshot(
     warnings: Vec<RuntimeWarning>,
 ) -> RuntimeSnapshot {
     let process_view_rows = shape_process_view(all_processes, &settings.query);
-    RuntimeSnapshot {
+    let mut snapshot = RuntimeSnapshot {
         event_kind: "runtime_snapshot".to_string(),
         publication_seq,
         published_at_ms,
@@ -2164,9 +2299,103 @@ fn build_snapshot(
         process_contributors: summarize_process_contributors(all_processes),
         processes,
         process_view_rows,
+        overview_rows: shape_overview_rows(all_processes),
         total_process_count: all_processes.len(),
         warnings,
+    };
+    evaluate_snapshot_health(&mut snapshot, published_at_ms);
+    snapshot
+}
+
+fn shape_overview_rows(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
+    let rows = shape_process_view(
+        processes,
+        &RuntimeQuery {
+            limit: usize::MAX,
+            ..RuntimeQuery::default()
+        },
+    );
+    let mut selected_keys = HashSet::new();
+    let row_key = |row: &ProcessViewRow| match row {
+        ProcessViewRow::Group { detail, .. } => detail.group_key.clone(),
+        ProcessViewRow::Process { group_key, .. } => group_key.clone(),
+    };
+    for column in [
+        SortColumn::CpuPct,
+        SortColumn::MemoryBytes,
+        SortColumn::IoBps,
+        SortColumn::NetworkBps,
+    ] {
+        let mut ranked = rows
+            .iter()
+            .filter(|row| {
+                if matches!(
+                    row,
+                    ProcessViewRow::Process {
+                        is_grouped: true,
+                        ..
+                    }
+                ) {
+                    return false;
+                }
+                let quality = match row {
+                    ProcessViewRow::Group { detail, .. } => {
+                        let (quality, coverage) = match column {
+                            SortColumn::CpuPct => (&detail.quality.cpu, &detail.coverage.cpu),
+                            SortColumn::MemoryBytes => {
+                                (&detail.quality.memory, &detail.coverage.memory)
+                            }
+                            SortColumn::IoBps => (&detail.quality.io, &detail.coverage.io),
+                            _ => (&detail.quality.network, &detail.coverage.network),
+                        };
+                        if coverage.available == 0 {
+                            return false;
+                        }
+                        Some(quality)
+                    }
+                    ProcessViewRow::Process { detail, .. } => detail
+                        .process
+                        .quality
+                        .as_ref()
+                        .and_then(|quality| match column {
+                            SortColumn::CpuPct => quality.cpu.as_ref(),
+                            SortColumn::MemoryBytes => quality.memory.as_ref(),
+                            SortColumn::IoBps => quality.io.as_ref(),
+                            _ => quality.network.as_ref(),
+                        }),
+                };
+                quality.is_some_and(|quality| {
+                    matches!(
+                        quality.quality,
+                        MetricQuality::Native | MetricQuality::Estimated | MetricQuality::Partial
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let value = |row: &ProcessViewRow| match row {
+            ProcessViewRow::Group { detail, .. } => match column {
+                SortColumn::CpuPct => detail.cpu_percent,
+                SortColumn::MemoryBytes => detail.memory_bytes as f64,
+                SortColumn::IoBps => detail.io_bps as f64,
+                _ => detail.network_bps as f64,
+            },
+            ProcessViewRow::Process { detail, .. } => match column {
+                SortColumn::CpuPct => detail.process.cpu_percent,
+                SortColumn::MemoryBytes => detail.process.memory_bytes as f64,
+                SortColumn::IoBps => detail.io_bps as f64,
+                _ => detail.network_bps as f64,
+            },
+        };
+        ranked.sort_by(|left, right| {
+            value(right)
+                .total_cmp(&value(left))
+                .then_with(|| row_key(left).cmp(&row_key(right)))
+        });
+        selected_keys.extend(ranked.into_iter().take(5).map(row_key));
     }
+    rows.into_iter()
+        .filter(|row| selected_keys.contains(&row_key(row)))
+        .collect()
 }
 
 fn add_process_rates(
@@ -2523,7 +2752,6 @@ fn rank_processes(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<Proc
 struct ProcessIdentity {
     icon_kind: &'static str,
     category: &'static str,
-    is_child: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2541,25 +2769,37 @@ struct ProcessAppGroup {
     threads: u64,
 }
 
+pub(crate) fn shape_full_process_view(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
+    shape_process_view(
+        processes,
+        &RuntimeQuery {
+            limit: usize::MAX,
+            ..RuntimeQuery::default()
+        },
+    )
+}
+
 fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessViewRow> {
-    let processes = rank_processes(processes, query);
+    let memberships = crate::workload_identity::workload_memberships(processes);
     let mut groups = Vec::<ProcessAppGroup>::new();
     let mut group_indexes = HashMap::<String, usize>::new();
 
-    for process in &processes {
-        let key = process_app_key(process);
+    for (process_index, process) in processes.iter().enumerate() {
+        let membership = &memberships[process_index];
+        let key = membership.key.clone();
         let index = if let Some(index) = group_indexes.get(&key) {
             *index
         } else {
-            let identity = process_identity(process);
+            let representative = &processes[membership.representative_index];
+            let identity = process_identity(representative);
             let index = groups.len();
             group_indexes.insert(key.clone(), index);
             groups.push(ProcessAppGroup {
                 key,
-                label: process_app_label(process),
+                label: process_app_label(representative),
                 category: identity.category.to_string(),
                 icon_kind: identity.icon_kind.to_string(),
-                presentation_process: process.clone(),
+                presentation_process: representative.clone(),
                 processes: Vec::new(),
                 cpu_percent: 0.0,
                 memory_bytes: 0,
@@ -2591,6 +2831,22 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
         group.processes.push(process.clone());
     }
 
+    // Queries select established scopes; filtering never changes aggregate membership/history.
+    let needle = query.filter_text.trim().to_lowercase();
+    groups.retain(|group| {
+        group.processes.iter().any(|process| {
+            (needle.is_empty()
+                || process.name.to_lowercase().contains(&needle)
+                || process.pid.contains(&needle)
+                || process.exe.to_lowercase().contains(&needle))
+                && matches_focus_mode(process, query.focus_mode)
+        })
+    });
+    for group in &mut groups {
+        group
+            .processes
+            .sort_by(|left, right| compare_process(left, right, query));
+    }
     groups.sort_by(|left, right| compare_process_group(left, right, query));
 
     let mut rows = Vec::with_capacity(processes.len() + groups.len());
@@ -2635,7 +2891,7 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                 } else {
                     identity.icon_kind.to_string()
                 },
-                is_child: grouped && identity.is_child,
+                is_child: grouped && process.pid != group.presentation_process.pid,
                 is_grouped: grouped,
                 attention_label: process_attention_label(&process),
             });
@@ -2891,7 +3147,8 @@ fn compare_process_group(
 ) -> Ordering {
     let ordering = match query.sort_column {
         SortColumn::Name => left.label.to_lowercase().cmp(&right.label.to_lowercase()),
-        SortColumn::Pid => left.key.cmp(&right.key),
+        SortColumn::Pid => numeric_pid(&left.presentation_process.pid)
+            .cmp(&numeric_pid(&right.presentation_process.pid)),
         SortColumn::MemoryBytes => {
             group_memory_sort_value(left).cmp(&group_memory_sort_value(right))
         }
@@ -2900,7 +3157,14 @@ fn compare_process_group(
             group_network_sort_value(left).cmp(&group_network_sort_value(right))
         }
         SortColumn::Threads => group_threads_sort_value(left).cmp(&group_threads_sort_value(right)),
-        SortColumn::Handles | SortColumn::StartTimeMs => left.key.cmp(&right.key),
+        SortColumn::Handles => left
+            .presentation_process
+            .handles
+            .cmp(&right.presentation_process.handles),
+        SortColumn::StartTimeMs => left
+            .presentation_process
+            .start_time_ms
+            .cmp(&right.presentation_process.start_time_ms),
         SortColumn::Attention => group_attention_score(left)
             .partial_cmp(&group_attention_score(right))
             .unwrap_or(Ordering::Equal),
@@ -2914,7 +3178,17 @@ fn compare_process_group(
         SortDirection::Desc => ordering.reverse(),
     };
 
-    directed.then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+    directed
+        .then_with(|| left.label.to_lowercase().cmp(&right.label.to_lowercase()))
+        .then_with(|| {
+            numeric_pid(&left.presentation_process.pid)
+                .cmp(&numeric_pid(&right.presentation_process.pid))
+        })
+        .then_with(|| {
+            left.presentation_process
+                .start_time_ms
+                .cmp(&right.presentation_process.start_time_ms)
+        })
 }
 
 fn group_cpu_sort_value(group: &ProcessAppGroup) -> f64 {
@@ -3164,18 +3438,10 @@ fn network_quality(process: &ProcessSample) -> Option<&MetricQualityInfo> {
 
 fn process_identity(process: &ProcessSample) -> ProcessIdentity {
     let haystack = format!("{} {}", process.name, process.exe).to_lowercase();
-    let name = process.name.to_lowercase();
-    let is_child = name.starts_with("--")
-        || haystack.contains("--type=")
-        || haystack.contains("renderer")
-        || haystack.contains("gpu-process")
-        || haystack.contains("utility");
-
     if haystack.contains("batcave") {
         return ProcessIdentity {
             icon_kind: "batcave",
             category: "BatCave",
-            is_child,
         };
     }
 
@@ -3186,7 +3452,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "browser",
             category: "Browsers",
-            is_child,
         };
     }
 
@@ -3197,7 +3462,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "code",
             category: "Developer tools",
-            is_child,
         };
     }
 
@@ -3205,7 +3469,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "node",
             category: "Runtimes",
-            is_child,
         };
     }
 
@@ -3213,7 +3476,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "container",
             category: "Containers",
-            is_child,
         };
     }
 
@@ -3224,7 +3486,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "database",
             category: "Databases",
-            is_child,
         };
     }
 
@@ -3232,7 +3493,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "chat",
             category: "Communication",
-            is_child,
         };
     }
 
@@ -3240,7 +3500,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "media",
             category: "Media",
-            is_child,
         };
     }
 
@@ -3248,7 +3507,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "sync",
             category: "Sync",
-            is_child,
         };
     }
 
@@ -3256,7 +3514,6 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "gpu",
             category: "GPU",
-            is_child,
         };
     }
 
@@ -3283,26 +3540,13 @@ fn process_identity(process: &ProcessSample) -> ProcessIdentity {
         return ProcessIdentity {
             icon_kind: "windows",
             category: "Windows",
-            is_child,
         };
     }
 
     ProcessIdentity {
         icon_kind: "process",
         category: "Processes",
-        is_child,
     }
-}
-
-fn process_app_key(process: &ProcessSample) -> String {
-    let process_name = normalized_process_name(&process.name);
-    let key = if !process_name.trim().is_empty() {
-        process_name
-    } else {
-        format!("pid:{}", process.pid)
-    };
-
-    key.to_lowercase()
 }
 
 fn process_app_label(process: &ProcessSample) -> String {
@@ -4050,6 +4294,55 @@ mod tests {
     }
 
     #[test]
+    fn inspection_rechecks_publication_after_waiting_without_blocking_snapshot_readers() {
+        let snapshot = crate::protocol::test_runtime_snapshot();
+        let archive = Arc::new(Mutex::new(
+            crate::workload_history::WorkloadArchive::default(),
+        ));
+        archive
+            .lock()
+            .unwrap()
+            .observe(&snapshot, &snapshot.process_view_rows, true)
+            .unwrap();
+        let id = snapshot
+            .process_view_rows
+            .iter()
+            .find_map(|row| match row {
+                ProcessViewRow::Group { detail, .. } => Some(detail.workload_id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let published = Arc::new(RwLock::new(PublishedRuntime {
+            snapshot: Arc::new(snapshot.clone()),
+            process_exe_authoritative: true,
+            workload_archive: Arc::clone(&archive),
+        }));
+        let mut held_archive = archive.lock().unwrap();
+        let waiter_published = Arc::clone(&published);
+        let waiter =
+            std::thread::spawn(move || inspect_published_workload(&waiter_published, &id, 72));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Arc::strong_count(&archive) < 3 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            Arc::strong_count(&archive),
+            3,
+            "reader reached archive wait"
+        );
+        let mut next = snapshot;
+        next.publication_seq += 1;
+        held_archive.observe(&next, &[], false).unwrap();
+        published
+            .try_write()
+            .expect("snapshot readers must release their lock before waiting on the archive")
+            .snapshot = Arc::new(next.clone());
+        drop(held_archive);
+        let inspection = waiter.join().unwrap().unwrap();
+        assert_eq!(inspection.publication_seq, next.publication_seq);
+    }
+
+    #[test]
     fn delayed_collector_consumption_preserves_sample_time_and_rate_interval() {
         let base_dir = runtime_test_dir("delayed-collector-publication");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
@@ -4067,6 +4360,9 @@ mod tests {
         .expect("manual collector engine starts");
         let published = Arc::new(RwLock::new(PublishedRuntime {
             snapshot: Arc::new(store.snapshot.clone()),
+            workload_archive: Arc::new(Mutex::new(
+                crate::workload_history::WorkloadArchive::default(),
+            )),
             process_exe_authoritative: false,
         }));
         let mut last_collector_revision = 0;
@@ -4174,6 +4470,41 @@ mod tests {
         assert_eq!(window.value_at(base + Duration::from_secs(600)), 9.0);
         assert_eq!(window.value_at(base + Duration::from_secs(1_199)), 9.0);
         assert_eq!(window.value_at(base + Duration::from_secs(1_200)), 0.0);
+    }
+
+    #[test]
+    fn blocked_storage_does_not_block_samples_or_settings_publication() {
+        let base_dir = runtime_test_dir("slow-storage");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.persistence.start().unwrap();
+        let release = store.persistence.block_for_test();
+        let (collector, _) = FakeCollector::new((0..12).map(|_| FakeOutcome::Sample));
+        let state =
+            RuntimeState::from_store_with_collector(store, false, Some(Box::new(collector)))
+                .unwrap();
+        for expected in 1..=12 {
+            assert_eq!(state.refresh_now().unwrap().sample_seq, expected);
+        }
+        let before = Instant::now();
+        let next = state.set_sample_interval(500).unwrap();
+        assert!(before.elapsed() < Duration::from_millis(100));
+        assert_eq!(next.sample_seq, 12);
+        assert_eq!(next.settings.sample_interval_ms, 500);
+        crate::protocol::encode_snapshot(next.clone())
+            .expect("queued writes remain a valid wire snapshot");
+        assert!(next
+            .persistence
+            .unwrap()
+            .components
+            .iter()
+            .any(
+                |component| component.kind == crate::contracts::RuntimePersistenceKind::Settings
+                    && component.durability
+                        == crate::contracts::RuntimePersistenceDurability::SessionOnly
+            ));
+        release.send(()).unwrap();
+        state.shutdown().unwrap();
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -4516,6 +4847,9 @@ mod tests {
                 .ui_preferences,
             Some(latest_preferences.clone())
         );
+        state
+            .shutdown()
+            .expect("accepted settings become durable before cleanup completes");
         assert_eq!(
             read_json::<RuntimeSettings>(&base_dir.join(SETTINGS_FILE))
                 .expect("latest settings persist")
@@ -4523,7 +4857,6 @@ mod tests {
             Some(latest_preferences)
         );
 
-        state.shutdown().expect("engine joins");
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -4915,16 +5248,37 @@ mod tests {
     }
 
     #[test]
-    fn process_view_groups_suffixed_app_processes() {
+    fn independent_same_executable_roots_are_not_one_workload() {
+        for name in ["node", "python"] {
+            let mut first = sample("10", name, 12.0);
+            first.exe = format!("/usr/bin/{name}");
+            let mut second = sample("20", name, 8.0);
+            second.exe = first.exe.clone();
+            let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|row| matches!(
+                row,
+                ProcessViewRow::Process {
+                    is_grouped: false,
+                    ..
+                }
+            )));
+        }
+    }
+
+    #[test]
+    fn process_view_groups_verified_same_executable_descendants() {
         let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
         first.quality = group_test_quality(MetricQuality::Native);
-        first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        first.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
         first.io_read_bps = 256;
         first.other_io_bps = Some(8 * 1024 * 1024);
         first.threads = 3;
         let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
         second.quality = group_test_quality(MetricQuality::Native);
-        second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        second.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
         second.io_write_bps = 512;
         second.threads = 5;
 
@@ -4981,7 +5335,9 @@ mod tests {
         let mut first = sample("10", "Helper-1.exe", 12.0);
         first.exe = "C:\\node\\Helper-1.exe".to_string();
         let mut second = sample("20", "Helper-2.exe", 8.0);
-        second.exe = "C:\\docker\\Helper-2.exe".to_string();
+        second.exe = first.exe.clone();
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
 
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
         let ProcessViewRow::Group {
@@ -5006,34 +5362,28 @@ mod tests {
     }
 
     #[test]
-    fn process_group_identity_survives_executable_path_enrichment() {
+    fn process_group_requires_executable_evidence_before_enrichment() {
         let mut first = sample("10", "Visual Studio Code", 12.0);
         first.exe.clear();
         let mut second = sample("20", "Visual Studio Code", 8.0);
         second.exe.clear();
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
         let before = shape_process_view(&[first.clone(), second.clone()], &RuntimeQuery::default());
-        let ProcessViewRow::Group {
-            detail: before_detail,
-            ..
-        } = &before[0]
-        else {
-            panic!("expected aggregate group row before enrichment");
-        };
-
-        first.exe = "C:\\Program Files\\Microsoft VS Code\\Code.exe".to_string();
-        second.exe = "C:\\Program Files\\Microsoft VS Code\\Code.exe".to_string();
+        assert_eq!(before.len(), 2);
+        assert!(before.iter().all(|row| matches!(
+            row,
+            ProcessViewRow::Process {
+                is_grouped: false,
+                ..
+            }
+        )));
+        first.exe = "C:/Program Files/Microsoft VS Code/Code.exe".to_string();
+        second.exe = first.exe.clone();
         let after = shape_process_view(&[first, second], &RuntimeQuery::default());
-        let ProcessViewRow::Group {
-            detail: after_detail,
-            ..
-        } = &after[0]
-        else {
-            panic!("expected aggregate group row after enrichment");
-        };
-
-        assert_eq!(before_detail.group_key, "visual studio code");
-        assert_eq!(after_detail.group_key, before_detail.group_key);
-        assert_eq!(after_detail.workload_id, before_detail.workload_id);
+        assert!(
+            matches!(&after[0], ProcessViewRow::Group { detail, .. } if detail.process_count == 2)
+        );
     }
 
     #[test]
@@ -5085,7 +5435,7 @@ mod tests {
     #[test]
     fn process_view_aggregates_only_publishable_group_contributors() {
         let mut native = sample("10", "SearchIndexer-211.exe", 10.0);
-        native.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        native.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
         native.memory_bytes = 100;
         native.io_read_bps = 200;
         native.network_received_bps = Some(300);
@@ -5093,7 +5443,9 @@ mod tests {
         native.quality = group_test_quality(MetricQuality::Native);
 
         let mut unavailable = sample("20", "SearchIndexer-223.exe", 90.0);
-        unavailable.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        unavailable.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
+        unavailable.parent_pid = Some(native.pid.clone());
+        unavailable.start_time_ms = native.start_time_ms + 1_000;
         unavailable.memory_bytes = 900;
         unavailable.io_read_bps = 1_800;
         unavailable.network_received_bps = Some(2_700);
@@ -5145,10 +5497,12 @@ mod tests {
     #[test]
     fn process_view_marks_missing_group_quality_limited_without_publishing_values() {
         let mut first = sample("10", "SearchIndexer-211.exe", 10.0);
-        first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        first.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
         first.quality = None;
         let mut second = sample("20", "SearchIndexer-223.exe", 90.0);
-        second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        second.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
         second.quality = None;
 
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
@@ -5189,11 +5543,13 @@ mod tests {
             (MetricQuality::Unavailable, "Unavailable · 0/2 coverage"),
         ] {
             let mut first = sample("10", "SearchIndexer-211.exe", 90.0);
-            first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+            first.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
             first.network_received_bps = Some(0);
             first.quality = group_test_quality(quality);
             let mut second = sample("20", "SearchIndexer-223.exe", 80.0);
-            second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+            second.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
+            second.parent_pid = Some(first.pid.clone());
+            second.start_time_ms = first.start_time_ms + 1_000;
             second.network_received_bps = Some(0);
             second.quality = group_test_quality(quality);
 
@@ -5262,7 +5618,9 @@ mod tests {
                     &format!("SearchIndexer-{index:03}.exe"),
                     1.0,
                 );
-                process.exe = format!("C:\\Windows\\System32\\SearchIndexer-{index:03}.exe");
+                process.exe = "C:/Windows/System32/SearchIndexer.exe".to_string();
+                process.parent_pid = (index != 0).then(|| "1000".to_string());
+                process.start_time_ms += index;
                 process.quality = group_test_quality(MetricQuality::Native);
                 process
             })
@@ -5308,30 +5666,86 @@ mod tests {
     }
 
     #[test]
-    fn process_view_uses_process_name_key_when_exe_is_missing() {
+    fn process_view_keeps_missing_executable_identity_separate() {
         let mut first = sample("10", "Memory Compression", 12.0);
-        first.exe = String::new();
+        first.exe.clear();
         let mut second = sample("20", "Memory Compression", 8.0);
         second.exe = " ".to_string();
-
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
         let rows = shape_process_view(&[first, second], &RuntimeQuery::default());
-
-        assert_eq!(rows.len(), 3);
-        let ProcessViewRow::Group { detail, .. } = &rows[0] else {
-            panic!("expected aggregate group row");
-        };
-        assert_eq!(detail.group_key, "memory compression");
-        for row in &rows[1..] {
-            let ProcessViewRow::Process {
-                group_key,
-                is_grouped,
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| matches!(
+            row,
+            ProcessViewRow::Process {
+                is_grouped: false,
                 ..
-            } = row
-            else {
-                panic!("expected process row");
+            }
+        )));
+    }
+
+    #[test]
+    fn filtering_preserves_complete_group_scope_and_membership_changes_its_key() {
+        let mut root = sample("10", "root", 2.0);
+        root.exe = "/usr/bin/node".to_string();
+        let mut child = sample("20", "worker", 1.0);
+        child.exe = root.exe.clone();
+        child.parent_pid = Some(root.pid.clone());
+        child.start_time_ms = root.start_time_ms + 1_000;
+        let all = shape_full_process_view(&[root.clone(), child.clone()]);
+        let filtered = shape_process_view(
+            &[root.clone(), child.clone()],
+            &RuntimeQuery {
+                filter_text: "worker".to_string(),
+                ..RuntimeQuery::default()
+            },
+        );
+        let ProcessViewRow::Group { detail: full, .. } = &all[0] else {
+            panic!("group");
+        };
+        let ProcessViewRow::Group { detail: subset, .. } = &filtered[0] else {
+            panic!("group");
+        };
+        assert_eq!(full.workload_id, subset.workload_id);
+        assert_eq!(subset.process_count, 2);
+        assert_eq!(subset.cpu_percent, 3.0);
+        let mut another = child.clone();
+        another.pid = "30".to_string();
+        let changed = shape_full_process_view(&[root, child, another]);
+        let ProcessViewRow::Group {
+            detail: changed, ..
+        } = &changed[0]
+        else {
+            panic!("group");
+        };
+        assert_ne!(full.workload_id, changed.workload_id);
+    }
+
+    #[test]
+    fn process_view_sort_values_do_not_use_opaque_scope_keys() {
+        let mut first = sample("2", "node", 0.0);
+        first.start_time_ms = 1_000;
+        first.handles = 9;
+        let mut second = sample("10", "node", 0.0);
+        second.start_time_ms = 900;
+        second.handles = 1;
+        for (column, expected) in [
+            (SortColumn::Pid, "2"),
+            (SortColumn::Handles, "10"),
+            (SortColumn::StartTimeMs, "10"),
+        ] {
+            let rows = shape_process_view(
+                &[first.clone(), second.clone()],
+                &RuntimeQuery {
+                    sort_column: column,
+                    sort_direction: SortDirection::Asc,
+                    ..RuntimeQuery::default()
+                },
+            );
+            let ProcessViewRow::Process { detail, .. } = &rows[0] else {
+                panic!("singleton");
             };
-            assert!(*is_grouped);
-            assert_eq!(group_key, &detail.group_key);
+            assert_eq!(detail.process.pid, expected);
         }
     }
 
@@ -5378,10 +5792,12 @@ mod tests {
         let singleton = sample("10", "Code.exe", 70.0);
         let mut first = sample("20", "SearchIndexer-001.exe", 40.0);
         first.quality = group_test_quality(MetricQuality::Native);
-        first.exe = "C:\\Windows\\System32\\SearchIndexer-001.exe".to_string();
+        first.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
         let mut second = sample("30", "SearchIndexer-002.exe", 35.0);
         second.quality = group_test_quality(MetricQuality::Native);
-        second.exe = "C:\\Windows\\System32\\SearchIndexer-002.exe".to_string();
+        second.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
 
         let rows = shape_process_view(
             &[singleton, first, second],
@@ -7436,11 +7852,13 @@ mod tests {
             ..crate::contracts::SystemMetricQuality::default()
         });
         let mut first = sample("10", "SearchIndexer-211.exe", 12.0);
-        first.exe = "C:\\Windows\\System32\\SearchIndexer-211.exe".to_string();
+        first.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
         first.quality = group_test_quality(MetricQuality::Native);
         first.network_received_bps = Some(1_024);
         let mut second = sample("20", "SearchIndexer-223.exe", 8.0);
-        second.exe = "C:\\Windows\\System32\\SearchIndexer-223.exe".to_string();
+        second.exe = "C:\\Windows\\System32\\SearchIndexer.exe".to_string();
+        second.parent_pid = Some(first.pid.clone());
+        second.start_time_ms = first.start_time_ms + 1_000;
         second.quality = group_test_quality(MetricQuality::Native);
         second.network_received_bps = Some(2_048);
         let sample_ts_ms = store.clock.now_ms();
@@ -7489,6 +7907,27 @@ mod tests {
             threads: metric(),
             handles: metric(),
         })
+    }
+
+    #[test]
+    fn overview_unavailable_high_values_do_not_hide_measured_leaders() {
+        let mut processes = (1..=5)
+            .map(|pid| {
+                let mut process = sample(&pid.to_string(), &format!("unknown-{pid}"), 1000.0);
+                process.quality = group_test_quality(MetricQuality::Unavailable);
+                process
+            })
+            .collect::<Vec<_>>();
+        processes.push(sample("6", "measured", 1.0));
+        let rows = shape_overview_rows(&processes);
+        assert!(rows.iter().any(
+            |row| matches!(row, ProcessViewRow::Process { detail, .. } if detail.process.pid == "6")
+        ));
+        assert_eq!(
+            rows.len(),
+            1,
+            "unavailable magnitudes do not establish a ranking"
+        );
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {

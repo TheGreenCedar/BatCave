@@ -1,11 +1,11 @@
 import type {
-  GroupDetailV3,
+  GroupDetailV4,
   MetricObservation,
   MetricScope,
   MetricSemantic,
-  ProcessDetailV3,
-  RuntimeSnapshotPayloadV3,
-} from "../generated/runtime-protocol-v3.ts";
+  ProcessDetailV4,
+  RuntimeSnapshotPayloadV4,
+} from "../generated/runtime-protocol-v4.ts";
 import type {
   GroupDetail,
   KernelPoolTag,
@@ -20,6 +20,11 @@ import type {
 } from "../types.ts";
 import { groupAttentionLabel, processAttentionLabel } from "../process.ts";
 
+type MeasurementCatalog = Pick<
+  RuntimeSnapshotPayloadV4,
+  "descriptors" | "quality_codes" | "limitations" | "published_at_ms"
+>;
+
 interface MeasurementView {
   value: number | null;
   quality: MetricQualityInfo;
@@ -27,20 +32,22 @@ interface MeasurementView {
   limitationIndex: number | null;
 }
 
-export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeSnapshot {
-  const system = adaptSystem(payload);
+export function adaptWorkloadRows(
+  workloads: RuntimeSnapshotPayloadV4["workloads"],
+  payload: MeasurementCatalog,
+) {
   const processRows = new Map<string, ProcessViewRow>();
   const groupRows = new Map<string, ProcessViewRow>();
   const processes: ProcessSample[] = [];
   const limitedProcessIds = new Set(
-    payload.workloads.flatMap((workload) =>
+    workloads.flatMap((workload) =>
       workload.kind === "process" && workload.detail.access_state !== "full"
         ? [workload.detail.stable_id]
         : [],
     ),
   );
 
-  for (const workload of payload.workloads) {
+  for (const workload of workloads) {
     if (workload.kind === "process") {
       const row = adaptProcessRow(workload.detail, payload);
       processRows.set(workload.detail.stable_id, row);
@@ -52,13 +59,21 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
       );
     }
   }
-  const process_view_rows = payload.workloads.flatMap((workload) => {
+  const process_view_rows = workloads.flatMap((workload) => {
     const row =
       workload.kind === "process"
         ? processRows.get(workload.detail.stable_id)
         : groupRows.get(workload.detail.stable_id);
     return row ? [row] : [];
   });
+
+  return { processes, process_view_rows };
+}
+
+export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV4): RuntimeSnapshot {
+  const system = adaptSystem(payload);
+  const { processes, process_view_rows } = adaptWorkloadRows(payload.workloads, payload);
+  const overview_rows = adaptWorkloadRows(payload.overview_workloads, payload).process_view_rows;
 
   return {
     event_kind: "runtime_snapshot",
@@ -116,13 +131,14 @@ export function adaptRuntimePayload(payload: RuntimeSnapshotPayloadV3): RuntimeS
     process_contributors: adaptContributors(payload),
     processes,
     process_view_rows,
+    overview_rows,
     total_process_count: payload.total_process_count,
     warnings: payload.warnings.map((warning) => ({ ...warning })),
   };
 }
 
 function legacyAdminState(
-  state: RuntimeSnapshotPayloadV3["privileged_collection"]["state"],
+  state: RuntimeSnapshotPayloadV4["privileged_collection"]["state"],
 ): RuntimeSnapshot["admin_mode"]["state"] {
   switch (state) {
     case "unavailable":
@@ -141,13 +157,13 @@ function legacyAdminState(
 }
 
 function legacyPrivilegedSource(
-  source: RuntimeSnapshotPayloadV3["privileged_collection"]["source"],
+  source: RuntimeSnapshotPayloadV4["privileged_collection"]["source"],
 ): RuntimeSnapshot["admin_mode"]["source"] {
   if (source === "local_process") return "current_process";
   return source;
 }
 
-function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
+function adaptSystem(payload: RuntimeSnapshotPayloadV4): SystemMetricsSnapshot {
   const metrics = payload.system.metrics;
   const cpu = measurement(metrics, "cpu_usage", "system", payload);
   const kernelCpu = measurement(metrics, "kernel_cpu_usage", "system", payload);
@@ -261,8 +277,8 @@ function adaptSystem(payload: RuntimeSnapshotPayloadV3): SystemMetricsSnapshot {
 }
 
 function adaptKernelPoolTag(
-  tag: RuntimeSnapshotPayloadV3["system"]["kernel_pool_tags"][number],
-  payload: RuntimeSnapshotPayloadV3,
+  tag: RuntimeSnapshotPayloadV4["system"]["kernel_pool_tags"][number],
+  payload: RuntimeSnapshotPayloadV4,
 ): KernelPoolTag {
   const bytes = measurement(tag.metrics, "kernel_pool_bytes", "system", payload);
   const allocations = measurement(tag.metrics, "kernel_pool_allocations", "system", payload);
@@ -284,8 +300,8 @@ function adaptKernelPoolTag(
 }
 
 function adaptProcessRow(
-  detail: ProcessDetailV3,
-  payload: RuntimeSnapshotPayloadV3,
+  detail: ProcessDetailV4,
+  payload: MeasurementCatalog,
 ): Extract<ProcessViewRow, { kind: "process" }> {
   const cpu = measurement(detail.metrics, "cpu_usage", "process", payload);
   const kernelCpu = measurement(detail.metrics, "kernel_cpu_usage", "process", payload);
@@ -356,8 +372,8 @@ function adaptProcessRow(
 }
 
 function adaptGroupRow(
-  detail: GroupDetailV3,
-  payload: RuntimeSnapshotPayloadV3,
+  detail: GroupDetailV4,
+  payload: MeasurementCatalog,
   limitedProcessIds: ReadonlySet<string>,
 ): Extract<ProcessViewRow, { kind: "group" }> {
   const cpu = measurement(detail.metrics, "cpu_usage", "group", payload);
@@ -409,7 +425,7 @@ function adaptGroupRow(
   };
 }
 
-function adaptContributors(payload: RuntimeSnapshotPayloadV3): ProcessContributorSummary {
+function adaptContributors(payload: RuntimeSnapshotPayloadV4): ProcessContributorSummary {
   const result: ProcessContributorSummary = {
     cpu: null,
     cpu_process_id: null,
@@ -481,7 +497,7 @@ function measurement(
   metrics: MetricObservation[],
   semantic: MetricSemantic,
   scope: MetricScope,
-  payload: RuntimeSnapshotPayloadV3,
+  payload: MeasurementCatalog,
 ): MeasurementView {
   const observation = metrics.find(
     (candidate) => payload.descriptors[candidate[0]]?.semantic === semantic,
@@ -514,7 +530,7 @@ function optionalMeasurement(
   metrics: MetricObservation[],
   semantic: MetricSemantic,
   scope: MetricScope,
-  payload: RuntimeSnapshotPayloadV3,
+  payload: MeasurementCatalog,
 ): MeasurementView | undefined {
   return metrics.some((candidate) => payload.descriptors[candidate[0]]?.semantic === semantic)
     ? measurement(metrics, semantic, scope, payload)
@@ -530,7 +546,7 @@ function unavailableMeasurement(message: string): MeasurementView {
   };
 }
 
-function coverageFor(detail: GroupDetailV3, measurement: MeasurementView): MetricCoverage {
+function coverageFor(detail: GroupDetailV4, measurement: MeasurementView): MetricCoverage {
   const coverage = detail.coverage.find(
     (entry) => entry.descriptor_index === measurement.descriptorIndex,
   );
@@ -539,7 +555,7 @@ function coverageFor(detail: GroupDetailV3, measurement: MeasurementView): Metri
     : { available: 0, total: detail.member_ids.length };
 }
 
-function firstLogicalQuality(payload: RuntimeSnapshotPayloadV3): MetricQualityInfo {
+function firstLogicalQuality(payload: RuntimeSnapshotPayloadV4): MetricQualityInfo {
   const first = payload.system.logical_cpus[0];
   return first
     ? measurement(first.metrics, "logical_cpu_usage", "system", payload).quality

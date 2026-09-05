@@ -7,6 +7,7 @@ export const accessibilityFixtureStates = [
   "stale",
   "degraded",
   "compact",
+  "exited",
 ] as const;
 
 export type AccessibilityFixtureState = (typeof accessibilityFixtureStates)[number];

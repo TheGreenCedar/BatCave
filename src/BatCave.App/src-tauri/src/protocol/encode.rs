@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     catalog::{
@@ -21,15 +20,12 @@ use crate::contracts::{
 };
 
 pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, String> {
-    let wall_at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "protocol_system_time_before_epoch".to_string())?
-        .as_millis();
-    let wall_at_ms =
-        u64::try_from(wall_at_ms).map_err(|_| "protocol_timestamp_out_of_range".to_string())?;
-    let evaluated_at_ms = wall_at_ms
+    // The runtime owns freshness. A second wall-clock read would turn clock
+    // corrections into permanently stale samples while runtime health stays live.
+    let evaluated_at_ms = snapshot
+        .health
+        .updated_at_ms
         .max(snapshot.published_at_ms)
-        .max(snapshot.health.updated_at_ms)
         .max(snapshot.health.last_heartbeat_at_ms.unwrap_or_default());
     encode_snapshot_with_identity(
         snapshot,
@@ -43,13 +39,13 @@ pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, St
 pub(super) fn encode_snapshot_at(
     snapshot: RuntimeSnapshot,
     evaluated_at_ms: u64,
-    architecture: RuntimeArchitectureV3,
+    architecture: RuntimeArchitectureV4,
 ) -> Result<ProtocolEnvelope, String> {
     encode_snapshot_with_identity(
         snapshot,
         evaluated_at_ms,
         architecture,
-        RuntimeReleaseIdentityV3 {
+        RuntimeReleaseIdentityV4 {
             app_version: "development".to_string(),
             source_commit_sha: None,
         },
@@ -57,10 +53,10 @@ pub(super) fn encode_snapshot_at(
 }
 
 fn encode_snapshot_with_identity(
-    snapshot: RuntimeSnapshot,
+    mut snapshot: RuntimeSnapshot,
     evaluated_at_ms: u64,
-    architecture: RuntimeArchitectureV3,
-    release_identity: RuntimeReleaseIdentityV3,
+    architecture: RuntimeArchitectureV4,
+    release_identity: RuntimeReleaseIdentityV4,
 ) -> Result<ProtocolEnvelope, String> {
     ensure_js_safe(snapshot.publication_seq)?;
     ensure_js_safe(snapshot.published_at_ms)?;
@@ -76,21 +72,35 @@ fn encode_snapshot_with_identity(
         }
     }
 
+    crate::runtime_health::evaluate_snapshot_health(&mut snapshot, evaluated_at_ms);
     let mut catalog = CatalogBuilder::new(snapshot.settings.sample_interval_ms)?;
     let system = encode_system(&snapshot, &mut catalog)?;
-    let workloads = encode_workloads(&snapshot, &mut catalog)?;
+    let workloads = encode_workloads(
+        &snapshot.process_view_rows,
+        snapshot.sample_seq,
+        snapshot.sampled_at_ms,
+        snapshot.environment.platform,
+        &mut catalog,
+    )?;
+    let overview_workloads = encode_workloads(
+        &snapshot.overview_rows,
+        snapshot.sample_seq,
+        snapshot.sampled_at_ms,
+        snapshot.environment.platform,
+        &mut catalog,
+    )?;
     let contributors = encode_contributors(&snapshot, &mut catalog)?;
     let visible_process_count = workloads
         .iter()
-        .filter(|workload| matches!(workload, WorkloadDetailV3::Process(_)))
+        .filter(|workload| matches!(workload, WorkloadDetailV4::Process(_)))
         .count();
-    let payload = RuntimeSnapshotPayloadV3 {
+    let payload = RuntimeSnapshotPayloadV4 {
         publication_seq: snapshot.publication_seq,
         published_at_ms: snapshot.published_at_ms,
         sample_seq: snapshot.sample_seq,
         sampled_at_ms: snapshot.sampled_at_ms,
         source: snapshot.source,
-        environment: RuntimeEnvironmentV3 {
+        environment: RuntimeEnvironmentV4 {
             platform: platform(snapshot.environment.platform),
             architecture,
             process_elevation: process_elevation(snapshot.environment.process_elevation),
@@ -98,47 +108,47 @@ fn encode_snapshot_with_identity(
             data_directory: snapshot.environment.data_directory,
             release_identity,
         },
-        privileged_collection: RuntimePrivilegedCollectionV3 {
+        privileged_collection: RuntimePrivilegedCollectionV4 {
             state: admin_state(snapshot.admin_mode.state),
             source: privileged_source(snapshot.admin_mode.source),
             preference: if snapshot.environment.admin_mode_available {
-                PrivilegedCollectionPreferenceV3::BestAvailable
+                PrivilegedCollectionPreferenceV4::BestAvailable
             } else {
-                PrivilegedCollectionPreferenceV3::StandardOnly
+                PrivilegedCollectionPreferenceV4::StandardOnly
             },
             standard_fallback_process_etw_disabled: snapshot.standard_fallback_process_etw_disabled,
             detail: snapshot.admin_mode.detail,
             last_success_at_ms: snapshot.admin_mode.last_success_at_ms,
             collector_service: snapshot.admin_mode.collector_service.map(|service| {
-                CollectorServiceStatusV3 {
+                CollectorServiceStatusV4 {
                     state: match service.state {
                         crate::contracts::RuntimeCollectorServiceState::NotInstalled => {
-                            CollectorServiceStateV3::NotInstalled
+                            CollectorServiceStateV4::NotInstalled
                         }
                         crate::contracts::RuntimeCollectorServiceState::Stopped => {
-                            CollectorServiceStateV3::Stopped
+                            CollectorServiceStateV4::Stopped
                         }
                         crate::contracts::RuntimeCollectorServiceState::Connecting => {
-                            CollectorServiceStateV3::Connecting
+                            CollectorServiceStateV4::Connecting
                         }
                         crate::contracts::RuntimeCollectorServiceState::Recovering => {
-                            CollectorServiceStateV3::Recovering
+                            CollectorServiceStateV4::Recovering
                         }
                         crate::contracts::RuntimeCollectorServiceState::Active => {
-                            CollectorServiceStateV3::Active
+                            CollectorServiceStateV4::Active
                         }
                         crate::contracts::RuntimeCollectorServiceState::Incompatible => {
-                            CollectorServiceStateV3::Incompatible
+                            CollectorServiceStateV4::Incompatible
                         }
                         crate::contracts::RuntimeCollectorServiceState::Unauthorized => {
-                            CollectorServiceStateV3::Unauthorized
+                            CollectorServiceStateV4::Unauthorized
                         }
                         crate::contracts::RuntimeCollectorServiceState::Failed => {
-                            CollectorServiceStateV3::Failed
+                            CollectorServiceStateV4::Failed
                         }
                     },
                     release_identity: service.release_identity.map(|identity| {
-                        RuntimeReleaseIdentityV3 {
+                        RuntimeReleaseIdentityV4 {
                             app_version: identity.app_version,
                             source_commit_sha: identity.source_commit_sha,
                         }
@@ -152,8 +162,8 @@ fn encode_snapshot_with_identity(
                 }
             }),
         },
-        settings: RuntimeSettingsV3 {
-            query: RuntimeQueryV3 {
+        settings: RuntimeSettingsV4 {
+            query: RuntimeQueryV4 {
                 filter_text: snapshot.settings.query.filter_text,
                 focus_mode: focus_mode(snapshot.settings.query.focus_mode),
                 sort_column: sort_column(snapshot.settings.query.sort_column),
@@ -167,13 +177,15 @@ fn encode_snapshot_with_identity(
             effective_sample_interval_ms: snapshot.settings.sample_interval_ms,
             collection_paused: snapshot.settings.paused,
             ui_preferences: snapshot.settings.ui_preferences.map(|preferences| {
-                RuntimeUiPreferencesV3 {
+                RuntimeUiPreferencesV4 {
                     theme: preferences.theme,
                     history_point_limit: preferences.history_point_limit,
                 }
             }),
         },
-        health: RuntimeHealthV3 {
+        health: RuntimeHealthV4 {
+            freshness: snapshot.health.freshness,
+            reason_codes: snapshot.health.reason_codes,
             engine_state: snapshot.health.engine_state.map(engine_state),
             collector_state: snapshot.health.collector_state.map(collector_state),
             degraded: snapshot.health.degraded,
@@ -204,7 +216,7 @@ fn encode_snapshot_with_identity(
             fatal_error: snapshot
                 .health
                 .fatal_error
-                .map(|error| RuntimeFatalErrorV3 {
+                .map(|error| RuntimeFatalErrorV4 {
                     code: error.code,
                     message: error.message,
                     occurred_at_ms: error.occurred_at_ms,
@@ -216,6 +228,7 @@ fn encode_snapshot_with_identity(
         limitations: catalog.limitations,
         system,
         workloads,
+        overview_workloads,
         contributors,
         total_process_count: to_u32(
             snapshot.total_process_count,
@@ -228,7 +241,7 @@ fn encode_snapshot_with_identity(
         warnings: snapshot
             .warnings
             .into_iter()
-            .map(|warning| RuntimeWarningV3 {
+            .map(|warning| RuntimeWarningV4 {
                 key: warning.key,
                 publication_seq: warning.publication_seq,
                 occurred_at_ms: warning.occurred_at_ms,
@@ -249,24 +262,24 @@ fn encode_snapshot_with_identity(
     Ok(envelope)
 }
 
-fn encode_persistence(persistence: RuntimePersistence) -> RuntimePersistenceV3 {
-    RuntimePersistenceV3 {
+fn encode_persistence(persistence: RuntimePersistence) -> RuntimePersistenceV4 {
+    RuntimePersistenceV4 {
         state: persistence_state(persistence.state),
         roots: persistence
             .roots
             .into_iter()
-            .map(|root| RuntimePersistenceRootV3 {
+            .map(|root| RuntimePersistenceRootV4 {
                 owner: persistence_owner(root.owner),
                 directory: root.directory,
                 permission_state: match root.permission_state {
                     RuntimePersistencePermissionState::Verified => {
-                        RuntimePersistencePermissionStateV3::Verified
+                        RuntimePersistencePermissionStateV4::Verified
                     }
                     RuntimePersistencePermissionState::Invalid => {
-                        RuntimePersistencePermissionStateV3::Invalid
+                        RuntimePersistencePermissionStateV4::Invalid
                     }
                     RuntimePersistencePermissionState::Unavailable => {
-                        RuntimePersistencePermissionStateV3::Unavailable
+                        RuntimePersistencePermissionStateV4::Unavailable
                     }
                 },
             })
@@ -274,69 +287,69 @@ fn encode_persistence(persistence: RuntimePersistence) -> RuntimePersistenceV3 {
         components: persistence
             .components
             .into_iter()
-            .map(|component| RuntimePersistenceComponentV3 {
+            .map(|component| RuntimePersistenceComponentV4 {
                 owner: persistence_owner(component.owner),
                 kind: match component.kind {
-                    RuntimePersistenceKind::Settings => RuntimePersistenceKindV3::Settings,
-                    RuntimePersistenceKind::WarmCache => RuntimePersistenceKindV3::WarmCache,
-                    RuntimePersistenceKind::Diagnostics => RuntimePersistenceKindV3::Diagnostics,
-                    RuntimePersistenceKind::ServiceState => RuntimePersistenceKindV3::ServiceState,
+                    RuntimePersistenceKind::Settings => RuntimePersistenceKindV4::Settings,
+                    RuntimePersistenceKind::WarmCache => RuntimePersistenceKindV4::WarmCache,
+                    RuntimePersistenceKind::Diagnostics => RuntimePersistenceKindV4::Diagnostics,
+                    RuntimePersistenceKind::ServiceState => RuntimePersistenceKindV4::ServiceState,
                 },
                 state: persistence_state(component.state),
                 durability: match component.durability {
                     RuntimePersistenceDurability::Durable => {
-                        RuntimePersistenceDurabilityV3::Durable
+                        RuntimePersistenceDurabilityV4::Durable
                     }
                     RuntimePersistenceDurability::NotWritten => {
-                        RuntimePersistenceDurabilityV3::NotWritten
+                        RuntimePersistenceDurabilityV4::NotWritten
                     }
                     RuntimePersistenceDurability::SessionOnly => {
-                        RuntimePersistenceDurabilityV3::SessionOnly
+                        RuntimePersistenceDurabilityV4::SessionOnly
                     }
                     RuntimePersistenceDurability::NotApplicable => {
-                        RuntimePersistenceDurabilityV3::NotApplicable
+                        RuntimePersistenceDurabilityV4::NotApplicable
                     }
                 },
                 last_success_at_ms: component.last_success_at_ms,
                 active_failure: component.active_failure.map(|failure| {
-                    RuntimePersistenceFailureV3 {
+                    RuntimePersistenceFailureV4 {
                         code: failure.code,
                         operation: match failure.operation {
                             RuntimePersistenceOperation::ResolveRoot => {
-                                RuntimePersistenceOperationV3::ResolveRoot
+                                RuntimePersistenceOperationV4::ResolveRoot
                             }
                             RuntimePersistenceOperation::Create => {
-                                RuntimePersistenceOperationV3::Create
+                                RuntimePersistenceOperationV4::Create
                             }
                             RuntimePersistenceOperation::Load => {
-                                RuntimePersistenceOperationV3::Load
+                                RuntimePersistenceOperationV4::Load
                             }
                             RuntimePersistenceOperation::Parse => {
-                                RuntimePersistenceOperationV3::Parse
+                                RuntimePersistenceOperationV4::Parse
                             }
                             RuntimePersistenceOperation::Migrate => {
-                                RuntimePersistenceOperationV3::Migrate
+                                RuntimePersistenceOperationV4::Migrate
                             }
                             RuntimePersistenceOperation::Serialize => {
-                                RuntimePersistenceOperationV3::Serialize
+                                RuntimePersistenceOperationV4::Serialize
                             }
                             RuntimePersistenceOperation::Write => {
-                                RuntimePersistenceOperationV3::Write
+                                RuntimePersistenceOperationV4::Write
                             }
                             RuntimePersistenceOperation::Sync => {
-                                RuntimePersistenceOperationV3::Sync
+                                RuntimePersistenceOperationV4::Sync
                             }
                             RuntimePersistenceOperation::Replace => {
-                                RuntimePersistenceOperationV3::Replace
+                                RuntimePersistenceOperationV4::Replace
                             }
                             RuntimePersistenceOperation::Rotate => {
-                                RuntimePersistenceOperationV3::Rotate
+                                RuntimePersistenceOperationV4::Rotate
                             }
                             RuntimePersistenceOperation::Remove => {
-                                RuntimePersistenceOperationV3::Remove
+                                RuntimePersistenceOperationV4::Remove
                             }
                             RuntimePersistenceOperation::Permissions => {
-                                RuntimePersistenceOperationV3::Permissions
+                                RuntimePersistenceOperationV4::Permissions
                             }
                         },
                         occurred_at_ms: failure.occurred_at_ms,
@@ -350,25 +363,25 @@ fn encode_persistence(persistence: RuntimePersistence) -> RuntimePersistenceV3 {
     }
 }
 
-fn persistence_state(state: RuntimePersistenceState) -> RuntimePersistenceStateV3 {
+fn persistence_state(state: RuntimePersistenceState) -> RuntimePersistenceStateV4 {
     match state {
-        RuntimePersistenceState::Healthy => RuntimePersistenceStateV3::Healthy,
-        RuntimePersistenceState::Degraded => RuntimePersistenceStateV3::Degraded,
-        RuntimePersistenceState::Unavailable => RuntimePersistenceStateV3::Unavailable,
+        RuntimePersistenceState::Healthy => RuntimePersistenceStateV4::Healthy,
+        RuntimePersistenceState::Degraded => RuntimePersistenceStateV4::Degraded,
+        RuntimePersistenceState::Unavailable => RuntimePersistenceStateV4::Unavailable,
     }
 }
 
-fn persistence_owner(owner: RuntimePersistenceOwner) -> RuntimePersistenceOwnerV3 {
+fn persistence_owner(owner: RuntimePersistenceOwner) -> RuntimePersistenceOwnerV4 {
     match owner {
-        RuntimePersistenceOwner::CurrentUser => RuntimePersistenceOwnerV3::CurrentUser,
-        RuntimePersistenceOwner::CollectorService => RuntimePersistenceOwnerV3::CollectorService,
+        RuntimePersistenceOwner::CurrentUser => RuntimePersistenceOwnerV4::CurrentUser,
+        RuntimePersistenceOwner::CollectorService => RuntimePersistenceOwnerV4::CollectorService,
     }
 }
 
 fn encode_system(
     snapshot: &RuntimeSnapshot,
     catalog: &mut CatalogBuilder,
-) -> Result<SystemDetailV3, String> {
+) -> Result<SystemDetailV4, String> {
     let system = &snapshot.system;
     let quality = system.quality.as_ref();
     let sampled = snapshot.sampled_at_ms;
@@ -573,7 +586,7 @@ fn encode_system(
         .iter()
         .enumerate()
         .map(|(index, value)| {
-            Ok(LogicalCpuDetailV3 {
+            Ok(LogicalCpuDetailV4 {
                 stable_id: format!("system:local:cpu:{index}"),
                 index: u16::try_from(index)
                     .map_err(|_| "protocol_logical_cpu_count_out_of_range")?,
@@ -596,13 +609,13 @@ fn encode_system(
                 .kernel_pool_tags
                 .iter()
                 .map(|tag| {
-                    Ok(KernelPoolTagDetailV3 {
+                    Ok(KernelPoolTagDetailV4 {
                         stable_id: format!("system:local:pool:{}:{:?}", tag.tag, tag.kind)
                             .to_ascii_lowercase(),
                         tag: tag.tag.clone(),
                         kind: match tag.kind {
-                            KernelPoolKind::Paged => KernelPoolKindV3::Paged,
-                            KernelPoolKind::Nonpaged => KernelPoolKindV3::Nonpaged,
+                            KernelPoolKind::Paged => KernelPoolKindV4::Paged,
+                            KernelPoolKind::Nonpaged => KernelPoolKindV4::Nonpaged,
                         },
                         driver_candidates: tag.driver_candidates.clone(),
                         driver_candidates_pending: tag.driver_candidates_pending,
@@ -639,7 +652,7 @@ fn encode_system(
         .transpose()?
         .unwrap_or_default();
 
-    Ok(SystemDetailV3 {
+    Ok(SystemDetailV4 {
         stable_id: "system:local".to_string(),
         metrics,
         logical_cpus,
@@ -647,14 +660,39 @@ fn encode_system(
     })
 }
 
-fn encode_workloads(
-    snapshot: &RuntimeSnapshot,
+pub(crate) fn encode_workloads(
+    rows: &[ProcessViewRow],
+    sample_seq: u64,
+    sampled: Option<u64>,
+    platform: RuntimePlatform,
     catalog: &mut CatalogBuilder,
-) -> Result<Vec<WorkloadDetailV3>, String> {
-    let sampled = snapshot.sampled_at_ms;
-    let mut process_ids_by_pid = HashMap::<String, Vec<String>>::new();
+) -> Result<Vec<WorkloadDetailV4>, String> {
+    let process_details = rows
+        .iter()
+        .filter_map(|row| match row {
+            ProcessViewRow::Process { detail, .. } => Some(detail),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let samples = process_details
+        .iter()
+        .map(|detail| detail.process.clone())
+        .collect::<Vec<_>>();
+    let parents = crate::workload_identity::verified_parent_indices(&samples);
+    let parent_ids = parents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, parent)| {
+            parent.map(|parent| {
+                (
+                    stable_process_id(process_details[index], sample_seq),
+                    stable_process_id(process_details[parent], sample_seq),
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
     let mut members_by_group = HashMap::<String, Vec<String>>::new();
-    for row in &snapshot.process_view_rows {
+    for row in rows {
         if let ProcessViewRow::Process {
             detail,
             group_key,
@@ -662,11 +700,7 @@ fn encode_workloads(
             ..
         } = row
         {
-            let id = stable_process_id(detail, snapshot.sample_seq);
-            process_ids_by_pid
-                .entry(detail.process.pid.clone())
-                .or_default()
-                .push(id.clone());
+            let id = stable_process_id(detail, sample_seq);
             if *is_grouped {
                 members_by_group
                     .entry(group_key.clone())
@@ -676,9 +710,7 @@ fn encode_workloads(
         }
     }
 
-    snapshot
-        .process_view_rows
-        .iter()
+    rows.iter()
         .map(|row| match row {
             ProcessViewRow::Process {
                 detail,
@@ -692,20 +724,14 @@ fn encode_workloads(
                 ..
             } => {
                 let process = &detail.process;
-                let id = stable_process_id(detail, snapshot.sample_seq);
-                let parent_process_id = process
-                    .parent_pid
-                    .as_ref()
-                    .and_then(|pid| process_ids_by_pid.get(pid))
-                    .filter(|ids| ids.len() == 1)
-                    .and_then(|ids| ids.first())
-                    .cloned();
-                Ok(WorkloadDetailV3::Process(ProcessDetailV3 {
+                let id = stable_process_id(detail, sample_seq);
+                let parent_process_id = parent_ids.get(&id).cloned();
+                Ok(WorkloadDetailV4::Process(ProcessDetailV4 {
                     stable_id: id,
                     identity_stability: if process.start_time_ms == 0 {
-                        ProcessIdentityStabilityV3::Publication
+                        ProcessIdentityStabilityV4::Publication
                     } else {
-                        ProcessIdentityStabilityV3::Stable
+                        ProcessIdentityStabilityV4::Stable
                     },
                     pid: process.pid.clone(),
                     parent_pid: process.parent_pid.clone(),
@@ -715,7 +741,7 @@ fn encode_workloads(
                     executable: process.exe.clone(),
                     status: process.status.clone(),
                     access_state: access_state(process.access_state),
-                    presentation: ProcessPresentationV3 {
+                    presentation: ProcessPresentationV4 {
                         group_id: is_grouped.then(|| format!("group:{group_key}")),
                         group_key: group_key.clone(),
                         group_label: group_label.clone(),
@@ -725,12 +751,7 @@ fn encode_workloads(
                         is_child: *is_child,
                         is_grouped: *is_grouped,
                     },
-                    metrics: encode_process_metrics(
-                        process,
-                        snapshot.environment.platform,
-                        sampled,
-                        catalog,
-                    )?,
+                    metrics: encode_process_metrics(process, platform, sampled, catalog)?,
                 }))
             }
             ProcessViewRow::Group {
@@ -744,7 +765,7 @@ fn encode_workloads(
                     .get(&detail.group_key)
                     .cloned()
                     .unwrap_or_default();
-                Ok(WorkloadDetailV3::Group(encode_group(
+                Ok(WorkloadDetailV4::Group(encode_group(
                     detail,
                     member_ids,
                     icon_kind,
@@ -917,7 +938,7 @@ fn encode_group(
     example_label: &Option<String>,
     sampled: Option<u64>,
     catalog: &mut CatalogBuilder,
-) -> Result<GroupDetailV3, String> {
+) -> Result<GroupDetailV4, String> {
     let specs = [
         (
             MetricSemantic::CpuUsage,
@@ -971,7 +992,7 @@ fn encode_group(
             Some(quality),
             sampled,
         )?;
-        coverage.push(GroupMetricCoverageV3 {
+        coverage.push(GroupMetricCoverageV4 {
             descriptor_index: observation.0,
             available_contributors: to_u32(
                 metric_coverage.available,
@@ -982,7 +1003,7 @@ fn encode_group(
         });
         metrics.push(observation);
     }
-    Ok(GroupDetailV3 {
+    Ok(GroupDetailV4 {
         stable_id: detail.workload_id.clone(),
         group_key: detail.group_key.clone(),
         label: detail.label.clone(),
@@ -999,11 +1020,11 @@ fn encode_group(
 fn encode_contributors(
     snapshot: &RuntimeSnapshot,
     catalog: &mut CatalogBuilder,
-) -> Result<Vec<ProcessContributorV3>, String> {
+) -> Result<Vec<ProcessContributorV4>, String> {
     let summary = &snapshot.process_contributors;
     [
         (
-            ContributorMetricV3::Cpu,
+            ContributorMetricV4::Cpu,
             summary.cpu.as_ref(),
             summary.cpu_identity.as_ref(),
             summary.cpu_coverage,
@@ -1011,7 +1032,7 @@ fn encode_contributors(
             summary.cpu_name_ambiguous,
         ),
         (
-            ContributorMetricV3::Memory,
+            ContributorMetricV4::Memory,
             summary.memory.as_ref(),
             summary.memory_identity.as_ref(),
             summary.memory_coverage,
@@ -1019,7 +1040,7 @@ fn encode_contributors(
             summary.memory_name_ambiguous,
         ),
         (
-            ContributorMetricV3::Io,
+            ContributorMetricV4::Io,
             summary.io.as_ref(),
             summary.io_identity.as_ref(),
             summary.io_coverage,
@@ -1027,7 +1048,7 @@ fn encode_contributors(
             summary.io_name_ambiguous,
         ),
         (
-            ContributorMetricV3::Network,
+            ContributorMetricV4::Network,
             summary.network.as_ref(),
             summary.network_identity.as_ref(),
             summary.network_coverage,
@@ -1124,7 +1145,7 @@ fn encode_contributors(
         }
         let process_id = process_id.filter(|_| quality_has_source);
         let display_name = process_id.as_ref().and(name).cloned();
-        Ok(ProcessContributorV3 {
+        Ok(ProcessContributorV4 {
             metric,
             process_id,
             display_name,
@@ -1141,7 +1162,7 @@ fn encode_contributors(
             source: quality
                 .and_then(|quality| quality.source)
                 .map(metric_source)
-                .unwrap_or(MetricSourceV3::Unknown),
+                .unwrap_or(MetricSourceV4::Unknown),
             limitation_index,
         })
     })
@@ -1227,106 +1248,106 @@ fn ensure_js_safe(value: u64) -> Result<(), String> {
 fn to_u32(value: usize, error: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| error.to_string())
 }
-fn access_state(value: AccessState) -> AccessStateV3 {
+fn access_state(value: AccessState) -> AccessStateV4 {
     match value {
-        AccessState::Full => AccessStateV3::Full,
-        AccessState::Partial => AccessStateV3::Partial,
-        AccessState::Denied => AccessStateV3::Denied,
+        AccessState::Full => AccessStateV4::Full,
+        AccessState::Partial => AccessStateV4::Partial,
+        AccessState::Denied => AccessStateV4::Denied,
     }
 }
-fn platform(value: RuntimePlatform) -> RuntimePlatformV3 {
+fn platform(value: RuntimePlatform) -> RuntimePlatformV4 {
     match value {
-        RuntimePlatform::Windows => RuntimePlatformV3::Windows,
-        RuntimePlatform::Linux => RuntimePlatformV3::Linux,
-        RuntimePlatform::Macos => RuntimePlatformV3::Macos,
-        RuntimePlatform::Fixture => RuntimePlatformV3::Fixture,
+        RuntimePlatform::Windows => RuntimePlatformV4::Windows,
+        RuntimePlatform::Linux => RuntimePlatformV4::Linux,
+        RuntimePlatform::Macos => RuntimePlatformV4::Macos,
+        RuntimePlatform::Fixture => RuntimePlatformV4::Fixture,
     }
 }
-fn engine_state(value: RuntimeEngineState) -> RuntimeEngineStateV3 {
+fn engine_state(value: RuntimeEngineState) -> RuntimeEngineStateV4 {
     match value {
-        RuntimeEngineState::Starting => RuntimeEngineStateV3::Starting,
-        RuntimeEngineState::Running => RuntimeEngineStateV3::Running,
-        RuntimeEngineState::Paused => RuntimeEngineStateV3::Paused,
-        RuntimeEngineState::Fatal => RuntimeEngineStateV3::Fatal,
+        RuntimeEngineState::Starting => RuntimeEngineStateV4::Starting,
+        RuntimeEngineState::Running => RuntimeEngineStateV4::Running,
+        RuntimeEngineState::Paused => RuntimeEngineStateV4::Paused,
+        RuntimeEngineState::Fatal => RuntimeEngineStateV4::Fatal,
     }
 }
-fn collector_state(value: RuntimeCollectorState) -> RuntimeCollectorStateV3 {
+fn collector_state(value: RuntimeCollectorState) -> RuntimeCollectorStateV4 {
     match value {
-        RuntimeCollectorState::Healthy => RuntimeCollectorStateV3::Healthy,
-        RuntimeCollectorState::Limited => RuntimeCollectorStateV3::Limited,
-        RuntimeCollectorState::Unavailable => RuntimeCollectorStateV3::Unavailable,
+        RuntimeCollectorState::Healthy => RuntimeCollectorStateV4::Healthy,
+        RuntimeCollectorState::Limited => RuntimeCollectorStateV4::Limited,
+        RuntimeCollectorState::Unavailable => RuntimeCollectorStateV4::Unavailable,
     }
 }
 
-fn target_architecture() -> RuntimeArchitectureV3 {
+fn target_architecture() -> RuntimeArchitectureV4 {
     match std::env::consts::ARCH {
-        "x86_64" => RuntimeArchitectureV3::X86_64,
-        "aarch64" => RuntimeArchitectureV3::Aarch64,
-        "x86" => RuntimeArchitectureV3::X86,
-        _ => RuntimeArchitectureV3::Unknown,
+        "x86_64" => RuntimeArchitectureV4::X86_64,
+        "aarch64" => RuntimeArchitectureV4::Aarch64,
+        "x86" => RuntimeArchitectureV4::X86,
+        _ => RuntimeArchitectureV4::Unknown,
     }
 }
-fn process_elevation(value: RuntimeProcessElevation) -> RuntimeProcessElevationV3 {
+fn process_elevation(value: RuntimeProcessElevation) -> RuntimeProcessElevationV4 {
     match value {
-        RuntimeProcessElevation::Unknown => RuntimeProcessElevationV3::Unknown,
-        RuntimeProcessElevation::Standard => RuntimeProcessElevationV3::Standard,
-        RuntimeProcessElevation::Elevated => RuntimeProcessElevationV3::Elevated,
-        RuntimeProcessElevation::NotApplicable => RuntimeProcessElevationV3::NotApplicable,
+        RuntimeProcessElevation::Unknown => RuntimeProcessElevationV4::Unknown,
+        RuntimeProcessElevation::Standard => RuntimeProcessElevationV4::Standard,
+        RuntimeProcessElevation::Elevated => RuntimeProcessElevationV4::Elevated,
+        RuntimeProcessElevation::NotApplicable => RuntimeProcessElevationV4::NotApplicable,
     }
 }
-fn install_kind(value: RuntimeInstallKind) -> RuntimeInstallKindV3 {
+fn install_kind(value: RuntimeInstallKind) -> RuntimeInstallKindV4 {
     match value {
-        RuntimeInstallKind::Unknown => RuntimeInstallKindV3::Unknown,
-        RuntimeInstallKind::Nsis => RuntimeInstallKindV3::Nsis,
-        RuntimeInstallKind::Appimage => RuntimeInstallKindV3::Appimage,
-        RuntimeInstallKind::Deb => RuntimeInstallKindV3::Deb,
-        RuntimeInstallKind::Dmg => RuntimeInstallKindV3::Dmg,
-        RuntimeInstallKind::AppBundle => RuntimeInstallKindV3::AppBundle,
-        RuntimeInstallKind::Portable => RuntimeInstallKindV3::Portable,
-        RuntimeInstallKind::Development => RuntimeInstallKindV3::Development,
+        RuntimeInstallKind::Unknown => RuntimeInstallKindV4::Unknown,
+        RuntimeInstallKind::Nsis => RuntimeInstallKindV4::Nsis,
+        RuntimeInstallKind::Appimage => RuntimeInstallKindV4::Appimage,
+        RuntimeInstallKind::Deb => RuntimeInstallKindV4::Deb,
+        RuntimeInstallKind::Dmg => RuntimeInstallKindV4::Dmg,
+        RuntimeInstallKind::AppBundle => RuntimeInstallKindV4::AppBundle,
+        RuntimeInstallKind::Portable => RuntimeInstallKindV4::Portable,
+        RuntimeInstallKind::Development => RuntimeInstallKindV4::Development,
     }
 }
-fn admin_state(value: RuntimeAdminModeState) -> PrivilegedCollectionStateV3 {
+fn admin_state(value: RuntimeAdminModeState) -> PrivilegedCollectionStateV4 {
     match value {
-        RuntimeAdminModeState::Unavailable => PrivilegedCollectionStateV3::Unavailable,
-        RuntimeAdminModeState::Off => PrivilegedCollectionStateV3::StandardOnly,
-        RuntimeAdminModeState::Requesting => PrivilegedCollectionStateV3::Connecting,
-        RuntimeAdminModeState::Active => PrivilegedCollectionStateV3::Active,
-        RuntimeAdminModeState::Recovering => PrivilegedCollectionStateV3::Recovering,
-        RuntimeAdminModeState::Failed => PrivilegedCollectionStateV3::Failed,
+        RuntimeAdminModeState::Unavailable => PrivilegedCollectionStateV4::Unavailable,
+        RuntimeAdminModeState::Off => PrivilegedCollectionStateV4::StandardOnly,
+        RuntimeAdminModeState::Requesting => PrivilegedCollectionStateV4::Connecting,
+        RuntimeAdminModeState::Active => PrivilegedCollectionStateV4::Active,
+        RuntimeAdminModeState::Recovering => PrivilegedCollectionStateV4::Recovering,
+        RuntimeAdminModeState::Failed => PrivilegedCollectionStateV4::Failed,
     }
 }
-fn privileged_source(value: RuntimePrivilegedSource) -> PrivilegedCollectionSourceV3 {
+fn privileged_source(value: RuntimePrivilegedSource) -> PrivilegedCollectionSourceV4 {
     match value {
-        RuntimePrivilegedSource::None => PrivilegedCollectionSourceV3::None,
-        RuntimePrivilegedSource::CurrentProcess => PrivilegedCollectionSourceV3::LocalProcess,
-        RuntimePrivilegedSource::CollectorService => PrivilegedCollectionSourceV3::CollectorService,
+        RuntimePrivilegedSource::None => PrivilegedCollectionSourceV4::None,
+        RuntimePrivilegedSource::CurrentProcess => PrivilegedCollectionSourceV4::LocalProcess,
+        RuntimePrivilegedSource::CollectorService => PrivilegedCollectionSourceV4::CollectorService,
     }
 }
-fn focus_mode(value: ProcessFocusMode) -> ProcessFocusModeV3 {
+fn focus_mode(value: ProcessFocusMode) -> ProcessFocusModeV4 {
     match value {
-        ProcessFocusMode::All => ProcessFocusModeV3::All,
-        ProcessFocusMode::Attention => ProcessFocusModeV3::Attention,
-        ProcessFocusMode::Io => ProcessFocusModeV3::Io,
+        ProcessFocusMode::All => ProcessFocusModeV4::All,
+        ProcessFocusMode::Attention => ProcessFocusModeV4::Attention,
+        ProcessFocusMode::Io => ProcessFocusModeV4::Io,
     }
 }
-fn sort_column(value: SortColumn) -> SortColumnV3 {
+fn sort_column(value: SortColumn) -> SortColumnV4 {
     match value {
-        SortColumn::Attention => SortColumnV3::Attention,
-        SortColumn::Name => SortColumnV3::Name,
-        SortColumn::Pid => SortColumnV3::Pid,
-        SortColumn::CpuPct => SortColumnV3::CpuPct,
-        SortColumn::MemoryBytes => SortColumnV3::MemoryBytes,
-        SortColumn::IoBps => SortColumnV3::IoBps,
-        SortColumn::NetworkBps => SortColumnV3::NetworkBps,
-        SortColumn::Threads => SortColumnV3::Threads,
-        SortColumn::Handles => SortColumnV3::Handles,
-        SortColumn::StartTimeMs => SortColumnV3::StartTimeMs,
+        SortColumn::Attention => SortColumnV4::Attention,
+        SortColumn::Name => SortColumnV4::Name,
+        SortColumn::Pid => SortColumnV4::Pid,
+        SortColumn::CpuPct => SortColumnV4::CpuPct,
+        SortColumn::MemoryBytes => SortColumnV4::MemoryBytes,
+        SortColumn::IoBps => SortColumnV4::IoBps,
+        SortColumn::NetworkBps => SortColumnV4::NetworkBps,
+        SortColumn::Threads => SortColumnV4::Threads,
+        SortColumn::Handles => SortColumnV4::Handles,
+        SortColumn::StartTimeMs => SortColumnV4::StartTimeMs,
     }
 }
-fn sort_direction(value: SortDirection) -> SortDirectionV3 {
+fn sort_direction(value: SortDirection) -> SortDirectionV4 {
     match value {
-        SortDirection::Asc => SortDirectionV3::Asc,
-        SortDirection::Desc => SortDirectionV3::Desc,
+        SortDirection::Asc => SortDirectionV4::Asc,
+        SortDirection::Desc => SortDirectionV4::Desc,
     }
 }

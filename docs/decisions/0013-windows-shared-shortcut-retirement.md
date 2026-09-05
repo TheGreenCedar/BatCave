@@ -30,6 +30,16 @@ This machine registration avoids user-profile inference: over-the-shoulder crede
 
 ## Proof boundary
 
+### Current-user Start entry
+
+An unelevated interactive launch of the verified installed monitor may create `BatCave Monitor.lnk` in that process user's `FOLDERID_Programs`. This is app-created user state. The GUI resolves the folder using its own process token; elevated, service-account, session-zero, and impersonated executions skip creation. It never selects a different user, enumerates profiles, or creates a shared shortcut. The existing native image checks pin the fixed Program Files monitor and its install directory throughout creation.
+
+The GUI creates the link exclusively after pinning the destination ancestry without following reparse points. Any existing object is preserved without reading or adopting it. Repeated launches therefore leave existing user state unchanged. Failed writes remove only the newly created handle; a failed rollback is reported. The link carries the fixed monitor target, working directory, icon and AppUserModelID, with no arguments.
+
+A missing entry is recreated on the next normal installed launch. To repair an existing broken entry, the user removes it from Start and launches the installed app again. Machine repair and uninstall do not touch this per-user entry; after uninstall, the user can remove it through Start. Installer behavior, App Paths ownership, and shared-shortcut retirement remain unchanged. Native Windows creation, collision, and installed lifecycle proof are still outstanding; portable policy tests do not establish Start or Search behavior on a Windows machine.
+
+### Installer proof
+
 Source tests prove the fixed hook ordering, controller selection, OS-known-folder and relocated-install handling (including verbatim UNC handle paths), exact two-location plan, exact shortcut contract, hostile identity rejection, handle-authorized shortcut and registry deletion primitives, App Paths absent/exact/foreign policy, interrupted-transaction recovery ordering, and absence of ACL/profile-enumeration code. Private raw lifecycle evidence records the shared key's exact path and value shape, owner, DACL digest, last-write time, and fixed target without widening the sanitized public schema. Windows bundle validation and the protected release build both run the post-bundle verifier against `src-tauri/target/release/nsis/x64/installer.nsi`; it requires both generated callbacks to short-circuit before any shortcut inspection or mutation, no finish-page shortcut control, preserved AppUserModelId cleanup, and a `NoShortcutMode` guard around every stock shared-path inspection or mutation after PREUNINSTALL. Final App Paths acceptance still requires an exact built NSIS install, update, failed-update rollback, repair, and uninstall under real standard accounts, including over-the-shoulder elevation credentials. Every migrated installed stage must observe the exact shared registration; final uninstall must observe it absent. Source validation is not that attended native proof.
 
 ## Verification

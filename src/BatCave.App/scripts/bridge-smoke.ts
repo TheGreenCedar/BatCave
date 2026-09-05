@@ -65,6 +65,8 @@ function snapshot(seq: number) {
       paused: false,
     },
     health: {
+      freshness: seq ? "live" : "starting",
+      reason_codes: [],
       engine_state: null,
       collector_state: null,
       degraded: false,
@@ -123,6 +125,7 @@ function snapshot(seq: number) {
     },
     processes: [],
     process_view_rows: [],
+    overview_rows: [],
     total_process_count: 0,
     warnings: [],
   };
@@ -295,7 +298,7 @@ assert.equal(heldRead.error, "still down");
 
 const incompatible = JSON.parse(
   readFileSync(
-    new URL("../src-tauri/src/fixtures/runtime-protocol-v3/incompatible.json", import.meta.url),
+    new URL("../src-tauri/src/fixtures/runtime-protocol-v4/incompatible.json", import.meta.url),
     "utf8",
   ),
 );

@@ -3,11 +3,12 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   RUNTIME_PROTOCOL_POLICY,
+  RUNTIME_PROTOCOL_VERSION,
   type MetricSemantic,
   type ProtocolEnvelope,
-  type RuntimeSnapshotPayloadV3,
-  type WorkloadDetailV3,
-} from "../src/lib/generated/runtime-protocol-v3.ts";
+  type RuntimeSnapshotPayloadV4,
+  type WorkloadDetailV4,
+} from "../src/lib/generated/runtime-protocol-v4.ts";
 import {
   canonicalKernelPoolStableId,
   encodeFixtureSnapshot,
@@ -15,13 +16,13 @@ import {
 import { adaptRuntimePayload } from "../src/lib/protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope } from "../src/lib/protocol/runtimeProtocol.ts";
 
-const windows = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/windows-standard.json");
-const elevated = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/windows-elevated.json");
-const linux = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/linux-partial.json");
-const macos = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/macos-limited.json");
-const incompatible = fixture("../src-tauri/src/fixtures/runtime-protocol-v3/incompatible.json");
+const windows = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/windows-standard.json");
+const elevated = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/windows-elevated.json");
+const linux = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/linux-partial.json");
+const macos = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/macos-limited.json");
+const incompatible = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/incompatible.json");
 const transitions = fixtureArray(
-  "../src-tauri/src/fixtures/runtime-protocol-v3/quality-transitions.json",
+  "../src-tauri/src/fixtures/runtime-protocol-v4/quality-transitions.json",
 );
 
 test("generated semantic policy is complete, unique, and internally coherent", () => {
@@ -316,8 +317,8 @@ test("incompatible writers enter the explicit mismatch state", () => {
   const decoded = decodeProtocolEnvelope(incompatible);
   assert.equal(decoded.kind, "protocol_mismatch");
   if (decoded.kind !== "protocol_mismatch") return;
-  assert.equal(decoded.mismatch.writerVersion, 4);
-  assert.equal(decoded.mismatch.minimumReaderVersion, 4);
+  assert.equal(decoded.mismatch.writerVersion, RUNTIME_PROTOCOL_VERSION + 1);
+  assert.equal(decoded.mismatch.minimumReaderVersion, RUNTIME_PROTOCOL_VERSION + 1);
   assert.equal(decoded.mismatch.reason, "reader_too_old");
 });
 
@@ -333,7 +334,7 @@ test("compatibility metadata has deterministic legacy and additive behavior", ()
   );
 
   const additive = structuredClone(windows);
-  additive.protocol_version = 4;
+  additive.protocol_version = RUNTIME_PROTOCOL_VERSION + 1;
   additive.compatibility.breaking = false;
   assert.equal(decodeProtocolEnvelope(additive).kind, "snapshot");
 
@@ -471,6 +472,10 @@ test("reader rejects descriptor, value, and membership corruption", () => {
   payload(nondegradedLimited).health.collector_state = "limited";
   assertMismatch(nondegradedLimited, "must be degraded");
   payload(nondegradedLimited).health.degraded = true;
+  payload(nondegradedLimited).health.reason_codes = ["collector_limited"];
+  payload(nondegradedLimited).health.last_heartbeat_at_ms =
+    payload(nondegradedLimited).health.evaluated_at_ms;
+  payload(nondegradedLimited).health.heartbeat_age_ms = 0;
   assert.equal(decodeProtocolEnvelope(nondegradedLimited).kind, "snapshot");
 
   const nondegradedUnavailable = structuredClone(windows);
@@ -516,6 +521,14 @@ test("reader rejects descriptor, value, and membership corruption", () => {
     suppressed_diagnostic_events: 0,
   };
   assertMismatch(orphanPersistenceComponent, "component");
+
+  const queuedPersistence = structuredClone(orphanPersistenceComponent);
+  const queuedComponent = payload(queuedPersistence).persistence!.components[0];
+  queuedComponent.owner = "current_user";
+  queuedComponent.durability = "session_only";
+  assert.equal(decodeProtocolEnvelope(queuedPersistence).kind, "snapshot");
+  queuedComponent.durability = "not_written";
+  assertMismatch(queuedPersistence, "durability");
 
   const oversizedTheme = structuredClone(windows);
   payload(oversizedTheme).settings.ui_preferences = {
@@ -734,18 +747,18 @@ function fixtureArray(relativePath: string): ProtocolEnvelope[] {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), "utf8"));
 }
 
-function payload(envelope: ProtocolEnvelope): RuntimeSnapshotPayloadV3 {
+function payload(envelope: ProtocolEnvelope): RuntimeSnapshotPayloadV4 {
   if (envelope.event.kind !== "runtime_snapshot") throw new Error("expected runtime snapshot");
   return envelope.event.payload;
 }
 
-function firstProcess(payload: RuntimeSnapshotPayloadV3) {
+function firstProcess(payload: RuntimeSnapshotPayloadV4) {
   const process = payload.workloads.find((workload) => workload.kind === "process");
   if (!process || process.kind !== "process") throw new Error("expected process workload");
   return process;
 }
 
-function rewriteFirstProcessPid(payload: RuntimeSnapshotPayloadV3, pid: string) {
+function rewriteFirstProcessPid(payload: RuntimeSnapshotPayloadV4, pid: string) {
   const process = firstProcess(payload);
   const oldId = process.detail.stable_id;
   const newId =
@@ -769,15 +782,15 @@ function rewriteFirstProcessPid(payload: RuntimeSnapshotPayloadV3, pid: string) 
   }
 }
 
-function firstGroup(payload: RuntimeSnapshotPayloadV3) {
+function firstGroup(payload: RuntimeSnapshotPayloadV4) {
   const group = payload.workloads.find((workload) => workload.kind === "group");
   if (!group || group.kind !== "group") throw new Error("expected group workload");
   return group;
 }
 
 function observation(
-  payload: RuntimeSnapshotPayloadV3,
-  workload: Extract<WorkloadDetailV3, { kind: "process" }>,
+  payload: RuntimeSnapshotPayloadV4,
+  workload: Extract<WorkloadDetailV4, { kind: "process" }>,
   semantic: MetricSemantic,
 ) {
   const metric = workload.detail.metrics.find(

@@ -1,6 +1,6 @@
 <script lang="ts">
+  import { displayProcessName } from "../../cockpit";
   import Copy from "phosphor-svelte/lib/Copy";
-  import MiniChart from "../../MiniChart.svelte";
   import {
     accessLabel,
     displayProcessMetricValue,
@@ -22,32 +22,21 @@
   } from "../../platformPresentation";
   import {
     processIdentity,
-    processOtherIoRate,
-    type ProcessRates,
   } from "../../process";
   import {
     resolvedProcessIcon,
     type ResolvedProcessIconCatalog,
   } from "../../processIcons";
-  import type { ChartPalette } from "../../themes";
   import type { ProcessDetail, ProcessSample } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
 
   // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
   export let detail: ProcessDetail;
-  export let processHistory: {
-    cpu: number[];
-    memory: number[];
-    readRate: number[];
-    writeRate: number[];
-    networkRate: number[];
-  } = { cpu: [], memory: [], readRate: [], writeRate: [], networkRate: [] };
-  export let processRates: Record<string, ProcessRates> = {};
   export let processReadRate = 0;
   export let processWriteRate = 0;
   export let processIcons: ResolvedProcessIconCatalog = {};
   export let copyStatus = "";
-  export let activeTheme: ChartPalette;
+  export let current = false;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
   export let platform: "windows" | "linux" | "macos" | "fixture" = "fixture";
   export let processNetworkLabel: (process: ProcessSample) => string;
@@ -57,7 +46,6 @@
 
   $: selectedProcess = detail.process;
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
-  $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...processHistory.cpu) / 100) * 100);
 
   function processReadWriteIoRate(): number {
     return processReadRate + processWriteRate;
@@ -81,7 +69,7 @@
 
   function processOtherIoLabel(process: ProcessSample): string {
     return displayProcessMetricValue(
-      processOtherIoRate(process, processRates),
+      process.other_io_bps,
       process.quality?.other_io,
       formatOptionalRate,
     );
@@ -105,12 +93,12 @@
   }
 
   function hasNotableFinding(process: ProcessSample): boolean {
-    return findingCopy(process) !== "No unusual activity is visible for this workload right now.";
+    return findingCopy(process) !== "Activity measurements are available for this sample.";
   }
 
   function accentTone(accent: string): "hot" | "heavy" | "io" | "normal" {
-    if (accent === "Hot") return "hot";
-    if (accent === "Heavy") return "heavy";
+    if (accent === "CPU") return "hot";
+    if (accent === "Memory") return "heavy";
     if (accent === "I/O") return "io";
     return "normal";
   }
@@ -133,7 +121,7 @@
       </span>
       <span class="identity-copy">
         <span class="identity-title-row">
-          <strong title={selectedProcess.name}>{selectedProcess.name}</strong>
+          <strong title={selectedProcess.exe || selectedProcess.name}>{displayProcessName(selectedProcess.name)}</strong>
         </span>
         <span class="identity-meta-row">
           {#if categoryLabel}<small class="identity-category">{categoryLabel}</small>{/if}
@@ -155,7 +143,7 @@
 
     <section class="current-activity" aria-labelledby="current-activity-title">
       <div>
-        <span>Current activity</span>
+        <span>{current ? "Current activity" : "Last recorded activity"}</span>
         <h3 id="current-activity-title">{accent}</h3>
       </div>
       <small>{selectedProcess.status}</small>
@@ -180,12 +168,7 @@
       </dl>
     </section>
 
-    <div class="inspector-hero-chart">
-      <div><span>One-core-equivalent CPU over time</span><strong>{processCpuLabel(selectedProcess)}</strong></div>
-      <MiniChart values={processHistory.cpu} max={cpuChartMax} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
-    </div>
-
-    <details class="technical-disclosure inspector-technical">
+<details class="technical-disclosure inspector-technical">
       <summary>Technical details</summary>
       <dl class="key-value-grid technical-grid">
         <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>

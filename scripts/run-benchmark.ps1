@@ -87,7 +87,7 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineArtifactPath)) {
     Assert-ArtifactValue $artifact "whole_app_measured" $false
     Assert-ArtifactValue $artifact "live_command" "refresh_now"
     Assert-ArtifactValue $artifact "command_transport" "in_process_bounded_channel"
-    Assert-ArtifactValue $artifact "serialization_scope" "runtime_protocol_v3_encode_and_json"
+    Assert-ArtifactValue $artifact "serialization_scope" "runtime_protocol_v4_encode_and_json"
     Assert-ArtifactValue $artifact "latency_gate_metric" "median_live_command_p95_ms"
     Assert-ArtifactValue $artifact "baseline_selection" "median-by-live-command-p95"
     Assert-ArtifactValue $artifact "platform" $runtimePlatform

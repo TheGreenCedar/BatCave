@@ -165,35 +165,70 @@ fn read_process(
     boot_time_ms: u64,
 ) -> Result<RawLinuxProcess, String> {
     let proc_dir = Path::new("/proc").join(pid.to_string());
-    let stat = parse_process_stat(
-        &fs::read_to_string(proc_dir.join("stat"))
-            .map_err(|error| format!("linux_proc_process_stat_read_failed:{pid}:{error}"))?,
-    )?;
-    let io_result = read_process_io(&proc_dir);
+    read_process_with_stat_reader(
+        &proc_dir,
+        pid,
+        ticks_per_second,
+        page_size,
+        boot_time_ms,
+        || {
+            parse_process_stat(
+                &fs::read_to_string(proc_dir.join("stat")).map_err(|error| {
+                    format!("linux_proc_process_stat_read_failed:{pid}:{error}")
+                })?,
+            )
+        },
+    )
+}
+
+fn read_process_with_stat_reader(
+    proc_dir: &Path,
+    pid: u32,
+    ticks_per_second: u64,
+    page_size: u64,
+    boot_time_ms: u64,
+    mut read_stat: impl FnMut() -> Result<ProcessStat, String>,
+) -> Result<RawLinuxProcess, String> {
+    let stat = read_stat()?;
+    if stat.pid != pid {
+        return Err(format!("linux_proc_process_identity_changed:{pid}"));
+    }
+    let io_result = read_process_io(proc_dir);
     let has_io = io_result.is_ok();
     let io = io_result.unwrap_or_default();
     let exe = fs::read_link(proc_dir.join("exe"))
         .map(|path| path.display().to_string())
         .unwrap_or_default();
-    let measured_private_bytes = read_private_bytes(&proc_dir);
+    let measured_private_bytes = read_private_bytes(proc_dir);
     let private_bytes =
         measured_private_bytes.unwrap_or_else(|| rss_bytes(stat.rss_pages, page_size));
     let handles_result = fs::read_dir(proc_dir.join("fd"))
         .map(|entries| u32::try_from(entries.filter_map(Result::ok).count()).unwrap_or(u32::MAX));
     let has_fd = handles_result.is_ok();
     let handles = handles_result.unwrap_or_default();
+    let confirmed = read_stat()?;
+    if confirmed.pid != stat.pid
+        || confirmed.start_time_ticks != stat.start_time_ticks
+        || confirmed.parent_pid != stat.parent_pid
+    {
+        return Err(format!("linux_proc_process_identity_changed:{pid}"));
+    }
     let has_exe = !exe.is_empty();
     let access_state = if has_exe && has_io && has_fd {
         AccessState::Full
     } else {
         AccessState::Partial
     };
-    let start_time_ms = boot_time_ms.saturating_add(
-        stat.start_time_ticks
-            .saturating_mul(1000)
-            .checked_div(ticks_per_second.max(1))
-            .unwrap_or_default(),
-    );
+    let start_time_ms = if boot_time_ms == 0 {
+        0
+    } else {
+        boot_time_ms.saturating_add(
+            stat.start_time_ticks
+                .saturating_mul(1000)
+                .checked_div(ticks_per_second.max(1))
+                .unwrap_or_default(),
+        )
+    };
 
     Ok(RawLinuxProcess {
         cpu_ticks: ProcessTicks {
@@ -498,6 +533,25 @@ fn round1(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_change_during_procfs_reads_discards_mixed_measurements() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("io"),
+            "read_bytes: 999\nwrite_bytes: 888\n",
+        )
+        .unwrap();
+        let mut reads = 0;
+        let result = read_process_with_stat_reader(directory.path(), 42, 100, 4096, 1_000, || {
+            reads += 1;
+            parse_process_stat(&format!(
+                "42 (worker) S 1 2 3 4 5 6 7 8 9 10 100 30 14 15 16 17 8 19 {} 4096 3",
+                if reads == 1 { 12345 } else { 12346 }
+            ))
+        });
+        assert!(result.is_err());
+    }
 
     #[test]
     fn parse_process_stat_handles_names_with_spaces() {

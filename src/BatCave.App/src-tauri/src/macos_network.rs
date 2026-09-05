@@ -646,7 +646,7 @@ fn subscription_timeout_error(
     ))
 }
 
-fn ensure_qualified_darwin_layout() -> Result<(), String> {
+pub(crate) fn ensure_qualified_darwin_layout() -> Result<(), String> {
     // SAFETY: zero is a valid initial representation for utsname and uname fills it.
     let mut system: libc::utsname = unsafe { zeroed() };
     // SAFETY: system points to writable storage of the exact type uname expects.
@@ -1465,9 +1465,35 @@ mod tests {
         ));
     }
 
+    fn assert_unqualified_layout_fails_closed(attribution: &mut MacosNetworkAttribution) -> bool {
+        let Err(expected) = ensure_qualified_darwin_layout() else {
+            return false;
+        };
+        assert!(
+            expected.starts_with("nstat_darwin_layout_unqualified:"),
+            "unexpected native qualification failure: {expected}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match attribution.sample() {
+                NetworkAttributionSample::Failed(error) => {
+                    assert_eq!(error, expected);
+                    return true;
+                }
+                NetworkAttributionSample::PendingBaseline(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                sample => panic!("Unqualified NStat layout must fail closed: {sample:?}"),
+            }
+        }
+    }
+
     #[test]
     fn native_control_socket_reaches_a_complete_baseline() {
         let mut attribution = MacosNetworkAttribution::new();
+        if assert_unqualified_layout_fails_closed(&mut attribution) {
+            return;
+        }
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match attribution.sample() {
@@ -1487,6 +1513,9 @@ mod tests {
     #[test]
     fn native_control_socket_attributes_loopback_bytes_to_the_process() {
         let mut attribution = MacosNetworkAttribution::new();
+        if assert_unqualified_layout_fails_closed(&mut attribution) {
+            return;
+        }
         wait_for_baseline(&mut attribution);
 
         const PAYLOAD_BYTES: usize = 512 * 1024;

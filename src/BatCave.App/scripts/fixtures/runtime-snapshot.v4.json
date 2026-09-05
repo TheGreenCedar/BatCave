@@ -1,7 +1,7 @@
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "compatibility": {
-    "minimum_reader_version": 3,
+    "minimum_reader_version": 4,
     "breaking": true
   },
   "event": {
@@ -49,6 +49,8 @@
         "engine_state": null,
         "collector_state": null,
         "degraded": false,
+        "freshness": "live",
+        "reason_codes": [],
         "status_summary": "Collecting local telemetry.",
         "evaluated_at_ms": 1700000000123,
         "last_heartbeat_at_ms": null,
@@ -806,6 +808,370 @@
         ]
       },
       "workloads": [
+        {
+          "kind": "group",
+          "detail": {
+            "stable_id": "group:batcave.app.exe",
+            "group_key": "batcave.app.exe",
+            "label": "BatCave.App.exe",
+            "category": "BatCave",
+            "member_ids": [
+              "process:1234:1699999999000",
+              "process:1235:1699999999001"
+            ],
+            "icon_kind": "batcave",
+            "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "example_label": "BatCave.App",
+            "metrics": [
+              [
+                30,
+                12.5,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                31,
+                113536.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                32,
+                22.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                33,
+                null,
+                4,
+                null,
+                2
+              ],
+              [
+                34,
+                null,
+                4,
+                null,
+                2
+              ],
+              [
+                35,
+                18.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ],
+            "coverage": [
+              {
+                "descriptor_index": 30,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 31,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 32,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 33,
+                "available_contributors": 0,
+                "total_contributors": 2,
+                "limitation_index": 2
+              },
+              {
+                "descriptor_index": 34,
+                "available_contributors": 0,
+                "total_contributors": 2,
+                "limitation_index": 2
+              },
+              {
+                "descriptor_index": 35,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:1234:1699999999000",
+            "identity_stability": "stable",
+            "pid": "1234",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999999000,
+            "display_name": "BatCave.App",
+            "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "status": "run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "group_label": "BatCave.App.exe",
+              "group_category": "BatCave",
+              "group_count": 2,
+              "icon_kind": "batcave",
+              "is_child": false,
+              "is_grouped": true
+            },
+            "metrics": [
+              [
+                36,
+                8.25,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                65536.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                39,
+                32768.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                40,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                41,
+                123.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                456.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                44,
+                7.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                8.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                47,
+                null,
+                2,
+                null,
+                4
+              ],
+              [
+                48,
+                null,
+                2,
+                null,
+                4
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:1235:1699999999001",
+            "identity_stability": "stable",
+            "pid": "1235",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999999001,
+            "display_name": "BatCave.App",
+            "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "status": "run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "group_label": "BatCave.App.exe",
+              "group_category": "BatCave",
+              "group_count": 2,
+              "icon_kind": "batcave",
+              "is_child": true,
+              "is_grouped": true
+            },
+            "metrics": [
+              [
+                36,
+                4.25,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                48000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                39,
+                24000.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                40,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                41,
+                100.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                200.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                44,
+                3.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                4.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                47,
+                null,
+                2,
+                null,
+                4
+              ],
+              [
+                48,
+                null,
+                2,
+                null,
+                4
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        }
+      ],
+      "overview_workloads": [
         {
           "kind": "group",
           "detail": {

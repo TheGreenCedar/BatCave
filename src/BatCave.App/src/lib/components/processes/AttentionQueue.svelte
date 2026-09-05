@@ -33,7 +33,6 @@
   $: visibleRankedCount = visibleRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: countLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
   $: queueTitle = focusMode === "attention" ? "Attention queue" : focusMode === "io" ? "I/O active" : "All apps";
-  $: queueEyebrow = sortKey === "attention" ? "Live values, stable order while you inspect" : "Live values, sorted as samples update";
 
   function processCountLabel(
     visibleCount: number,
@@ -41,10 +40,8 @@
     mode: ProcessFocusMode,
     filterText: string,
   ): string {
-    const scope = filterText.trim() ? "matching" : mode === "attention" ? "needing attention" : mode === "io" ? "I/O active" : "ranked";
-    return totalCount > 0 && visibleCount !== totalCount
-      ? `${visibleCount} ${scope} of ${totalCount}`
-      : `${visibleCount} ${scope}`;
+    const scope = filterText.trim() ? "matching workloads" : mode === "attention" ? "active workloads" : mode === "io" ? "I/O workloads" : "workloads";
+    return `${visibleCount} ${scope}${totalCount > 0 ? ` · ${totalCount} processes sampled` : ""}`;
   }
 
   function toggleGroup(key: string): void {
@@ -71,7 +68,6 @@
 >
   <header class="queue-heading">
     <div>
-      <span>{queueEyebrow}</span>
       <h2 id="attention-queue-title">{queueTitle} <small>{countLabel}</small></h2>
     </div>
   </header>

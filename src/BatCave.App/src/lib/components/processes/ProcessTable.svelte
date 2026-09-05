@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { displayProcessName } from "../../cockpit";
+  import { ProcessInteraction } from "../../process";
   import ArrowDown from "phosphor-svelte/lib/ArrowDown";
   import ArrowElbowDownRight from "phosphor-svelte/lib/ArrowElbowDownRight";
   import ArrowUp from "phosphor-svelte/lib/ArrowUp";
@@ -113,10 +115,16 @@
       : (row.detail.process.quality?.[metric]?.message ?? "");
   }
 
+  const interaction = new ProcessInteraction();
+
+  function setInteraction(source: "pointer" | "focus", active: boolean): void {
+    onInteractionChange(interaction.set(source, active));
+  }
+
   function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
     const next = event.relatedTarget;
     if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
-      onInteractionChange(false);
+      setInteraction("focus", false);
     }
   }
 </script>
@@ -125,9 +133,9 @@
   class="table-wrap attention-table-wrap"
   role="region"
   aria-label="Ranked apps and processes"
-  onpointerenter={() => onInteractionChange(true)}
-  onpointerleave={() => onInteractionChange(false)}
-  onfocusin={() => onInteractionChange(true)}
+  onpointerenter={() => setInteraction("pointer", true)}
+  onpointerleave={() => setInteraction("pointer", false)}
+  onfocusin={() => setInteraction("focus", true)}
   onfocusout={handleFocusOut}
 >
   <table class="attention-table" class:without-network={!columns.some((column) => column.key === "network")}>
@@ -197,14 +205,14 @@
                         matched={resolvedIcon.origin === "name_match"}
                       />
                       <span class="process-name-stack">
-                        <span>{row.detail.label}</span>
+                        <span title={row.detail.label}>{displayProcessName(row.detail.label)}</span>
                         {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
                       </span>
                     </button>
                   </div>
                 </td>
               {:else if column.key === "attention"}
-                <td><span class="impact-label">{row.attention_label || "Normal"}</span></td>
+                <td><span class="impact-label">{row.attention_label || "Sampled"}</span></td>
               {:else if column.key === "cpu"}
                 <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
               {:else if column.key === "memory"}
@@ -246,14 +254,14 @@
                         matched={resolvedIcon.origin === "name_match"}
                       />
                       <span class="process-name-stack">
-                        <span>{process.name}</span>
+                        <span title={process.exe || process.name}>{displayProcessName(process.name)}</span>
                         {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
                       </span>
                     </button>
                   </div>
                 </td>
               {:else if column.key === "attention"}
-                <td><span class="impact-label">{row.attention_label || "Normal"}</span></td>
+                <td><span class="impact-label">{row.attention_label || "Sampled"}</span></td>
               {:else if column.key === "cpu"}
                 <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
               {:else if column.key === "memory"}

@@ -8,7 +8,7 @@ use crate::{
         RuntimePersistencePermissionState, RuntimePersistenceState, RuntimePlatform,
         RuntimeSnapshot, RuntimeUiPreferences,
     },
-    protocol::{release_identity, RuntimeReleaseIdentityV3},
+    protocol::{release_identity, RuntimeReleaseIdentityV4},
     runtime_store::RuntimeState,
 };
 
@@ -33,7 +33,7 @@ struct CurrentUserPersistenceReceipt {
     format_version: u32,
     evidence_scope: &'static str,
     phase: ProofPhase,
-    release_identity: RuntimeReleaseIdentityV3,
+    release_identity: RuntimeReleaseIdentityV4,
     platform: RuntimePlatform,
     architecture: &'static str,
     install_kind: RuntimeInstallKind,

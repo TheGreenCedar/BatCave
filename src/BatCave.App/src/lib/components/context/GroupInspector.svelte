@@ -1,35 +1,28 @@
 <script lang="ts">
   import Copy from "phosphor-svelte/lib/Copy";
-  import MiniChart from "../../MiniChart.svelte";
   import {
     displayGroupMetricValue,
     formatBytes,
     formatPercent,
     formatRate,
     groupFindingLabel,
-    groupMetricCanDisplay,
     metricQualityLabel,
   } from "../../format";
   import type { ProcessIconKind } from "../../process";
-  import type { ChartPalette } from "../../themes";
   import type { GroupDetail, MetricCoverage } from "../../types";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
 
   // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
   export let detail: GroupDetail;
   // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
-  export let processHistory: { cpu: number[] };
   export let copyStatus = "";
-  export let activeTheme: ChartPalette;
+  export let current = false;
   export let iconKind: ProcessIconKind = "process";
   export let iconSrc: string | undefined = undefined;
   export let iconMatched = false;
   export let onCopy: () => void;
 
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
-  $: cpuCanDisplay = groupMetricCanDisplay(detail.quality.cpu, detail.coverage.cpu);
-  $: cpuHistory = cpuCanDisplay ? processHistory.cpu : [];
-  $: cpuChartMax = Math.max(100, Math.ceil(Math.max(0, ...cpuHistory) / 100) * 100);
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
@@ -49,7 +42,7 @@
   }
 
   function hasNotableActivity(): boolean {
-    return groupFindingLabel(detail) !== "No unusual aggregate activity is visible for this group right now.";
+    return groupFindingLabel(detail) !== "Aggregate measurements are available for this sample.";
   }
 </script>
 
@@ -83,7 +76,7 @@
 
   <section class="current-activity" aria-labelledby="group-current-activity-title">
     <div>
-      <span>Current activity</span>
+      <span>{current ? "Current activity" : "Last recorded activity"}</span>
       <h3 id="group-current-activity-title">Aggregate of {processCountLabel(detail.process_count)}</h3>
     </div>
   </section>
@@ -102,17 +95,7 @@
     </dl>
   </section>
 
-  <div class="inspector-hero-chart">
-    <div><span>Aggregate CPU over time</span><strong>{displayGroupMetricValue(detail.cpu_percent, detail.quality.cpu, detail.coverage.cpu, formatPercent)}</strong></div>
-    <MiniChart
-      values={cpuHistory}
-      max={cpuChartMax}
-      stroke={activeTheme.cpuStroke}
-      fill={activeTheme.cpuFill}
-    />
-  </div>
-
-  <details class="technical-disclosure inspector-technical">
+<details class="technical-disclosure inspector-technical">
     <summary>Technical details</summary>
     <dl class="key-value-grid technical-grid">
       <div><dt>Processes</dt><dd>{detail.process_count}</dd></div>

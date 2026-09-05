@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { makeFixtureSnapshot } from "../src/lib/fixtures.ts";
 import { startRuntimePolling, type PollScheduler } from "../src/lib/runtimePolling.ts";
@@ -15,6 +16,63 @@ import {
   trimSystemHistory,
 } from "../src/lib/telemetryHistory.ts";
 import type { InstallableUpdateResource } from "../src/lib/updateLifecycle.ts";
+import {
+  decodeRuntimeSnapshot,
+  observeAcceptedRuntimePublication,
+} from "../src/lib/tauriBridge.ts";
+
+test("publication observations exclude discarded and duplicate responses and retain transport timing", () => {
+  const wire: unknown = JSON.parse(
+    readFileSync(
+      new URL(
+        "../src-tauri/src/fixtures/runtime-protocol-v4/windows-standard.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const observations: Array<{ sequence: number; elapsed: number }> = [];
+  const observe = (snapshot: ReturnType<typeof decodeRuntimeSnapshot>, elapsed: number) => {
+    observations.push({ sequence: snapshot.publication_seq, elapsed });
+  };
+  const discarded = decodeRuntimeSnapshot(wire, 120);
+  const duplicate = decodeRuntimeSnapshot(wire, 240);
+  const accepted = decodeRuntimeSnapshot(wire, 360);
+  assert.deepEqual(observations, [], "decoding alone never observes a publication");
+  observeAcceptedRuntimePublication(
+    { publication_seq: discarded.publication_seq + 1 },
+    discarded,
+    observe,
+  );
+  observeAcceptedRuntimePublication(
+    { publication_seq: duplicate.publication_seq },
+    duplicate,
+    observe,
+  );
+  assert.deepEqual(observations, [], "older and equal publications cannot be recorded as painted");
+  observeAcceptedRuntimePublication(
+    { publication_seq: accepted.publication_seq - 1 },
+    accepted,
+    observe,
+  );
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0]?.sequence, accepted.publication_seq);
+  assert.ok(
+    observations[0] && observations[0].elapsed >= 360,
+    "transport and decode time survive acceptance",
+  );
+  observeAcceptedRuntimePublication(
+    { publication_seq: accepted.publication_seq - 1 },
+    accepted,
+    observe,
+  );
+  assert.equal(observations.length, 1, "timing metadata is consumed once");
+  assert.equal(
+    JSON.stringify(accepted).includes("transportElapsed"),
+    false,
+    "timing remains outside the protocol payload",
+  );
+});
 
 class ManualScheduler implements PollScheduler {
   private nextId = 1;

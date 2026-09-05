@@ -167,6 +167,7 @@ impl TelemetryCollector {
         let started = Instant::now();
         let mut warnings = Vec::new();
 
+        let process_sample_started_ms = now_ms();
         self.system.refresh_specifics(sysinfo_refresh_kind());
         self.networks.refresh(true);
 
@@ -185,6 +186,7 @@ impl TelemetryCollector {
             &sysinfo_cpu_by_generation,
             &mut warnings,
             self,
+            process_sample_started_ms,
         )?;
         let mut system_snapshot = collect_system_snapshot(
             sysinfo_snapshot,
@@ -411,6 +413,7 @@ fn collect_processes(
     sysinfo_cpu_by_generation: &HashMap<SysinfoProcessJoinKey, f64>,
     warnings: &mut Vec<String>,
     collector: &mut TelemetryCollector,
+    process_sample_started_ms: u64,
 ) -> Result<Vec<ProcessSample>, String> {
     #[cfg(windows)]
     let _ = collector;
@@ -427,6 +430,10 @@ fn collect_processes(
                     .collect::<HashMap<_, _>>();
                 Ok(native_processes
                     .into_iter()
+                    .filter(|process| {
+                        process.start_time_ms == 0
+                            || process.start_time_ms < process_sample_started_ms
+                    })
                     .map(|process| {
                         enrich_native_process(
                             process,
@@ -450,7 +457,9 @@ fn collect_processes(
         let _ = sysinfo_cpu_by_generation;
         let mut processes = sysinfo_processes.to_vec();
         let process_count = processes.len();
-        let collection = collector.macos_processes.enrich(&mut processes);
+        let collection = collector
+            .macos_processes
+            .enrich(&mut processes, process_sample_started_ms);
         if process_count > 0
             && collection
                 .denied_count
@@ -467,7 +476,12 @@ fn collect_processes(
 
     #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
-        let _ = (sysinfo_cpu_by_generation, warnings, collector);
+        let _ = (
+            sysinfo_cpu_by_generation,
+            warnings,
+            collector,
+            process_sample_started_ms,
+        );
         Ok(sysinfo_processes.to_vec())
     }
 }
@@ -1543,6 +1557,16 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_collector_reports_native_process_and_honest_system_sources() {
+        let network_qualified = match crate::macos_network::ensure_qualified_darwin_layout() {
+            Ok(()) => true,
+            Err(error) => {
+                assert!(
+                    error.starts_with("nstat_darwin_layout_unqualified:"),
+                    "unexpected native qualification failure: {error}"
+                );
+                false
+            }
+        };
         let mut collector = TelemetryCollector::new();
         let first = collector
             .collect()
@@ -1572,12 +1596,19 @@ mod tests {
                         .and_then(|quality| quality.network.as_ref())
                         .is_some_and(|quality| quality.quality == MetricQuality::Native)
             });
-            if network_ready || Instant::now() >= deadline {
+            if network_ready || !network_qualified || Instant::now() >= deadline {
                 break sample;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
-        assert_eq!(sample.collector_state, RuntimeCollectorState::Healthy);
+        assert_eq!(
+            sample.collector_state,
+            if network_qualified {
+                RuntimeCollectorState::Healthy
+            } else {
+                RuntimeCollectorState::Limited
+            }
+        );
 
         assert!(sample.system.memory_available_bytes.is_some());
         let system_quality = sample.system.quality.as_ref().expect("system quality");
@@ -1615,14 +1646,18 @@ mod tests {
         );
         assert_eq!(
             quality.network.as_ref().map(|quality| quality.quality),
-            Some(MetricQuality::Native)
+            Some(if network_qualified {
+                MetricQuality::Native
+            } else {
+                MetricQuality::Unavailable
+            })
         );
         assert_eq!(
             quality.network.as_ref().and_then(|quality| quality.source),
             Some(MetricSource::Nstat)
         );
-        assert!(current.network_received_bps.is_some());
-        assert!(current.network_transmitted_bps.is_some());
+        assert_eq!(current.network_received_bps.is_some(), network_qualified);
+        assert_eq!(current.network_transmitted_bps.is_some(), network_qualified);
     }
 
     fn sample_process(pid: &str) -> ProcessSample {

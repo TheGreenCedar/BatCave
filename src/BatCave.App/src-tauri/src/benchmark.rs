@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cli_args,
-    protocol::{encode_snapshot, release_identity, RuntimeReleaseIdentityV3},
+    protocol::{encode_snapshot, release_identity, RuntimeReleaseIdentityV4},
     runtime_store::RuntimeState,
 };
 
@@ -20,7 +20,7 @@ const EVIDENCE_SCOPE: &str = "core_runtime_host_only";
 const LATENCY_GATE_METRIC: &str = "median_live_command_p95_ms";
 const LIVE_COMMAND: &str = "refresh_now";
 const COMMAND_TRANSPORT: &str = "in_process_bounded_channel";
-const SERIALIZATION_SCOPE: &str = "runtime_protocol_v3_encode_and_json";
+const SERIALIZATION_SCOPE: &str = "runtime_protocol_v4_encode_and_json";
 const DEFAULT_MIN_SPEED_RATIO: f64 = 0.90;
 const MAX_APP_CPU_PERCENT: f64 = 25.0;
 const MAX_APP_RSS_BYTES: u64 = 350 * 1024 * 1024;
@@ -41,7 +41,7 @@ struct BenchmarkRepeat {
 #[serde(rename_all = "snake_case")]
 struct BenchmarkSummary {
     format_version: u32,
-    release_identity: RuntimeReleaseIdentityV3,
+    release_identity: RuntimeReleaseIdentityV4,
     host: String,
     measurement_origin: String,
     evidence_scope: String,
@@ -682,7 +682,7 @@ mod tests {
                 "whole_app_measured": false,
                 "live_command": "refresh_now",
                 "command_transport": "in_process_bounded_channel",
-                "serialization_scope": "runtime_protocol_v3_encode_and_json",
+                "serialization_scope": "runtime_protocol_v4_encode_and_json",
                 "latency_gate_metric": "median_live_command_p95_ms",
                 "platform": "test-os",
                 "architecture": "test-arch",

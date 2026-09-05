@@ -78,7 +78,7 @@ macOS native telemetry:
 - Sysinfo aggregate CPU, logical CPU, available/used memory, swap, and interface network counters.
 - Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
 - IOKit `IOBlockStorageDriver` byte counters aggregated once per physical registry entry. Disk-image paths are excluded; incomplete physical coverage is unavailable, and topology changes establish a new rate baseline. Process read/write I/O is never substituted for system disk telemetry.
-- The sysinfo interface aggregate includes `lo0`; protocol v3 labels its scope `all_interface_aggregate` rather than non-loopback.
+- The sysinfo interface aggregate includes `lo0`; protocol v4 labels its scope `all_interface_aggregate` rather than non-loopback.
 - Per-process TCP, UDP, and QUIC network attribution comes from one long-lived XNU NStat control socket. Absolute source counters are baselined and differenced on a dedicated reader thread, including final close updates for short-lived flows. The collector is qualified for NStat revision 9 on Darwin 21 through 25 and fails closed on an unknown layout or protocol error; it needs neither root nor a private entitlement. Privileged collection remains unavailable.
 
 Fallback behavior:
@@ -211,7 +211,7 @@ The benchmark builds the current release CLI and drives one-shot `RuntimeState::
 
 The default protocol is 30 warmup commands followed by five 120-command measured repeats with a 1000 ms inter-command delay. The CLI keeps `-SleepMs`/`--sleep-ms` for compatibility, while v4 JSON names the field `inter_command_delay_ms`. Normal validation uses zero warmup, one two-command repeat, and the same explicit delay. Every measured refresh must advance the sample sequence exactly once.
 
-V4 baseline artifacts record `measurement_origin: owned_sampling_engine_refresh_and_protocol_serialization`, `evidence_scope: core_runtime_host_only`, `whole_app_measured: false`, `live_command: refresh_now`, the in-process bounded-channel transport, and the protocol-v3 encoding/JSON serialization scope. They also record the source commit, release-binary SHA-256, binary-derived platform and architecture, machine class, workload, protocol parameters, component medians, repeat results, and `baseline_selection: median-by-live-command-p95`. Older artifact versions are rejected because their timing boundaries are different. Strict mode also requires app CPU at or below 25% and RSS at or below 350 MiB; these remain core-host measurements, not Tauri shell, webview, renderer, or process-tree evidence.
+V4 baseline artifacts record `measurement_origin: owned_sampling_engine_refresh_and_protocol_serialization`, `evidence_scope: core_runtime_host_only`, `whole_app_measured: false`, `live_command: refresh_now`, the in-process bounded-channel transport, and the protocol-v4 encoding/JSON serialization scope. They also record the source commit, release-binary SHA-256, binary-derived platform and architecture, machine class, workload, protocol parameters, component medians, repeat results, and `baseline_selection: median-by-live-command-p95`. Older artifact versions are rejected because their timing boundaries are different. Strict mode also requires app CPU at or below 25% and RSS at or below 350 MiB; these remain core-host measurements, not Tauri shell, webview, renderer, or process-tree evidence.
 
 ## Continuous Integration
 
@@ -219,7 +219,7 @@ V4 baseline artifacts record `measurement_origin: owned_sampling_engine_refresh_
 - Pull requests and `codex/**` pushes also check and lint Apple Silicon macOS and build the `aarch64-apple-darwin` target without packaging.
 - Pull requests run dependency review and fail on new moderate-or-higher advisories.
 - Pushes to `main` and manual bundle runs produce an offline-capable Windows NSIS installer, Linux deb/AppImage artifacts, and an ad-hoc-signed Apple Silicon Mac `.app`/DMG retained for 14 days. The Windows artifact embeds the WebView2 Evergreen Standalone Installer, trading roughly 127 MB of package size for install-time network independence while retaining Evergreen servicing.
-- Monday 09:00 UTC and manual advisory runs execute `npm audit --omit=dev --audit-level=moderate` and pinned `cargo-audit 0.22.2`. Rust vulnerabilities fail immediately; informational warnings must match the owned, expiring baseline documented in `docs/dependency-advisories.md`.
+- Monday 09:00 UTC and manual advisory runs audit all npm dependencies at moderate severity and run pinned `cargo-audit 0.22.2`. Both JSON reports are retained for 90 days even when the gate fails. Rust vulnerabilities fail; informational warnings must match the owned, expiring baseline documented in `docs/dependency-advisories.md`. Dependabot proposes weekly compatible npm and Cargo updates.
 
 ## Remaining Product Work
 

@@ -1,13 +1,14 @@
-import browserLinux from "../../src-tauri/src/fixtures/runtime-protocol-v3/browser-linux.json" with { type: "json" };
-import browserMacos from "../../src-tauri/src/fixtures/runtime-protocol-v3/browser-macos.json" with { type: "json" };
-import browserMacosDense from "../../src-tauri/src/fixtures/runtime-protocol-v3/browser-macos-dense.json" with { type: "json" };
-import browserWindows from "../../src-tauri/src/fixtures/runtime-protocol-v3/browser-windows.json" with { type: "json" };
+import browserLinux from "../../src-tauri/src/fixtures/runtime-protocol-v4/browser-linux.json" with { type: "json" };
+import browserMacos from "../../src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json" with { type: "json" };
+import browserMacosDense from "../../src-tauri/src/fixtures/runtime-protocol-v4/browser-macos-dense.json" with { type: "json" };
+import browserWindows from "../../src-tauri/src/fixtures/runtime-protocol-v4/browser-windows.json" with { type: "json" };
 import type {
   MeasurementDescriptor,
   MetricObservation,
   ProtocolEnvelope,
-  RuntimeSnapshotPayloadV3,
-} from "./generated/runtime-protocol-v3.ts";
+  RuntimeSnapshotPayloadV4,
+} from "./generated/runtime-protocol-v4.ts";
+import { deriveFixtureHealth } from "./protocol/fixtureProtocol.ts";
 import { adaptRuntimePayload } from "./protocol/runtimeAdapter.ts";
 import { decodeProtocolEnvelope } from "./protocol/runtimeProtocol.ts";
 import { makeDefaultRuntimeQuery } from "./runtimeSnapshot.ts";
@@ -53,7 +54,7 @@ export function makeFixtureSnapshot(
   return adaptRuntimePayload(decoded.payload);
 }
 
-function runtimeSnapshotPayload(envelope: ProtocolEnvelope): RuntimeSnapshotPayloadV3 {
+function runtimeSnapshotPayload(envelope: ProtocolEnvelope): RuntimeSnapshotPayloadV4 {
   if (envelope.event.kind !== "runtime_snapshot") {
     throw new Error("Browser fixture must contain a runtime snapshot.");
   }
@@ -61,7 +62,7 @@ function runtimeSnapshotPayload(envelope: ProtocolEnvelope): RuntimeSnapshotPayl
 }
 
 function applyFixtureState(
-  payload: RuntimeSnapshotPayloadV3,
+  payload: RuntimeSnapshotPayloadV4,
   tick: number,
   query: RuntimeQuery,
   platform: RuntimePlatform,
@@ -73,6 +74,9 @@ function applyFixtureState(
   payload.sampled_at_ms = sampledAt;
   payload.source = "fixture";
   payload.settings.query = { ...query };
+  payload.health.freshness = "live";
+  payload.health.reason_codes = [];
+  payload.health.degraded = false;
   payload.health.status_summary = "Fixture telemetry is running.";
   payload.health.evaluated_at_ms = sampledAt;
   payload.health.publication_age_ms = 0;
@@ -80,6 +84,15 @@ function applyFixtureState(
   payload.health.app_cpu_percent = animatedValue(payload.health.app_cpu_percent, tick, false);
   payload.health.collector_warning_count = 0;
   payload.health.last_warning = null;
+  payload.health.last_heartbeat_at_ms =
+    payload.health.engine_state === "running" ? sampledAt : null;
+  payload.health = deriveFixtureHealth({
+    health: payload.health,
+    published_at_ms: sampledAt,
+    sampled_at_ms: sampledAt,
+    sample_interval_ms: payload.settings.effective_sample_interval_ms,
+    paused: payload.settings.collection_paused,
+  });
   payload.warnings = [];
   payload.environment.release_identity = {
     app_version: "development",
@@ -112,10 +125,11 @@ function applyFixtureState(
   for (const workload of payload.workloads) {
     animateObservations(workload.detail.metrics, payload.descriptors, tick, sampledAt);
   }
+  payload.overview_workloads = structuredClone(payload.workloads);
   rotateFixturePublication(payload, tick);
 }
 
-function rotateFixturePublication(payload: RuntimeSnapshotPayloadV3, tick: number): void {
+function rotateFixturePublication(payload: RuntimeSnapshotPayloadV4, tick: number): void {
   const prefix = payload.workloads.slice(0, canonicalWorkloadPrefixLength);
   const suffix = payload.workloads.slice(canonicalWorkloadPrefixLength);
   if (suffix.length < 2) return;

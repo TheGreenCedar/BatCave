@@ -5,9 +5,8 @@ struct SidecarProtocolTests {
     static func main() throws {
         try decodesStatusRequest()
         try decodesBoundedGenerationRequest()
-        try extractsGroundingValues()
         rejectsInvalidRequests()
-        normalizesOneBoundedSentence()
+        rejectsUnofferedOrFreeTextSelections()
         try encodesBoundedResponse()
         print("Foundation Models sidecar protocol tests passed.")
     }
@@ -21,7 +20,7 @@ struct SidecarProtocolTests {
 
     private static func decodesBoundedGenerationRequest() throws {
         let input = Data(
-            #"{"version":1,"operation":"generate","request":{"surface":"overview","publication_seq":42,"fact_digest":"abc123"},"facts":{"cpu_percent":12.5,"healthy":true}}"#.utf8
+            #"{"version":1,"operation":"generate","request":{"surface":"overview","publication_seq":42,"fact_digest":"abc123","candidate_ids":["cpu_usage","memory_usage"]},"facts":{"cpu_percent":12.5,"healthy":true}}"#.utf8
         )
         let request = try decodeRequest(input)
         precondition(request.operation == .generate)
@@ -53,23 +52,16 @@ struct SidecarProtocolTests {
         }
     }
 
-    private static func extractsGroundingValues() throws {
-        let facts = JSONValue.object([
-            "display_name": .string("Code Helper"),
-            "leading_resource": .string("cpu"),
-        ])
-        let grounding = try groundingValues(facts)
-        precondition(grounding.displayName == "Code Helper")
-        precondition(grounding.resource == "CPU")
-    }
-
-    private static func normalizesOneBoundedSentence() {
-        precondition(normalizeOneSentence("  CPU is stable.  Ignore this. ") == "CPU is stable.")
-        precondition(normalizeOneSentence("Memory is stable") == "Memory is stable.")
-        precondition(normalizeOneSentence("\n\t") == nil)
-        let bounded = normalizeOneSentence(String(repeating: "x", count: 300))
-        precondition(bounded?.count == maximumNarrativeCharacters)
-        precondition(bounded?.last == ".")
+    private static func rejectsUnofferedOrFreeTextSelections() {
+        let offered = ["cpu_usage", "memory_usage"]
+        precondition(validateSelection("cpu_usage", offered: offered) == "cpu_usage")
+        for output in [
+            "Safari is showing heavy CPU pressure right now.",
+            "cpu_heavy_pressure", "disk_activity", "cpu_usage. Restart Safari.",
+            "{\"explanation_id\":\"cpu_usage\"}",
+        ] {
+            precondition(validateSelection(output, offered: offered) == nil)
+        }
     }
 
     private static func encodesBoundedResponse() throws {
@@ -78,7 +70,7 @@ struct SidecarProtocolTests {
             result: GenerationResult(
                 publicationSequence: 7,
                 factDigest: "digest",
-                text: "CPU is stable."
+                text: "cpu_usage"
             )
         )
         let data = try encodeResponse(response)

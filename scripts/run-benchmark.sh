@@ -155,7 +155,7 @@ expected = {
     "whole_app_measured": False,
     "live_command": "refresh_now",
     "command_transport": "in_process_bounded_channel",
-    "serialization_scope": "runtime_protocol_v3_encode_and_json",
+    "serialization_scope": "runtime_protocol_v4_encode_and_json",
     "latency_gate_metric": "median_live_command_p95_ms",
     "baseline_selection": "median-by-live-command-p95",
     "platform": platform,

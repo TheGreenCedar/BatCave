@@ -1,7 +1,9 @@
+import { decodeProtocolEnvelope } from "../src/lib/protocol/runtimeProtocol.ts";
+import { encodeFixtureSnapshot } from "../src/lib/protocol/fixtureProtocol.ts";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
-import type { ProtocolEnvelope } from "../src/lib/generated/runtime-protocol-v3.ts";
+import type { ProtocolEnvelope } from "../src/lib/generated/runtime-protocol-v4.ts";
 import { makeFixtureSnapshot } from "../src/lib/fixtures.ts";
 import { processViewRowKey, processViewRowMetrics } from "../src/lib/process.ts";
 import { makeDefaultRuntimeQuery } from "../src/lib/runtimeSnapshot.ts";
@@ -13,9 +15,9 @@ const canonicalPrefix = [
   "process:1235:1699999999001",
 ];
 const browserFixturePaths = {
-  windows: "../src-tauri/src/fixtures/runtime-protocol-v3/browser-windows.json",
-  linux: "../src-tauri/src/fixtures/runtime-protocol-v3/browser-linux.json",
-  macos: "../src-tauri/src/fixtures/runtime-protocol-v3/browser-macos.json",
+  windows: "../src-tauri/src/fixtures/runtime-protocol-v4/browser-windows.json",
+  linux: "../src-tauri/src/fixtures/runtime-protocol-v4/browser-linux.json",
+  macos: "../src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json",
 } as const;
 
 for (const platform of Object.keys(browserFixturePaths) as Array<
@@ -156,3 +158,38 @@ function fixture(relativePath: string): ProtocolEnvelope {
 function source(relativePath: string): string {
   return readFileSync(new URL(relativePath, import.meta.url), "utf8");
 }
+
+test("fixture encoding derives stale, paused, recovered, and limited health from the changed facts", () => {
+  const snapshot = makeFixtureSnapshot(1, undefined, "windows");
+  const sampledAt = snapshot.sampled_at_ms;
+  assert.notEqual(sampledAt, null);
+  if (sampledAt === null) throw new Error("expected sample");
+  snapshot.health.engine_state = "running";
+  snapshot.health.collector_state = "healthy";
+  snapshot.health.evaluated_at_ms = sampledAt + 2001;
+  snapshot.published_at_ms = sampledAt + 2001;
+  snapshot.health.last_heartbeat_at_ms = snapshot.published_at_ms;
+  const stale = decodeProtocolEnvelope(encodeFixtureSnapshot(snapshot));
+  assert.equal(stale.kind, "snapshot");
+  if (stale.kind !== "snapshot") throw new Error(stale.mismatch.message);
+  assert.equal(stale.payload.health.freshness, "stale");
+  assert.deepEqual(stale.payload.health.reason_codes, ["sample_stale"]);
+
+  snapshot.settings.paused = true;
+  snapshot.health.engine_state = "paused";
+  const paused = decodeProtocolEnvelope(encodeFixtureSnapshot(snapshot));
+  assert.equal(paused.kind, "snapshot");
+  if (paused.kind !== "snapshot") throw new Error(paused.mismatch.message);
+  assert.equal(paused.payload.health.freshness, "paused");
+  assert.deepEqual(paused.payload.health.reason_codes, []);
+
+  snapshot.settings.paused = false;
+  snapshot.health.engine_state = "running";
+  snapshot.sampled_at_ms = snapshot.published_at_ms;
+  snapshot.health.collector_state = "limited";
+  const limited = decodeProtocolEnvelope(encodeFixtureSnapshot(snapshot));
+  assert.equal(limited.kind, "snapshot");
+  if (limited.kind !== "snapshot") throw new Error(limited.mismatch.message);
+  assert.equal(limited.payload.health.freshness, "live");
+  assert.deepEqual(limited.payload.health.reason_codes, ["collector_limited"]);
+});
