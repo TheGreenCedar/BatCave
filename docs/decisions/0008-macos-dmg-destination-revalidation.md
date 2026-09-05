@@ -33,7 +33,7 @@ The inert fixture is intentionally ad-hoc signed. Its identity, version, archite
 
 ## Source descriptor
 
-The closed macOS source descriptor records a shared `consumed_destination_only` revalidation contract for both DMG installation and updater staging. It lists the seven mandatory gate IDs, the required `arm64` architecture, and the three #98 contained-app signature roles. The descriptor remains process-local and explicitly says a source fixture can neither prove destination binding nor mint proof.
+The closed macOS source descriptor records a shared `consumed_destination_only` revalidation contract for both DMG installation and updater staging. It lists the seven mandatory gate IDs, the required `arm64` architecture, and the three #98 contained-app signature roles. The descriptor remains process-local and explicitly says a source fixture can neither prove destination binding nor establish proof.
 
 For DMG, copying into an authority-owned isolated destination is an install-smoke staging action, not a system install. No app is placed in `/Applications`, launched, restarted, granted permissions, observed for telemetry, removed from a real installation location, or used to create state-policy evidence.
 

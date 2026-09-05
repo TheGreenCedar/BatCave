@@ -1,11 +1,11 @@
-# BatCave Monitor App Runbook
+# BatCave Monitor app runbook
 
-This directory contains the production Rust + Tauri + Svelte desktop app. Use this runbook when you want to try the app locally, verify a build, work on the UI, or understand why a metric is present, delayed, or unavailable.
+This directory contains the Rust, Tauri, and Svelte desktop app. This guide covers local development, validation, packaging, and telemetry troubleshooting.
 
-BatCave has two useful run modes:
+Choose a run mode:
 
 - Native desktop mode talks to the Rust runtime store through Tauri commands and uses platform collectors.
-- Browser fixture mode runs only the Svelte UI with deterministic local fixture telemetry, which is perfect for layout work and useless as collector proof. Beautiful, limited, honest. The holy trinity.
+- Browser fixture mode runs the Svelte UI with deterministic sample data for layout work. It does not test the collectors.
 
 Product screenshots and verification screenshots must come from the native Tauri desktop window, captured with Computer Use. Browser fixture screenshots are layout-only and should not be committed as product evidence.
 
@@ -33,7 +33,7 @@ Install app dependencies from this directory:
 npm install
 ```
 
-## Run Modes
+## Run modes
 
 From the repository root, launch the Windows desktop app:
 
@@ -71,7 +71,7 @@ npm run tauri -- dev
 
 `npm run dev` starts Vite at `http://127.0.0.1:1420`. `npm run tauri -- dev` launches the native shell and automatically merges the conventional `tauri.windows.conf.json`, `tauri.linux.conf.json`, or `tauri.macos.conf.json` overlay for the current host.
 
-## Verify And Build
+## Verify and build
 
 Fast app checks from this directory:
 
@@ -79,15 +79,7 @@ Fast app checks from this directory:
 npm run verify
 ```
 
-`npm run verify` runs:
-
-- `npm run test:process-order`
-- `npm run test:runtime-contract`
-- `npm run smoke:bridge`
-- `npm run build`
-- `npm run typecheck`
-- `npm run lint`
-- `npm run format:check`
+`npm run verify` runs the frontend behavior and contract tests, bridge smoke test, production build, type checks, lint, and formatting checks. The script list in [`package.json`](package.json) defines the full set.
 
 Full repository validation from the repository root:
 
@@ -122,13 +114,17 @@ npm run tauri -- build
 npm run tauri -- build --target aarch64-apple-darwin  # macOS Apple Silicon
 ```
 
-Windows build output lands under `src-tauri/target/release`, including the release executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, so the NSIS artifact embeds Microsoft's WebView2 Evergreen Standalone Installer. The trade-off is roughly 127 MB of additional package size in exchange for installation without network access and continued Evergreen runtime servicing. There is no online-bootstrapper artifact. Build hosts can still need network access to populate Tauri's WebView2 download cache. Linux bundle output lands under `src-tauri/target/release/bundle`, including `.deb` and AppImage artifacts. The Apple Silicon Mac `.app` and DMG land under `src-tauri/target/aarch64-apple-darwin/release/bundle`; local builds are not notarized and main-branch CI artifacts are ad-hoc signed.
+Windows output goes to `src-tauri/target/release`, including the executable and unsigned NSIS installer. `tauri.windows.conf.json` selects `offlineInstaller`, which embeds Microsoft's WebView2 Evergreen Standalone Installer. This adds roughly 127 MB but lets users install offline while retaining Evergreen servicing. There is no online-bootstrapper package. Build hosts may need network access to populate Tauri's WebView2 download cache.
 
-## Runtime Behavior
+Linux `.deb` and AppImage output goes to `src-tauri/target/release/bundle`. Apple Silicon `.app` and DMG output goes to `src-tauri/target/aarch64-apple-darwin/release/bundle`. Local Mac builds are not notarized; main-branch CI artifacts use ad-hoc signatures.
 
-The native app exposes a small snake_case JSON contract through Tauri commands:
+## Runtime behavior
+
+The monitoring commands use snake_case JSON:
 
 - `get_snapshot`
+- `get_workload_inspection`
+- `acknowledge_workload_inspection`
 - `refresh_now`
 - `pause_runtime`
 - `resume_runtime`
@@ -136,9 +132,13 @@ The native app exposes a small snake_case JSON contract through Tauri commands:
 - `set_process_query`
 - `get_process_icons`
 
-`publication_seq` and `published_at_ms` identify every runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful telemetry collection, so query, pause, cadence, and error publications cannot create fake chart samples. `environment` reports `platform`, current-process `process_elevation`, runtime-derived `install_kind`, and the resolved local data directory. `admin_mode.source` separately reports whether privileged collection comes from the current process or the installed collector service. Windows distinguishes an NSIS install whose registry location matches the running executable from portable and development binaries. Linux checks AppImage runtime state or local Debian package ownership. macOS distinguishes development, app-bundle, and standalone portable runtimes without claiming the app's original download container. Process identity is the PID plus `start_time_ms`, not the reusable PID alone.
+`publication_seq` and `published_at_ms` identify each runtime publication. `sample_seq` and nullable `sampled_at_ms` advance only after successful collection. Query, pause, cadence, and error publications therefore do not add chart samples.
 
-The Rust runtime store owns settings, pause/resume state, refresh cadence, query shaping, collector-service state, warm cache, diagnostics, health budgets, byte-rate derivation, and local JSON persistence.
+`environment` reports the platform, current-process elevation, package type, and local data directory. `admin_mode.source` separately identifies the current process or installed service supplying privileged collection. Package detection uses the running executable and platform installation records, as described in [Runtime telemetry](../../docs/runtime-telemetry.md).
+
+Workload identity includes process start time. If start time is unknown, the identity is valid for one telemetry sample (`sample_seq`) and changes at the next successful sample. Query and pause publications retain it. A later process using the same PID cannot inherit the earlier process's history.
+
+The Rust runtime owns sampling, settings, queries, collector-service state, histories, cache, diagnostics, health, and byte-rate calculations. A bounded worker writes local state without blocking publication.
 
 Local state stays under:
 
@@ -150,17 +150,23 @@ The UI stores theme preference in `localStorage` under `batcave.monitor.theme`.
 
 See [Current-user state ownership and retention](../../docs/current-user-state.md) for the owned files, permission checks, diagnostic limits, and safe cleanup boundary.
 
-## Triage UI Contract
+## Triage UI contract
 
-The attention queue groups rows by executable identity when available, then process name, then PID as a last resort. Group rows always have a stable key so they can be expanded, collapsed, selected, and inspected.
+The workload queue groups processes only when executable or bundle identity and verified ancestry support the relationship. Matching names alone do not merge independent jobs. Group identity changes when membership changes.
 
-Live values may update in place, but ranking order is held while the pointer or keyboard focus is inside the queue, a group is expanded, or a workload is selected. A newer order is applied only through the visible `Ranking updated` control. At 1280px and wider the resource rail and inspector remain visible; from 900–1279px the resource selector becomes horizontal and the inspector becomes a drawer; below 900px the workload queue becomes a compact list of metric cards.
+Values update in place while ranking stays fixed when the pointer or keyboard focus is inside the Explore queue. The pending order applies when both leave the queue. Use `Ranking updated` to apply it while the order is held.
 
-Selecting a group shows aggregate CPU, memory, read/write I/O, network, and thread totals from the grouped rows. The contextual detail pane uses those same aggregate live values, including network rates, instead of falling back to an unavailable state just because the selected row is a group. System resource selection uses the same pane. Settings, diagnostics, and compact detail use native modal dialogs, close with Escape, contain keyboard focus, and restore focus to their opener.
+At 1280px and wider, the resource rail and inspector remain visible. At 900 to 1279px, the resource selector becomes horizontal and the inspector opens in a drawer. Below 900px, the queue uses metric cards. Only the active list is mounted; resizing preserves group expansion and keyboard focus.
+
+Selecting a group shows its aggregate CPU, memory, read/write I/O, network, and thread totals with measurement quality and coverage. The inspector reads from a bounded runtime archive, independently of search and ranking. It retains timestamped history across selection changes and process exit, subject to the global memory budget.
+
+System resources use the same detail pane. Settings, diagnostics, and compact detail use modal dialogs that close with Escape, contain keyboard focus, and restore focus to the opener.
 
 Development-only accessibility fixtures cover bounded overview, process detail, group detail, settings, diagnostics, stale, degraded, and compact states. Install the local Chromium test runtime once with `npx playwright install chromium`, then run `npm run test:accessibility`. The test server uses a strict worktree-derived port; set `BATCAVE_ACCESSIBILITY_TEST_PORT` to an unused port when an explicit override is needed. These browser checks are automated semantic and layout evidence only; they do not replace packaged Windows keyboard or NVDA verification.
 
-## Platform Telemetry Notes
+## Platform telemetry notes
+
+### Windows
 
 Windows native collectors read process identity, parent PID, start time, CPU, kernel CPU, memory, private bytes, process I/O, thread count, handle count, access state, physical memory, commit totals, kernel paged/nonpaged pool, top kernel pool tags with best-effort local driver candidates, system cache, interface network totals, and PDH physical-disk rates. Windows exposes commit through `memory_accounting` and omits cross-platform swap and process virtual-memory fields instead of relabeling commit charge.
 
@@ -170,19 +176,27 @@ Kernel pool tag driver names are candidates, not proof of ownership. BatCave rea
 
 Windows per-process network attribution uses one ETW kernel logger owned by the installed collector service. The standard desktop fallback never acquires ETW. Service gaps, disconnects, protocol failures, or identity failures fail closed to standard access and remain visible through collector-service state and warnings.
 
-Windows NSIS upgrades stage a fixed recovery controller beside the stable image and use a protected digest-bound journal plus an atomically created rollback executable to make service replacement resumable. A verified compatibility alias supports future installed uninstallers after this lookup behavior has shipped; the first migration from an older uninstaller remains installer-retry-only if it fails before `uninstall.exe` is replaced. The candidate is accepted only after the exact new stable process generation is running and has produced an initial telemetry sample; failed candidates restore the verified old image. Same-version different-build and superseding-installer retries are explicit, dirty stopped services can be replaced without restarting the broken old image, uninstall retains transaction authority until SCM deletion succeeds, and a delete-pending timeout is reported as requiring a reboot. Exact installed upgrade, rollback, restart, and uninstall behavior remains a native Windows evidence requirement.
+Windows NSIS upgrades stage a fixed recovery controller beside the stable image and use a protected digest-bound journal plus an atomically created rollback executable to make service replacement resumable. A verified compatibility alias supports future installed uninstallers after this lookup behavior has shipped; the first migration from an older uninstaller remains installer-retry-only if it fails before `uninstall.exe` is replaced. The candidate is accepted only after the exact new stable process generation is running and has produced an initial telemetry sample; failed candidates restore the verified old image.
+
+Same-version different-build and superseding-installer retries are explicit, dirty stopped services can be replaced without restarting the broken old image, uninstall retains transaction authority until SCM deletion succeeds, and a delete-pending timeout is reported as requiring a reboot. Exact installed upgrade, rollback, restart, and uninstall behavior remains a native Windows evidence requirement.
+
+### Linux
 
 Linux native collectors read aggregate CPU/kernel/logical CPU deltas, memory and swap, block-device I/O totals/rates, interface network totals/rates, process identity, parent PID, start time, RSS/private memory, virtual memory, process I/O totals, thread counts, and file descriptor counts.
 
-Linux per-process network attribution is optional. It requires bpftrace 0.22.0 or newer for synchronous map iteration across probes, keyed existence checks, and controlled map printing on exit. It uses owned `bpftrace`/eBPF entry/return probes on `__sock_sendmsg` and `sock_recvmsg` when the app has sufficient host permissions or capabilities. The send probe follows the syscall path directly instead of relying on the unused `sock_sendmsg` wrapper present on some supported kernels. Every entry clears orphaned per-thread family state before admitting only IPv4 or IPv6, so a missed return cannot make later Unix-domain traffic look like IP traffic or consume attribution capacity. A closed one-second epoch waits through one full grace interval before draining. Protocol v2 then holds each fully validated epoch until the following complete epoch boundary before it becomes publishable. Ordered receive/transmit sections carry count, byte, stale-key, and in-band map-overflow summaries; any mismatch, stale key, or overflow fails the attribution without consuming the held epoch. The tracing maps have a hard 16,384-key limit and an 8,192-key soft insertion limit. The unused half reserves one check-to-insert race per configured CPU, and startup fails closed on hosts with more than 8,192 configured CPUs. Existing keys can continue accumulating above the soft limit.
+Linux process-network attribution requires bpftrace 0.22.0 or newer and sufficient host permissions. It probes IPv4 and IPv6 socket payloads, validates complete counter windows, and marks rates unavailable on missing intervals, capacity overflow, reader failure, or shutdown failure.
 
-The child redirects stderr into the same owned pipe as protocol output, preserving the child's actual write order. Any non-protocol diagnostic is fatal, but diagnostics are defense in depth: the ordered overflow fields are the capacity-integrity proof. Validated, eligible windows accumulate across every supported app cadence. Reader, protocol, child, retry, and shutdown failures mark the rates unavailable instead of publishing a healthy zero. `bash scripts/install-linux-deps.sh --with-bpftrace` installs the apt candidate only when it meets the version floor, or verifies a newer preinstalled build; it rejects Ubuntu 24.04's unsupported 0.20.x candidate before installation. Without those permissions or a supported opt-in package, BatCave keeps running and marks per-process network rates unavailable.
+`bash scripts/install-linux-deps.sh --with-bpftrace` installs an apt candidate only when it meets the version floor, or verifies a supported preinstalled build. It rejects Ubuntu 24.04's 0.20.x candidate. Monitoring remains available without the optional probe. [Runtime telemetry](../../docs/runtime-telemetry.md) documents epoch validation, capacity limits, and recovery.
 
 `sysinfo` remains a fallback when native collectors cannot read the expected host files.
 
-macOS collectors use sysinfo as a resilient base and enrich local process rows with libproc details such as physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Host disk comes from deduplicated IOKit physical block-driver byte counters; disk-image registry paths are excluded, incomplete device coverage fails closed, and a device-set change waits for a fresh rate baseline. Process I/O is never substituted for host disk. The sysinfo network aggregate includes `lo0`. Per-process TCP, UDP, and QUIC rates come from one long-lived XNU NStat control socket. It needs neither root nor a private entitlement; BatCave baselines absolute source counters, retains final close updates, and fails closed when the private revision-9 wire layout is not qualified. Privileged collection remains unavailable.
+### macOS
 
-The canonical source/scope/privilege/package matrix is [docs/platform-capabilities.md](../../docs/platform-capabilities.md). Windows ARM64 and Linux ARM64 are unsupported: the repository does not validate their native collectors or publish packages for them. macOS ships one validated Apple Silicon `arm64` app; Intel Macs are unsupported.
+macOS uses sysinfo for base measurements and libproc for physical footprint, read/write I/O totals, thread count, and file-descriptor count when access allows. Host-disk rates come from deduplicated IOKit physical block-driver counters. Disk-image paths are excluded, incomplete coverage makes the metric unavailable, and device-set changes require a new baseline. Process I/O does not substitute for host disk.
+
+The sysinfo network aggregate includes `lo0`. Per-process TCP, UDP, and QUIC rates come from one XNU NStat control socket without root or a private entitlement. BatCave computes rates from absolute counters, includes final close updates, and marks traffic unavailable on unqualified revision-9 layouts. Privileged collection remains unavailable.
+
+See [Platform capabilities](../../docs/platform-capabilities.md) for sources, measurement scope, permissions, and packages. Windows ARM64 and Linux ARM64 have no validated collectors or published packages. macOS supports Apple Silicon `arm64` only.
 
 ## Benchmarking
 
@@ -202,13 +216,15 @@ bash scripts/capture-benchmark-baseline.sh --benchmark-host core
 bash scripts/run-benchmark-gate.sh --benchmark-host core --baseline-artifact artifacts/benchmarks/baseline-core-YYYYMMDD-HHMMSS.json
 ```
 
-Benchmarks build the current release CLI, use an isolated temporary data directory, and issue one-shot refreshes through the owned sampling engine. Artifact format v4 times collection (including transform, sorting, and persistence), immutable snapshot build/swap, live-command completion, and protocol-v4 encoding/JSON serialization separately. Output carries `evidence_scope: core_runtime_host_only` and `whole_app_measured: false`; it does not measure the Tauri shell, webview, renderer, or whole process tree. The default protocol runs 30 warmup commands and five 120-command measured repeats, selecting by `median_live_command_p95_ms`. Generated artifacts under `artifacts/benchmarks` record the commit, binary hash, platform, architecture, machine class, workload, protocol, component medians, and all repeats; revision fields append `-dirty` when the measured worktree is not clean. The CLI keeps `-SleepMs`/`--sleep-ms`, stored as `inter_command_delay_ms` in v4 output.
+Benchmarks build the current release CLI, use an isolated temporary data directory, and issue one-shot refreshes through the owned sampling engine. Artifact format v4 measures collection and runtime shaping, immutable snapshot publication, live-command completion, and protocol-v4 encoding/JSON serialization separately. Persistence writes run on a separate worker. Output carries `evidence_scope: core_runtime_host_only` and `whole_app_measured: false`; it does not measure the Tauri shell, webview, renderer, or whole process tree. The default protocol runs 30 warmup commands and five 120-command measured repeats, selecting by `median_live_command_p95_ms`. Generated artifacts under `artifacts/benchmarks` record the commit, binary hash, platform, architecture, machine class, workload, protocol, component medians, and all repeats; revision fields append `-dirty` when the measured worktree is not clean. The CLI keeps `-SleepMs`/`--sleep-ms`, stored as `inter_command_delay_ms` in v4 output.
 
 Strict mode is a configuration error without either a baseline or explicit p95 ceiling. A speed multiplier without a baseline is also a configuration error. Matching v4 baselines use `baseline median_live_command_p95_ms / candidate median_live_command_p95_ms` and require at least `0.90` by default. Older artifact formats are rejected instead of being compared across different measurement paths. Use `run-benchmark-gate` for release/local regression checks and its generated report artifact.
 
-CI validates Windows, Linux, Apple Silicon macOS, and Linux package transport on pull requests. Pull requests restore Rust caches but never write them; pushes to `main` and manually dispatched validation runs seed reusable base-branch caches. The package lane keeps a separate release-profile cache and runs its live transport tests in release mode so they reuse the release dependency graph without caching workspace crates. Rust warning gates run before the longer test passes, and the Linux bundle-only transport tail runs in parallel with the main Linux job. Pushes to `main` and manual bundle runs retain Windows NSIS, Linux deb/AppImage, and ad-hoc-signed Apple Silicon Mac artifacts for 14 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release; its Mac job additionally enforces Developer ID signing, notarization, stapling, the `arm64` slice, and DMG integrity. Moderate dependency changes fail pull requests; production npm and Rust advisories are audited every Monday and on demand.
+CI validates Windows, Linux, Apple Silicon macOS, and Linux package transport on pull requests. Only pushes to `main` save Rust caches; pull requests and manual runs restore them. The Linux package-transport job runs its tests in release mode and reuses the package dependency cache without caching workspace crates. Rust warning gates run before the longer test passes. Linux package transport runs alongside the main Linux validation job.
 
-## Production Notes
+Pushes to `main` and manual bundle runs retain Windows NSIS, Linux deb/AppImage, and ad-hoc-signed Apple Silicon Mac artifacts for 90 days. The versioned release workflow validates the shared SemVer and produces checksums plus GitHub build provenance before an optional durable release; its Mac job additionally enforces Developer ID signing, notarization, stapling, the `arm64` slice, and DMG integrity. Moderate dependency changes fail pull requests; all npm dependencies and Rust advisories are audited every Monday and on demand.
+
+## Production notes
 
 - Product name: `BatCave Monitor`
 - App identifier: `dev.batcave.monitor`
@@ -217,4 +233,4 @@ CI validates Windows, Linux, Apple Silicon macOS, and Linux package transport on
 - Runtime: Rust
 - Public runtime contract: snake_case JSON
 
-Keep telemetry local. Do not introduce outbound tracking, remote collection, or hosted logging. BatCave should feel like opening a clean instrument panel on your own machine, not inviting a stranger to rummage through the drawers.
+Keep telemetry local. Do not add outbound tracking, remote collection, or hosted logging.

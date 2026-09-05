@@ -47,7 +47,7 @@ cargo test --manifest-path src-tauri/Cargo.toml dto_spike
 npm run typecheck
 ```
 
-Those DTO-spike scripts belong to the recorded experiment and are no longer part of the current package surface. The checked evidence remains the output of that exact commit; current commands do not regenerate or supersede its four-strategy measurements.
+Those DTO-spike scripts belong to the recorded experiment and are no longer part of the current package scripts. The checked evidence remains the output of that exact commit; current commands do not regenerate or supersede its four-strategy measurements.
 
 Use the maintained production protocol guardrails from `src/BatCave.App` for current code:
 
@@ -59,7 +59,7 @@ cargo test --manifest-path src-tauri/Cargo.toml production_protocol_fixtures_mat
 npm run typecheck
 ```
 
-These commands exercise the checked production version 3 envelope, its generated TypeScript contract, and its production fixtures. They are ongoing regression checks, not a reproduction of the historical spike.
+These commands check the current production envelope, generated TypeScript contract, and fixtures. Protocol v4 retains the catalog design adopted here. The commands do not reproduce the historical version-3 spike.
 
 ## Metadata budget and guardrail
 

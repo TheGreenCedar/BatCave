@@ -10,7 +10,7 @@
 
 Keep the sealed, read-only `memfd` transport selected by issue #139 and test it against real deb and AppImage packages built from the exact checkout under validation. The Linux job now builds both packages before running a fixed Rust integration test. The test discovers only the version-bound Tauri bundle paths derived from `CARGO_MANIFEST_DIR` and `CARGO_PKG_VERSION`; it accepts no caller path, executable, arguments, environment, callback, observation, result, or evidence.
 
-This is an adapter-transport gate. It is deliberately short of #115 acceptance. A pull-request bundle is not an anonymously downloaded public artifact, and a successful hosted command is not `native_proven`.
+This is an adapter-transport gate. It is short of #115 acceptance. A pull-request bundle is not an anonymously downloaded public artifact, and a successful hosted command is not `native_proven`.
 
 ## Closed probes
 

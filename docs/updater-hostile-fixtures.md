@@ -1,6 +1,6 @@
 # Local updater hostile-case verification
 
-BatCave keeps updater checks explicit and offline-independent. The production app still uses only the embedded public key and stable GitHub endpoint in `tauri.conf.json`; the local fixture matrix changes neither.
+Update checks run only when requested; offline checks do not interrupt monitoring. The production app still uses only the embedded public key and stable GitHub endpoint in `tauri.conf.json`; the local fixture matrix changes neither.
 
 Run the native boundary matrix with:
 
@@ -25,6 +25,6 @@ Frontend lifecycle tests run through `npm run test:update-lifecycle`. They exerc
 
 ## Evidence boundary
 
-This matrix deliberately stops at `Update::download`: that is the last common, non-mutating boundary after exact-byte signature verification and before platform-specific installation. Running `downloadAndInstall` with a disposable package could modify the implementation host, and a generic test package would not be a truthful packaged BatCave update.
+This matrix stops at `Update::download`: that is the last common, non-mutating boundary after exact-byte signature verification and before platform-specific installation. `downloadAndInstall` would modify the host. A generic test package would not verify a packaged BatCave update.
 
 The matrix therefore does not prove a packaged GUI flow, a platform installer transition, public endpoint routing, a public A-to-B version change, preserved settings across installation, Authenticode, Developer ID, notarization, manifest expiry, newest-release freshness, replay resistance for a still-higher version, or cryptographic stable-channel binding. Those public and platform claims remain in #47 after #42 and #76 produce signed release artifacts.

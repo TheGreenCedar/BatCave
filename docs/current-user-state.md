@@ -1,6 +1,6 @@
 # Current-user state ownership and retention
 
-BatCave Monitor keeps its desktop runtime state on the local machine under one per-user storage root selected for the current desktop session. This contract defines the files managed by the current-user persistence coordinator, their safety boundaries, and what cleanup operations may remove.
+BatCave stores desktop state in one local directory for the current user. This contract defines the files the persistence coordinator manages, their permissions, and what cleanup may remove.
 
 Windows collector-service state is a separate trust boundary. Service security identifiers (SIDs), discretionary access control lists (DACLs), `ProgramData` paths, and service uninstall behavior belong to [issue #69](https://github.com/TheGreenCedar/BatCave/issues/69) and are not inferred here.
 
@@ -24,7 +24,7 @@ An invalid, relative, unavailable, or rejected root is a persistence failure. Mo
 | `diagnostics.jsonl.1`              | The one retained rotated diagnostic file.                                                                                                            | Rotation replaces the older `.1` file; there is no `.2` generation.                                                                                                                                                                                                                              |
 | `<component>.<pid>.<sequence>.tmp` | Same-directory temporary file used while atomically replacing a JSON component.                                                                      | Cleanup after a handled write or replacement failure is best effort. A cleanup error or process or machine crash can leave a stale temporary file; it remains BatCave-owned cleanup residue and is safe to remove while the app is stopped.                                                      |
 
-The retired Windows `elevated-helper` directory is migration-only state, not an active runtime surface. When the desktop is running with a confirmed standard token and the current-user storage root is usable, startup removes only the historically shipped `snapshot.json`, `snapshot.json.tmp`, `stop.signal`, and `accepted.signal` files at the root or inside a valid `run-<64 lowercase hex characters>` directory. Elevated or unverified process elevation defers cleanup with a visible warning. Unknown entries and invalid run names are preserved; unexpected file types and reparse points are preserved and reported rather than followed or recursively deleted.
+The retired Windows `elevated-helper` directory is migration-only state, unused by the current runtime. When the desktop is running with a confirmed standard token and the current-user storage root is usable, startup removes only the historically shipped `snapshot.json`, `snapshot.json.tmp`, `stop.signal`, and `accepted.signal` files at the root or inside a valid `run-<64 lowercase hex characters>` directory. Elevated or unverified process elevation defers cleanup with a visible warning. Unknown entries and invalid run names are preserved; unexpected file types and reparse points are preserved and reported rather than followed or recursively deleted.
 
 On Unix, the expected component-file mode is `0600`: new component and atomic temporary files request that mode, and diagnostic appends reset their file to it. BatCave resets a current-user-owned regular component with group or other access to `0600` and continues only if that repair succeeds. It rejects a component with the wrong owner or file type instead of following or overwriting it. Windows component reparse points and Unix component symlinks are also rejected.
 
@@ -34,13 +34,13 @@ WebView local storage is outside this filesystem contract. The UI can temporaril
 
 Settings and warm-cache writes use a same-directory sibling temporary file, synchronize it, replace the destination atomically, and synchronize the parent directory on Unix. A failure before replacement preserves the previous destination. If replacement succeeds but the final directory synchronization fails, BatCave reports that the new value may be installed but its durability is uncertain.
 
-A missing JSON component loads as no saved value. Malformed JSON and unsupported migrations return a typed failure without renaming, deleting, or rewriting the source bytes. The runtime starts with safe defaults and reports degraded persistence. After a failed settings load, automatic shutdown persistence stays blocked so defaults cannot erase the original file; an explicit user mutation is the recovery boundary that may replace it.
+A missing JSON component loads as no saved value. Malformed JSON and unsupported migrations return a typed failure without renaming, deleting, or rewriting the source bytes. The runtime starts with safe defaults and reports degraded persistence. After a failed settings load, automatic shutdown persistence stays blocked so defaults cannot erase the original file; only an explicit user settings change may replace it.
 
 Warm-cache failure has a narrower consequence: the runtime starts without cached rows, reports the persistence failure, and may write a new cache after later standard-access collection. No saved file can make a live sample authoritative or bypass metric-quality checks.
 
 ## Diagnostic bounds and breaker
 
-The production diagnostic policy is concrete:
+Diagnostic storage has these limits:
 
 - one current `diagnostics.jsonl` file, limited to 1 MiB;
 - one `diagnostics.jsonl.1` backup, replaced at the next rotation;

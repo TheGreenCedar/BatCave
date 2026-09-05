@@ -1,6 +1,6 @@
 # Installed current-user persistence evidence
 
-Issue [#153](https://github.com/TheGreenCedar/BatCave/issues/153) tracks native proof for the current-user storage contract. The proof surface is deliberately separate from release evidence: a persistence packet records what one exact native artifact did on one host, but it does not prove public provenance, package trust, updater behavior, or release readiness. Those decisions remain with [#76](https://github.com/TheGreenCedar/BatCave/issues/76).
+Issue [#153](https://github.com/TheGreenCedar/BatCave/issues/153) tracks native proof for the current-user storage contract. A persistence packet records what one native artifact did on one host. It does not establish public provenance, package trust, updater behavior, or release readiness. Those decisions remain with [#76](https://github.com/TheGreenCedar/BatCave/issues/76).
 
 Windows service storage remains outside this contract. Service SIDs, DACLs, `ProgramData`, diagnostics, and uninstall behavior belong to [#69](https://github.com/TheGreenCedar/BatCave/issues/69).
 
@@ -15,7 +15,7 @@ BATCAVE_CURRENT_USER_PERSISTENCE_PROOF=1 <packaged-executable> \
 
 The environment sentinel is required because `initialize` writes a fixed UI preference (`ember`, 180 history points) through the production runtime store. The command accepts no root, file, output, or subprocess argument. It always resolves the production current-user root for the process environment.
 
-Each phase emits one compact JSON receipt. The receipt includes exact embedded source identity, platform, architecture, install kind, settings, persistence state, current-user permission state, component durability, and sanitized failure codes. It deliberately omits local paths, diagnostic messages, corrupt bytes, raw logs, timestamps from component failures, environment dumps, and service-owned state.
+Each phase emits one compact JSON receipt. The receipt includes exact embedded source identity, platform, architecture, install kind, settings, persistence state, current-user permission state, component durability, and sanitized failure codes. It omits local paths, diagnostic messages, corrupt bytes, raw logs, timestamps from component failures, environment dumps, and service-owned state.
 
 The intended sequence is:
 
@@ -49,7 +49,7 @@ Run the build command from `src/BatCave.App`. The capture helper refuses to over
 
 [`macos-app-bundle-f010d2eaa8f3.json`](evidence/persistence/native-candidates/macos-app-bundle-f010d2eaa8f3.json) retains the sanitized app-bundle packet captured from integration source `f010d2eaa8f32959309ffda8deaef2a53ce5bda8` on macOS 26.5.2. The input was the sole app observed inside that source tree's freshly built, read-only-mounted local DMG. Its canonical tree digest matched the directly built app before the lifecycle run.
 
-The packet deliberately remains `artifact.kind: app_bundle` with `staged_application_bundle_only`. A path-based `hdiutil` mount cannot prove owned-byte transport through DiskImages, and the isolated application copy is not a canonical installation. This app-bundle packet therefore does not populate the `macos-dmg` profile or prove Developer ID signing, notarization, stapling, publication, or release readiness. The contract tests validate every JSON packet under `native-candidates` even though those packets remain outside the package index.
+The packet remains `artifact.kind: app_bundle` with `staged_application_bundle_only`. A path-based `hdiutil` mount cannot prove owned-byte transport through DiskImages, and the isolated application copy is not a canonical installation. This app-bundle packet therefore does not populate the `macos-dmg` profile or prove Developer ID signing, notarization, stapling, publication, or release readiness. The contract tests validate every JSON packet under `native-candidates` even though those packets remain outside the package index.
 
 ### Local DMG candidate automation
 
@@ -62,7 +62,9 @@ node scripts/capture-macos-dmg-current-user-persistence.mjs \
   --output artifacts/current-user-persistence/macos-dmg.json
 ```
 
-Build the Apple Silicon package first with `BATCAVE_SOURCE_COMMIT_SHA` set to that exact source SHA. The helper reads a stable regular source file, copies those bytes into a mode-`0400` file under a private mode-`0700` workspace rooted at `/private/tmp`, and hashes the copied artifact before and throughout the operation. While holding the atomic `/tmp/batcave-diskimages-proof.lock`, it verifies and mounts that copy read-only, requires one real app bundle, copies it with fixed `ditto` arguments, proves the canonical mounted and copied app-tree digests match, detaches, and rehashes the DMG. Every attempted DiskImages operation enters bounded cleanup that checks the original mount-point identity, the global native mount baseline and delta, and all newly observed DiskImages helper PIDs. Any cleanup or observation failure becomes retained-unsettled authority with its internal cause. Settled paths release the lock before lifecycle execution. If settlement remains unproven, the helper leaves the lock and private workspace in place for explicit recovery rather than releasing authority.
+Build the Apple Silicon package first with `BATCAVE_SOURCE_COMMIT_SHA` set to that exact source SHA. The helper reads a stable regular source file, copies those bytes into a mode-`0400` file under a private mode-`0700` workspace rooted at `/private/tmp`, and hashes the copied artifact before and throughout the operation. While holding the atomic `/tmp/batcave-diskimages-proof.lock`, it verifies and mounts that copy read-only, requires one real app bundle, copies it with fixed `ditto` arguments, proves the canonical mounted and copied app-tree digests match, detaches, and rehashes the DMG.
+
+Every attempted DiskImages operation enters bounded cleanup that checks the original mount-point identity, the global native mount baseline and delta, and all newly observed DiskImages helper PIDs. Any cleanup or observation failure becomes retained-unsettled authority with its internal cause. Settled paths release the lock before lifecycle execution. If settlement remains unproven, the helper leaves the lock and private workspace in place for explicit recovery rather than releasing authority.
 
 The lifecycle then uses the copied package application through the same fixed production-root probe as the app-bundle helper. The executable receives only its private fixed `HOME`, private fixed `TMPDIR`, and the proof sentinel; caller `DYLD_*`, `PATH`, temporary-directory, and data-root variables are not inherited. Input paths, mount paths, usernames, raw process output, corrupt bytes, environment values, and other host-local material never enter the packet. A path-based DMG mount still does not establish the immutable owned-byte transport required by [ADR 0006](decisions/0006-macos-dmg-owned-byte-transport.md); the packet keeps that limitation explicit. The local helper/mount settlement check does not claim authority over DiskImages remote-helper internals tracked by #114.
 

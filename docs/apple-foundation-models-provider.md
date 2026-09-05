@@ -17,14 +17,20 @@ Requests use protocol version `1`:
 ```
 
 ```json
-{"version":1,"operation":"generate","request":{"surface":"overview_contributor","publication_seq":42,"fact_digest":"<64 lowercase hex characters>"},"facts":{}}
+{"version":1,"operation":"generate","request":{"surface":"overview_contributor","publication_seq":42,"fact_digest":"<64 lowercase hex characters>","candidate_ids":["cpu_usage"]},"facts":{}}
 ```
 
-Generation metadata deliberately excludes subject IDs, process IDs, and paths.
-Only the typed fact packet is included in the model prompt. The helper returns
+Generation metadata excludes subject IDs, process IDs, and paths.
+The model receives the typed facts and host-offered explanation IDs. The helper returns
 `available`, `unsupported`, `model_not_ready`, `runtime_missing`, or `busy`.
-A successful result echoes only the provider name, publication sequence, fact
-digest, and one sentence capped at 180 characters.
+A successful result echoes the provider name, publication sequence, and fact
+digest. Its legacy `text` field carries an explanation ID, not display copy.
+The Rust coordinator checks that the ID was offered and still matches the
+current evidence. The frontend supplies the wording and falls back to its
+deterministic explanation if validation fails.
+
+The `generate` example above shows the request envelope. Replace the empty
+`facts` object with a complete `NarrativeFactPacket` before sending it.
 
 Build and verify the helper directly on Apple Silicon:
 

@@ -1,8 +1,6 @@
 # Platform capabilities
 
-**Updated**: 2026-07-14
-
-This is the static support contract for BatCave Monitor 0.2. Runtime protocol observations remain the authority for what one sample actually contains: a supported collector can still report `held`, `partial`, or `unavailable` when its source is starting, denied, missing, or malformed.
+This document lists supported collectors and packages for BatCave Monitor 0.2. Each runtime sample reports its actual coverage. A supported collector can still return `held`, `partial`, or `unavailable` when its source is starting, denied, missing, or malformed.
 
 ## Telemetry sources and scope
 
@@ -19,7 +17,7 @@ This is the static support contract for BatCave Monitor 0.2. Runtime protocol ob
 
 The macOS host-disk number is a physical block-driver aggregate, not a sum of mounted APFS volumes or visible processes. Registry entry IDs deduplicate the source. Attaching a DMG may add an `IOBlockStorageDriver`, but its `IOHDIXController`/DiskImages registry path is excluded. If any eligible physical driver lacks a complete byte-counter pair, the whole host-disk metric fails closed to `unavailable`; it is not published as a partial host total. Device-set changes require a fresh baseline before rates resume.
 
-The macOS host-network source includes loopback because that is the scope exposed by sysinfo. Protocol v3 publishes `all_interface_aggregate` for those observations. Windows and Linux host-network observations publish `non_loopback_interface_aggregate`. macOS process rates come from XNU NStat TCP, UDP, and QUIC counters and publish `ip_socket_payload`.
+The macOS host-network source includes loopback because that is the scope exposed by sysinfo. Protocol v4 publishes `all_interface_aggregate` for those observations. Windows and Linux host-network observations publish `non_loopback_interface_aggregate`. macOS process rates come from XNU NStat TCP, UDP, and QUIC counters and publish `ip_socket_payload`.
 
 NStat is a private XNU wire interface, not a private-framework dependency. BatCave qualifies the revision-9 layout on Darwin 21 through 25, opens one unprivileged nonblocking control socket, and fails closed on an unqualified OS layout, rejected provider, malformed message, truncation, or counter regression. The first complete query establishes a baseline; no historical bytes are emitted as a live rate.
 
@@ -33,13 +31,13 @@ macOS libproc probes classify each field independently:
 | Access denied (`EPERM`/`EACCES`) | Keep the sysinfo row; `denied` only when every native probe is denied | Affected counters are unavailable with `access_denied` |
 | Unsupported (`ENOSYS`/`ENOTSUP`) | Keep the row as partial | Affected field is explicitly unavailable with `unsupported_metric` |
 | Other native failure | Keep the row as partial | Affected field is unavailable with `collector_failure` |
-| Mixed success/failure | Keep independently successful fields | Row is partial; one failed probe cannot erase another probe's truth |
+| Mixed success/failure | Keep independently successful fields | Row is partial; one failed probe does not discard successful measurements |
 
 Process rates use PID plus start time and require compatible live cumulative-counter quality and source. A reused PID, denial, exit, counter reset, source change, or recovery from unavailable data establishes a new baseline and publishes zero rate until the next compatible sample. This prevents churn and permission changes from becoming synthetic I/O spikes.
 
 ## Distribution and CPU architecture
 
-The [versioned machine contract](evidence/releases/platform-support-contract.v1.json) is authoritative for release hosts, architectures, package kinds, and proof states. This is its canonical human-readable matrix.
+The [versioned machine contract](evidence/releases/platform-support-contract.v1.json) is authoritative for release hosts, architectures, package kinds, and proof states. The table below mirrors that contract.
 
 | Profile | Minimum host | Host architecture/runtime | Contract release packages | Source proof | Oldest-host native proof |
 | --- | --- | --- | --- | --- | --- |

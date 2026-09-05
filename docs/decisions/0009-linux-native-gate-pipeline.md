@@ -10,7 +10,7 @@
 
 Fix the Linux deb/AppImage operation order in a Rust integration-test crate before a production complete-operation entry exists. The pipeline accepts only a private `ConsumedArtifact` value created when an in-memory process-local fixture capability consumes and rehashes its owned bytes. It accepts no command, executable, arguments, environment, host path, status, callback, output, receipt, or evidence value.
 
-Keep this contract test-only. ADR 0004 still prevents a production Linux adapter entry until Rust can independently verify the public release and selected bytes without trusting caller-supplied JavaScript state. The pipeline does not install a deb, stage or launch an AppImage, mutate user state, or execute a child process.
+Keep this contract test-only. At the time of this decision, ADR 0004 blocked a production Linux entry until Rust could independently verify the public release and selected bytes without trusting caller-supplied JavaScript state. The private verifier later supplied that entry, as noted below. The pipeline does not install a deb, stage or launch an AppImage, mutate user state, or execute a child process.
 
 ## Fixed operation sequence
 
@@ -53,6 +53,6 @@ cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml \
 bash scripts/validate-tauri.sh --skip-bundle
 ```
 
-The private release verifier now owns exact selected public bytes, while the hosted [Linux package transport](0008-linux-package-owned-transport.md) composes descriptor, process, and root ownership around locally built packages. Neither surface completes the native gate pipeline.
+The private release verifier now owns exact selected public bytes, while the hosted [Linux package transport](0008-linux-package-owned-transport.md) composes descriptor, process, and root ownership around locally built packages. Neither implementation completes the native verification sequence.
 
 Parent issue #115 remains open for exact public deb/AppImage install/stage, runtime, removal, settlement, sanitized evidence, and native-host proof.

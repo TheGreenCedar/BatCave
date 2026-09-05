@@ -46,7 +46,9 @@ Validate one or more packets before publishing or indexing them:
 node scripts/validate-release-evidence-packet.mjs docs/evidence/releases/<tag>/<platform>.json
 ```
 
-The validator rejects malformed or mismatched commits, tags, digests, release URLs, workflow URLs, asset URLs, package-role mappings, trust identities, and check sets. It also rejects POSIX, Windows, UNC, home-relative, field-prefixed, and environment-expanded local paths; shell, colon, or JSON environment dumps; authorization headers and bearer tokens; credential assignments; private-key material; multiline output; and raw log fields. This scan traverses every packet string and recognizes sensitive values at the start of a string or after punctuation, including when wrapped in parentheses, brackets, braces, or quotes. Assignment discovery overlaps, so a benign outer observation such as `note=` cannot hide an inner credential or environment dump. Ordinary observations such as `theme=dark`, `interval=1s`, `mode=release`, and `status=failed` remain valid near the same punctuation because they do not use sensitive environment or credential keys and are not environment-style assignment clusters.
+The validator rejects malformed or mismatched commits, tags, digests, release URLs, workflow URLs, asset URLs, package-role mappings, trust identities, and check sets. It also rejects POSIX, Windows, UNC, home-relative, field-prefixed, and environment-expanded local paths; shell, colon, or JSON environment dumps; authorization headers and bearer tokens; credential assignments; private-key material; multiline output; and raw log fields. This scan traverses every packet string and recognizes sensitive values at the start of a string or after punctuation, including when wrapped in parentheses, brackets, braces, or quotes.
+
+Assignment discovery overlaps, so a benign outer observation such as `note=` cannot hide an inner credential or environment dump. Ordinary observations such as `theme=dark`, `interval=1s`, `mode=release`, and `status=failed` remain valid near the same punctuation because they do not use sensitive environment or credential keys and are not environment-style assignment clusters.
 
 Keep diagnostic logs and screenshots in access-controlled workflow artifacts according to their retention policy. Commit only the small sanitized observation needed to understand the check result. A packet must never embed an environment dump or substitute raw output for a result summary.
 
@@ -72,7 +74,7 @@ Coverage is derived from `platform-support-contract.v1.json`, rather than mainta
 
 The index has no accepted, passed, or overall disposition field. Its mandatory `independent_review_and_live_publication_required` non-claim makes it a review input only. Publishing a packet or index does not replace native execution, public-release verification, signed updater proof, or #76's independent final review. These files record evidence after it exists; they cannot manufacture it.
 
-The private Rust install-smoke verifier closes public-release and selected-byte ownership before platform dispatch. Its current Linux handler returns `skipped`, and its macOS updater handler emits only a bounded staging observation. Neither can mint a native execution receipt or release-evidence packet. `release_evidence` remains reserved for a complete reviewed native run.
+The private Rust install-smoke verifier closes public-release and selected-byte ownership before platform dispatch. Its current Linux handler returns `skipped`, and its macOS updater handler emits only a bounded staging observation. Neither can produce a native execution receipt or release-evidence packet. `release_evidence` remains reserved for a complete reviewed native run.
 
 ## Synthetic fixtures
 

@@ -6,7 +6,7 @@
 
 ## Decision
 
-BatCave will not add an `expires_at` field or a custom signed manifest envelope to the current updater. Issue #47 should drop its requirement to reject “expired” and “mismatched-channel” update signatures. Tauri payload signatures have neither property: they authenticate exact payload bytes under the embedded updater key, but do not authenticate the manifest, expire, or bind a payload to a release channel.
+BatCave will not add an `expires_at` field or a custom signed manifest envelope to the current updater. Issue #47 should drop its requirement to reject "expired" and "mismatched-channel" update signatures. Tauri payload signatures have neither property: they authenticate exact payload bytes under the embedded updater key, but do not authenticate the manifest, expire, or bind a payload to a release channel.
 
 For the current stable updater, the supported contract is:
 
@@ -53,7 +53,7 @@ The Minisign signature's trusted comment commonly contains a timestamp, but the 
 
 | Scenario | Required result |
 | --- | --- |
-| No valid metadata can be fetched, including a non-success response or missing `latest.json` | Report a generic update-check failure; do not download or install; monitoring continues. Pinned Tauri does not expose the HTTP status here, so BatCave cannot distinguish “no stable release” from “manifest missing.” |
+| No valid metadata can be fetched, including a non-success response or missing `latest.json` | Report a generic update-check failure; do not download or install; monitoring continues. Pinned Tauri does not expose the HTTP status here, so BatCave cannot distinguish "no stable release" from "manifest missing." |
 | Manifest is malformed or lacks the current target | Report the same generic update-check failure; do not download or install; monitoring continues. |
 | Endpoint returns 204 No Content | Report that BatCave is up to date; no update resource is created. |
 | Endpoint is unreachable, TLS fails, or the device is offline | Report that the update service could not be reached; startup and monitoring continue. |

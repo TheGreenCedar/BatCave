@@ -8,16 +8,16 @@
 
 Retain BatCave's manual `/proc` readers for issue #71. Do not add the `procfs` crate or replace a parser in this change.
 
-The bounded comparison evaluated `procfs` 0.18.0 against every manual process surface BatCave currently publishes. The crate has API coverage for the raw inputs, but source-level coverage is not yet behavioral parity for BatCave's access-quality, process-identity, and failure contracts. The retained parsers now reject malformed required counters instead of converting them to zero and have hostile fixtures for names, field boundaries, numeric overflow, missing and duplicate I/O counters, units, and partial CPU totals.
+The bounded comparison evaluated `procfs` 0.18.0 against every process measurement BatCave publishes through its manual parsers. The crate has API coverage for the raw inputs, but source-level coverage is not yet behavioral parity for BatCave's access-quality, process-identity, and failure contracts. The retained parsers now reject malformed required counters instead of converting them to zero and have hostile fixtures for names, field boundaries, numeric overflow, missing and duplicate I/O counters, units, and partial CPU totals.
 
 ## Comparison
 
-| BatCave input | `procfs` 0.18.0 surface | Static parity | Remaining proof before replacement |
+| BatCave input | `procfs` 0.18.0 API | Static parity | Remaining proof before replacement |
 | --- | --- | --- | --- |
 | `/proc/<pid>/stat` | `Process::stat()` / `Stat` | Required PID, name, state, parent, CPU, thread, start-time, virtual-memory, and RSS fields exist | Compare rows for short-lived processes and names containing spaces and parentheses; prove no PID-reuse mixing |
 | `/proc/<pid>/status` `RssAnon` | `Process::status()` / `Status` | Anonymous RSS is represented | Preserve BatCave's explicit RSS estimate when the field is absent, malformed, or denied |
 | `/proc/<pid>/io` | `Process::io()` / `Io` | `read_bytes` and `write_bytes` exist | Preserve per-field access failure and unavailable quality rather than zero |
-| `/proc/<pid>/exe` | `Process::exe()` | Equivalent symlink surface | Compare permission-denied and deleted-executable behavior |
+| `/proc/<pid>/exe` | `Process::exe()` | Equivalent symlink API | Compare permission-denied and deleted-executable behavior |
 | `/proc/<pid>/fd` | `Process::fd_count()` | Equivalent count; the crate also uses the Linux 6.2 directory-size fast path | Prove zero descriptors remains a valid measured zero and denial remains partial access |
 | clock ticks, page size, boot time | `ticks_per_second()`, `page_size()`, `boot_time_secs()` | Equivalent system inputs | Compare start-time rounding and fallback behavior on the oldest supported distribution |
 | `/proc/stat` CPU total and logical CPUs | `KernelStats` plus CPU-time APIs | Data exists, but its aggregation does not directly match BatCave's current one-core-equivalent delta calculation | Compare deterministic deltas and hot-plug behavior before changing the collector |
