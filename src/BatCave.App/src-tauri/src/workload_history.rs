@@ -383,8 +383,16 @@ impl WorkloadArchive {
                 entry.history.pop_front();
                 entry.truncated = true;
             }
+            if entry.history.len() == entry.history.capacity()
+                && entry.history.capacity().saturating_mul(2) > MAX_POINTS
+            {
+                // Bound the last growth step instead of reserving 512 slots for 360 points.
+                entry
+                    .history
+                    .reserve_exact(MAX_POINTS - entry.history.len());
+            }
             entry.history.push_back(point);
-            // VecDeque may reserve beyond 360 while growing. Account its actual allocation.
+            // Account the actual allocation, including spare capacity while growing.
             self.allocated += entry_heap(&id, &entry);
             self.entries.insert(id.clone(), entry);
             if let Some(index) = self.evicted.iter().position(|old| old == &id) {
@@ -1242,6 +1250,12 @@ mod tests {
             );
         }
         assert!(archive.retained_bytes() <= HISTORY_BUDGET_BYTES);
+        // The 360-point window must not pay for a 512-slot allocation per identity.
+        // That excess exhausts the shared budget and evicts otherwise retainable workloads.
+        assert!(archive
+            .entries
+            .values()
+            .all(|entry| entry.history.capacity() <= MAX_POINTS));
     }
     #[test]
     fn response_credits_survive_serialization_and_drop_until_delivery_acknowledged() {

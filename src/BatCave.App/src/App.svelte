@@ -282,7 +282,12 @@
   );
   $: selectedRow = inspection?.stable_id === selectedWorkloadId ? inspection.row : null;
   $: inspectionCurrent = inspection?.stable_id === selectedWorkloadId && inspection.status === "current" && inspection.sample_seq === snapshot.sample_seq && collectionState === "live" && !inspectionLoading && !inspectionError;
-  $: void refreshInspection(selectedWorkloadId, historyPointLimit, snapshot.publication_seq);
+  $: void refreshInspection(
+    selectedWorkloadId,
+    historyPointLimit,
+    snapshot.publication_seq,
+    activeView === "explore" && detailSubject === "process" && (!isCompactDetail || compactDetailOpen),
+  );
   $: selectedWorkload = selectedRow?.detail ?? null;
   $: selectedProcess =
     selectedWorkload?.kind === "process" ? selectedWorkload.process : null;
@@ -1759,9 +1764,10 @@
   function resetHistory(): void { history = emptyTrendState(); }
   function trimHistory(): void { history = trimSystemHistory(history, historyPointLimit); }
 
-  async function refreshInspection(stableId: string, pointLimit: HistoryPointLimit, publication: number): Promise<void> {
-    const ticket = inspectionGate.begin(stableId, pointLimit, publication);
+  async function refreshInspection(stableId: string, pointLimit: HistoryPointLimit, publication: number, visible: boolean): Promise<void> {
+    const ticket = inspectionGate.beginForVisiblePane(stableId, pointLimit, publication, visible && !!stableId && !protocolMismatch);
     if (!stableId || protocolMismatch) { inspection = null; inspectionLoading = false; return; }
+    if (!ticket) { inspectionLoading = false; return; }
     inspectionLoading = true;
     inspectionError = "";
     try {

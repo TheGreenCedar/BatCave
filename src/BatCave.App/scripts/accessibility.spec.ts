@@ -436,6 +436,11 @@ test("independent inspection keeps identity and timestamp when switching A to B 
   await first.click();
   await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
   await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", timestamp ?? "");
+  await page.locator('[data-view="overview"]').click();
+  await expect(pane).not.toBeVisible();
+  await page.locator('[data-view="explore"]').click();
+  await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", timestamp ?? "");
   const second = page.locator('[data-workload-id][aria-pressed="false"]:visible').first();
   await second.click();
   await expect(pane.locator(".identity-title-row strong")).not.toHaveText(identity ?? "");
@@ -448,6 +453,20 @@ test("independent inspection keeps identity and timestamp when switching A to B 
   await slider.focus();
   await expect(slider).toBeFocused();
   await expectNoAxeViolations(page);
+  await page.setViewportSize({ width: 760, height: 900 });
+  const dialog = page.getByRole("dialog", { name: "Resource detail" });
+  await expect(dialog).not.toBeVisible();
+  const compactSelection = page.locator(`[data-workload-id="${id}"]:visible`).first();
+  await compactSelection.click();
+  await expect(dialog.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  await dialog.getByRole("button", { name: "Close resource detail" }).click();
+  await expect(dialog).not.toBeVisible();
+  await compactSelection.click();
+  await expect(dialog.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  await expect(dialog.locator(".history-readout time")).toHaveAttribute(
+    "datetime",
+    timestamp ?? "",
+  );
 });
 
 test("exited inspection retains exact identity and last sample on desktop and compact layouts", async ({

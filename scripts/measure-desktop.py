@@ -3,8 +3,8 @@
 
 Start during the probe's 30-second warmup. Output is exclusive, including failed runs.
 The 120-second gate uses one-core CPU and summed resident memory for the verified
-owned process set. Sampling cannot account for processes that live entirely between
-polls; observed membership churn makes the resource result incomplete.
+owned process set. On macOS, cumulative resource-coalition CPU includes exited
+helpers. Coalition lifetime churn makes sampled RSS coverage incomplete.
 """
 from __future__ import annotations
 
@@ -98,11 +98,47 @@ def verified_descendants(records, root_pid):
 def isolated_mac_coalition(root, members, parent_coalition):
     if not root.coalition or not all(root.coalition) or not parent_coalition or not all(parent_coalition):
         raise Incomplete("root or parent coalition unavailable")
-    if parent_coalition == root.coalition:
+    if parent_coalition[0] == root.coalition[0]:
         raise Incomplete("app inherited its launching parent's coalition; launch through LaunchServices")
     for member in members:
+        if not member.coalition or member.coalition[0] != root.coalition[0]:
+            raise Incomplete("member left the app resource coalition")
         if member.pid != root.pid and member.generation <= root.generation:
             raise Incomplete("coalition contains a process predating the app; ownership is shared")
+
+
+def validate_coalition_usage(value):
+    if not isinstance(value, dict):
+        raise Incomplete("resource coalition counters unavailable")
+    for key in ("resource_id", "tasks_started", "tasks_exited", "cpu_ticks", "timebase_numer", "timebase_denom"):
+        field = value.get(key)
+        if type(field) is not int or not 0 <= field < (1 << 64) - 1:
+            raise Incomplete(f"invalid resource coalition {key}")
+    if (not value["resource_id"] or not value["tasks_started"] or not value["cpu_ticks"] or
+            value["tasks_exited"] > value["tasks_started"] or
+            not 0 < value["timebase_numer"] < 1 << 32 or not 0 < value["timebase_denom"] < 1 << 32):
+        raise Incomplete("invalid resource coalition counts or timebase")
+
+
+def validate_coalition_transition(before, after):
+    for value in (before, after):
+        validate_coalition_usage(value)
+    for key in ("resource_id", "timebase_numer", "timebase_denom"):
+        if before[key] != after[key]:
+            raise Incomplete("resource coalition identity or timebase changed")
+    for key in ("tasks_started", "tasks_exited", "cpu_ticks"):
+        if after[key] < before[key]:
+            raise Incomplete("resource coalition counter regressed")
+
+
+def coalition_enumeration_limits(before, after, count):
+    validate_coalition_transition(before, after)
+    limits = []
+    if any(before[key] != after[key] for key in ("tasks_started", "tasks_exited")):
+        limits.append("resource coalition task lifetime changed during enumeration; RSS coverage incomplete")
+    if after["tasks_started"] - after["tasks_exited"] != count:
+        limits.append("resource coalition active count differs from sampled processes; RSS coverage incomplete")
+    return limits
 
 
 def service_open_absent(error):
@@ -134,6 +170,26 @@ def service_process_id(config, status, expected_image):
 
 
 class MacCollector:
+    # Apple XNU mach/coalition.h: stable prefix, excluding the evolving tail.
+    # xnu-11215.81.4 and main: tasks_started, tasks_exited, time_nonempty, cpu_time.
+    # https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/coalition.h
+    # The wrapper copies min(requested size, native struct size). cpu_time is Mach ticks.
+    class CoalitionUsage(C.Structure):
+        _fields_ = [(name, C.c_uint64) for name in ("tasks_started", "tasks_exited", "time_nonempty", "cpu_time")]
+
+    @classmethod
+    def bind_coalition_usage(cls, system):
+        if (C.sizeof(cls.CoalitionUsage) != 32 or
+                [getattr(cls.CoalitionUsage, name).offset for name in ("tasks_started", "tasks_exited", "time_nonempty", "cpu_time")] != [0, 8, 16, 24]):
+            raise Incomplete("unexpected resource coalition prefix ABI")
+        try:
+            function = system.coalition_info_resource_usage
+        except AttributeError as error:
+            raise Incomplete("resource coalition cumulative CPU API unavailable") from error
+        function.argtypes = [C.c_uint64, C.POINTER(cls.CoalitionUsage), C.c_size_t]
+        function.restype = C.c_int
+        return function
+
     # SDK sys/resource.h rusage_info_v2, sys/proc_info.h proc_bsdinfo.
     class Usage(C.Structure):
         _fields_ = [("uuid", C.c_ubyte * 16)] + [(name, C.c_uint64) for name in (
@@ -157,13 +213,14 @@ class MacCollector:
         class Timebase(C.Structure):
             _fields_ = [("numer", C.c_uint32), ("denom", C.c_uint32)]
         timebase = Timebase()
-        system = C.CDLL("/usr/lib/libSystem.B.dylib")
+        system = C.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
         system.mach_timebase_info.argtypes = [C.POINTER(Timebase)]
         if system.mach_timebase_info(C.byref(timebase)) != 0 or not timebase.numer or not timebase.denom:
             raise Incomplete("Mach timebase unavailable")
         self.timebase = timebase.numer, timebase.denom
         if C.sizeof(self.Bsd) != 136 or C.sizeof(self.Usage) != 160:
             raise Incomplete("unexpected macOS process ABI")
+        self.read_coalition_usage = self.bind_coalition_usage(system)
         self.pid, self.expected = pid, expected
         root = require_root(self.read(pid), pid, expected)
         self.generation, self.coalition = root.generation, root.coalition
@@ -173,6 +230,19 @@ class MacCollector:
         if not self.coalition or not all(self.coalition):
             raise Incomplete("root coalition identity unavailable")
         isolated_mac_coalition(root, [root], self.parent_coalition())
+
+    def coalition_usage(self):
+        sentinel = (1 << 64) - 1
+        value = self.CoalitionUsage(sentinel, sentinel, sentinel, sentinel)
+        if self.read_coalition_usage(self.coalition[0], C.byref(value), C.sizeof(value)) != 0:
+            raise Incomplete(f"resource coalition cumulative CPU unavailable: {C.get_errno()}")
+        if value.time_nonempty == sentinel:
+            raise Incomplete("resource coalition prefix was not fully returned")
+        result = {"resource_id": self.coalition[0], "tasks_started": int(value.tasks_started),
+                  "tasks_exited": int(value.tasks_exited), "cpu_ticks": int(value.cpu_time),
+                  "timebase_numer": self.timebase[0], "timebase_denom": self.timebase[1]}
+        validate_coalition_usage(result)
+        return result
 
     def parent_coalition(self):
         before = self.bsd(self.pid)
@@ -225,6 +295,7 @@ class MacCollector:
         initial = require_root(self.read(self.pid), self.pid, self.expected, self.generation)
         if initial.coalition != self.coalition:
             raise Incomplete("root coalition changed")
+        before = self.coalition_usage()
         required = self.lib.proc_listpids(4, self.uid, None, 0)  # PROC_UID_ONLY
         if not 0 < required <= 4_000_000 or required % 4:
             raise Incomplete("native process enumeration failed")
@@ -237,7 +308,7 @@ class MacCollector:
             if pid <= 0:
                 continue
             try:
-                if self.coalition_for(pid) == self.coalition:
+                if self.coalition_for(pid)[0] == self.coalition[0]:
                     if self.bsd(pid).credentials[0] != self.uid:
                         raise Incomplete(f"owned process UID changed: {pid}")
                     owned.append(self.read(pid))
@@ -251,7 +322,10 @@ class MacCollector:
         isolated_mac_coalition(root, owned, self.parent_coalition())
         if require_root(self.read(self.pid), self.pid, self.expected, self.generation).coalition != self.coalition:
             raise Incomplete("root coalition changed during measurement")
-        return owned, []
+        self.coalition_sample = self.coalition_usage()
+        if require_root(self.read(self.pid), self.pid, self.expected, self.generation).coalition != self.coalition:
+            raise Incomplete("root coalition changed during resource counter read")
+        return owned, coalition_enumeration_limits(before, self.coalition_sample, len(owned))
 
 
 class LinuxCollector:
@@ -575,6 +649,8 @@ def renderer_metrics(header, observations, mode):
 def resource_metrics(samples):
     if len(samples) < 120 or samples[0]["elapsed_ms"] > WARMUP_MS + 500 or samples[-1]["elapsed_ms"] < END_MS:
         raise Incomplete("native measurement window incomplete")
+    if any("coalition" in sample for sample in samples):
+        return coalition_resource_metrics(samples)
     identities = {row["pid"]: row["generation"] for row in samples[0]["processes"]}
     if not identities:
         raise Incomplete("owned native process set is empty")
@@ -616,6 +692,90 @@ def resource_metrics(samples):
                 for role, cpu in role_cpu.items()}}
 
 
+def coalition_resource_metrics(samples):
+    """Cumulative coalition CPU is independent of sampled process memory coverage."""
+    first = samples[0].get("coalition")
+    validate_coalition_usage(first)
+    duration, rss, footprints, seen, errors = 0.0, [], [], set(), []
+    first_ids = {(row["pid"], row["generation"]) for row in samples[0]["processes"]}
+    previous = None
+    for sample in samples:
+        current = sample.get("coalition")
+        validate_coalition_usage(current)
+        finite_number(sample["elapsed_ms"], "native sample time")
+        errors.extend(sample.get("coverage_errors", []))
+        validate_coalition_transition(first, current)
+        errors.extend(coalition_enumeration_limits(current, current, len(sample["processes"])))
+        if any(current[key] != first[key] for key in ("tasks_started", "tasks_exited")):
+            errors.append("resource coalition task lifetime changed during measurement; RSS coverage incomplete")
+        if previous is not None:
+            dt = (sample["elapsed_ms"] - previous["elapsed_ms"]) / 1000
+            if not 0 < dt <= 1.5:
+                raise Incomplete("native sample cadence has gaps")
+            validate_coalition_transition(previous["coalition"], current)
+            duration += dt
+        previous = sample
+        # Missing RSS/generation evidence must not erase independently valid cumulative CPU.
+        try:
+            records = sample["processes"]
+            ids = {(row["pid"], row["generation"]) for row in records}
+            if not ids or len({row["pid"] for row in records}) != len(records):
+                raise Incomplete("owned native process set is empty or duplicated")
+            if ids != first_ids:
+                errors.append("sampled process membership changed; RSS lifetime coverage incomplete")
+            seen.update(ids)
+            for row in records:
+                finite_number(row["generation"], "native generation", 1)
+                finite_number(row["rss_bytes"], "native resident memory")
+                if row.get("role", "gui") != "gui":
+                    raise Incomplete("non-GUI process role in app resource coalition")
+            rss.append(sum(row["rss_bytes"] for row in records))
+            if all(row.get("footprint_bytes") is not None for row in records):
+                footprints.append(sum(finite_number(row["footprint_bytes"], "native footprint") for row in records))
+        except (KeyError, TypeError, Incomplete) as error:
+            errors.append(f"sampled process memory unavailable: {error}")
+    if duration < 119.5:
+        raise Incomplete("native resource window is too short")
+    last = samples[-1]["coalition"]
+    cpu_seconds = mach_seconds(last["cpu_ticks"] - first["cpu_ticks"], first["timebase_numer"], first["timebase_denom"])
+    errors = list(dict.fromkeys(errors))
+    return {"native_samples": len(samples), "duration_seconds": duration,
+            "owned_process_count": len(seen), "mean_one_core_cpu_percent": cpu_seconds / duration * 100,
+            "peak_summed_rss_bytes": max(rss) if rss else None,
+            "peak_summed_footprint_bytes": max(footprints) if footprints else None,
+            "cpu_coverage_complete": True, "rss_coverage_complete": not errors,
+            "cpu_scope": "isolated resource coalition cumulative CPU, including exited members; excludes services outside that coalition",
+            "rss_scope": "sampled resident memory of live resource-coalition processes; departed helper peaks are not recoverable",
+            "resource_id": first["resource_id"],
+            "tasks_started_during_measurement": last["tasks_started"] - first["tasks_started"],
+            "tasks_exited_during_measurement": last["tasks_exited"] - first["tasks_exited"],
+            "coverage_errors": errors}
+
+
+def finalize_report(report):
+    """Retain independent metrics when another boundary fails; incomplete gates are null."""
+    resources, renderer = report.get("resources"), report.get("renderer")
+    errors = report["errors"]
+    cpu_covered = resources is not None
+    if resources:
+        errors.extend(item for item in resources.get("coverage_errors", []) if item not in errors)
+        lifetime_cpu = resources.get("cpu_coverage_complete") is True
+        if (report["platform"] == "darwin" or report["ai_mode"] == "on") and not lifetime_cpu:
+            errors.append("resource lifetime coverage unavailable; a whole-app resource pass is not established")
+            cpu_covered = False
+        report["resource_scope"] = (resources["cpu_scope"] + "; " + resources["rss_scope"] if lifetime_cpu else
+                                    "sampled native app-owned processes; processes entirely between polls are not observable")
+    report["gates"] = {
+        "age": renderer["age_p95_ms"] <= 2000 if renderer else None,
+        "interaction": renderer["interaction_p95_ms"] <= 100 if renderer else None,
+        "cpu": resources["mean_one_core_cpu_percent"] <= 10 if cpu_covered else None,
+        "rss": resources["peak_summed_rss_bytes"] <= 512 * 1024 * 1024
+            if cpu_covered and resources.get("rss_coverage_complete", True) else None,
+    }
+    report["incomplete"] = bool(errors) or not resources or not renderer
+    report["passed"] = not report["incomplete"] and all(value is True for value in report["gates"].values())
+
+
 def file_identity(file):
     info = os.fstat(file.fileno())
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -627,7 +787,7 @@ def measure(args):
     report = {"schema_version": 1, "passed": False, "incomplete": True, "errors": [],
               "platform": sys.platform, "pid": args.pid, "ai_mode": args.ai_mode, "samples": [],
               "interaction_scope": "trusted DOM event to second animation frame; does not prove asynchronous inspector completion",
-              "resource_scope": "sampled native app-owned processes; short-lived processes entirely between polls are not observable"}
+              "resource_scope": "unavailable; no complete native resource measurement"}
     collector = None
     if sys.platform == "win32":
         report["collector_service"] = {"name": SERVICE_NAME, "state": "unknown"}
@@ -661,7 +821,7 @@ def measure(args):
             bind_probe_generation(collector.started_at_unix_ms, header["started_at_unix_ms"])
             report["root_generation"] = collector.generation
             report["root_started_at_unix_ms_upper_bound"] = collector.started_at_unix_ms
-            report["ownership_method"] = "native_current_uid_coalition_pair_and_generation" if sys.platform == "darwin" else "verified_ancestry_executable_and_generation"
+            report["ownership_method"] = "native_resource_coalition_generation_and_lifetime_counters" if sys.platform == "darwin" else "verified_ancestry_executable_and_generation"
             target_ms = WARMUP_MS
             while target_ms <= END_MS:
                 deadline = mono_anchor + (target_ms - elapsed_start) / 1000
@@ -673,25 +833,24 @@ def measure(args):
                 if file_identity(trace) != identity or os.stat(args.probe_jsonl, follow_symlinks=False).st_ino != identity[1]:
                     raise Incomplete("probe file was replaced")
                 preferences(preference_path, args.ai_mode)
-                report["samples"].append({"elapsed_ms": elapsed, "processes": [asdict(row) for row in owned]})
+                sample = {"elapsed_ms": elapsed, "processes": [asdict(row) for row in owned]}
+                if isinstance(collector, MacCollector):
+                    sample["coalition"] = collector.coalition_sample
+                    sample["coverage_errors"] = limitations
+                report["samples"].append(sample)
                 if limitations:
                     report["errors"].extend(item for item in limitations if item not in report["errors"])
                 target_ms += 1000
+            # Compute resources before renderer/footer validation so valid CPU evidence survives
+            # an independent UI coverage failure. Coverage errors still prevent an overall pass.
+            report["resources"] = resource_metrics(report["samples"])
             time.sleep(0.25)  # Let the app's 150-second footer flush.
             final_header, observations = read_trace(trace, args.pid, True)
             if final_header != header:
                 raise Incomplete("probe header changed")
             report["renderer"] = renderer_metrics(header, observations, args.ai_mode)
-            report["resources"] = resource_metrics(report["samples"])
             if hashlib.sha256(expected.read_bytes()).hexdigest() != digest:
                 raise Incomplete("expected executable changed during measurement")
-            report["incomplete"] = bool(report["errors"])
-            renderer, resources = report["renderer"], report["resources"]
-            report["gates"] = {"age": renderer["age_p95_ms"] <= 2000,
-                               "interaction": renderer["interaction_p95_ms"] <= 100,
-                               "cpu": resources["mean_one_core_cpu_percent"] <= 10,
-                               "rss": resources["peak_summed_rss_bytes"] <= 512 * 1024 * 1024}
-            report["passed"] = not report["incomplete"] and all(report["gates"].values())
     except (Exception, KeyboardInterrupt) as error:
         # Every failed boundary produces an incomplete artifact, including platform API errors.
         report["errors"].append(f"{type(error).__name__}: {error}")
@@ -699,6 +858,7 @@ def measure(args):
         if collector is not None and hasattr(collector, "service_evidence"):
             report["collector_service"] = collector.service_evidence
             collector.close()
+    finalize_report(report)
     return report
 
 

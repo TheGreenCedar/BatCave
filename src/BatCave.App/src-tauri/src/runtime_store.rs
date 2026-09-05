@@ -2874,13 +2874,15 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
 
         for process in group.processes {
             let identity = process_identity(&process);
+            let is_child = grouped && process.pid != group.presentation_process.pid;
+            let attention_label = process_attention_label(&process);
             rows.push(ProcessViewRow::Process {
                 detail: Box::new(ProcessDetail {
                     kind: ProcessDetailKind::Process,
                     workload_id: process_workload_id(&process),
                     io_bps: process_io_rate(&process),
                     network_bps: process_network_rate(&process),
-                    process: process.clone(),
+                    process,
                 }),
                 group_key: group.key.clone(),
                 group_label: group.label.clone(),
@@ -2891,9 +2893,9 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
                 } else {
                     identity.icon_kind.to_string()
                 },
-                is_child: grouped && process.pid != group.presentation_process.pid,
+                is_child,
                 is_grouped: grouped,
-                attention_label: process_attention_label(&process),
+                attention_label,
             });
         }
     }

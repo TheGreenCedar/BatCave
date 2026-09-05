@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("measure_desktop", Path(__file__).with_name("measure-desktop.py"))
@@ -38,6 +39,197 @@ def native_samples():
              "processes": [{"pid": pid, "generation": pid + 100, "cpu_seconds": index * 0.04,
                             "rss_bytes": pid * 100, "footprint_bytes": pid * 80} for pid in [1, 2]]}
             for index in range(121)]
+
+
+def coalition_samples():
+    rows = native_samples()
+    for index, row in enumerate(rows):
+        row["coalition"] = {"resource_id": 3, "tasks_started": 2, "tasks_exited": 0,
+                            "cpu_ticks": 24_000_000 + index * 2_880_000, "timebase_numer": 125, "timebase_denom": 3}
+    return rows
+
+
+class MacCoalitionTests(unittest.TestCase):
+    def test_invisible_helper_cpu_survives_exit_but_rss_is_incomplete(self):
+        rows = coalition_samples()
+        for row in rows[60:]:
+            row["coalition"].update(tasks_started=3, tasks_exited=1)
+        result = M.resource_metrics(rows)
+        self.assertAlmostEqual(result["mean_one_core_cpu_percent"], 12)
+        self.assertTrue(result["cpu_coverage_complete"])
+        self.assertFalse(result["rss_coverage_complete"])
+        self.assertEqual(result["tasks_started_during_measurement"], 1)
+        self.assertEqual(result["tasks_exited_during_measurement"], 1)
+        self.assertTrue(result["coverage_errors"])
+
+    def test_stable_coalition_preserves_ai_off_budget_gate(self):
+        rows = coalition_samples()
+        for row in rows:
+            row["coalition"]["cpu_ticks"] //= 2
+        resources = M.resource_metrics(rows)
+        report = {"errors": [], "ai_mode": "off", "platform": "darwin", "resources": resources,
+                  "renderer": M.renderer_metrics(header(), observations(), "off")}
+        M.finalize_report(report)
+        self.assertTrue(report["passed"])
+        self.assertTrue(resources["rss_coverage_complete"])
+        self.assertAlmostEqual(resources["mean_one_core_cpu_percent"], 6)
+        self.assertEqual(resources["peak_summed_rss_bytes"], 300)
+
+    def test_cpu_is_retained_when_renderer_or_rss_evidence_is_incomplete(self):
+        rows = coalition_samples()
+        rows[-1]["coalition"].update(tasks_started=3, tasks_exited=1)
+        report = {"errors": ["renderer footer missing"], "ai_mode": "on", "platform": "darwin",
+                  "resources": M.resource_metrics(rows)}
+        M.finalize_report(report)
+        self.assertFalse(report["passed"])
+        self.assertTrue(report["incomplete"])
+        self.assertAlmostEqual(report["resources"]["mean_one_core_cpu_percent"], 12)
+        self.assertIsNone(report["gates"]["rss"])
+        self.assertIn("exited", report["resource_scope"])
+
+    def test_missing_or_regressed_coalition_counters_never_fall_back_to_pid_cpu(self):
+        for mutate in [
+            lambda rows: rows[-1].pop("coalition"),
+            lambda rows: rows[-1]["coalition"].update(resource_id=4),
+            lambda rows: rows[-1]["coalition"].update(cpu_ticks=0),
+            lambda rows: rows[-1]["coalition"].update(tasks_started=1),
+            lambda rows: rows[-1]["coalition"].update(tasks_exited=3),
+            lambda rows: rows[-1]["coalition"].update(timebase_denom=0),
+            lambda rows: rows[-1]["coalition"].update(timebase_numer=1),
+            lambda rows: rows[-1]["coalition"].update(tasks_started=True),
+        ]:
+            rows = coalition_samples()
+            mutate(rows)
+            with self.assertRaises(M.Incomplete):
+                M.resource_metrics(rows)
+
+    def test_same_resource_with_different_jetsam_cannot_establish_isolation(self):
+        root = M.Process(10, 1, 100, "/app", 0, 100, coalition=(3, 4))
+        with self.assertRaises(M.Incomplete):
+            M.isolated_mac_coalition(root, [root], (3, 9))
+        helper = M.Process(11, 10, 101, "/helper", 0, 100, coalition=(3, 9))
+        M.isolated_mac_coalition(root, [root, helper], (1, 2))
+
+    def test_counter_live_count_mismatch_and_enumeration_churn_are_incomplete(self):
+        rows = coalition_samples()
+        rows[-1]["coalition"]["tasks_started"] = 3
+        self.assertFalse(M.resource_metrics(rows)["rss_coverage_complete"])
+        before = coalition_samples()[0]["coalition"]
+        after = before | {"tasks_started": 3, "tasks_exited": 1}
+        self.assertTrue(M.coalition_enumeration_limits(before, after, 2))
+        self.assertEqual(M.coalition_enumeration_limits(before, before, 2), [])
+        self.assertTrue(M.coalition_enumeration_limits(before, before, 1))
+
+    def test_prefix_api_failure_or_partial_write_is_incomplete_without_native_load(self):
+        collector = object.__new__(M.MacCollector)
+        collector.coalition, collector.timebase = (3, 4), (125, 3)
+        self.assertEqual(M.C.sizeof(M.MacCollector.CoalitionUsage), 32)
+        self.assertEqual(M.MacCollector.CoalitionUsage.cpu_time.offset, 24)
+        def read(cid, pointer, size):
+            self.assertEqual((cid, size), (3, 32))
+            value = M.C.cast(pointer, M.C.POINTER(M.MacCollector.CoalitionUsage)).contents
+            value.tasks_started, value.tasks_exited = 2, 0
+            value.time_nonempty, value.cpu_time = 10, 24_000_000
+            return 0
+        collector.read_coalition_usage = read
+        self.assertEqual(collector.coalition_usage()["cpu_ticks"], 24_000_000)
+        for failure in [lambda *_: -1, lambda *_: 0]:
+            collector.read_coalition_usage = failure
+            with self.assertRaises(M.Incomplete):
+                collector.coalition_usage()
+        with self.assertRaises(M.Incomplete):
+            M.MacCollector.bind_coalition_usage(SimpleNamespace())
+        class ShortPrefix(M.C.Structure):
+            _fields_ = [("cpu_time", M.C.c_uint64)]
+        with patch.object(M.MacCollector, "CoalitionUsage", ShortPrefix), self.assertRaises(M.Incomplete):
+            M.MacCollector.bind_coalition_usage(SimpleNamespace())
+
+    def test_resource_coalition_members_are_included_across_jetsam_ids(self):
+        collector = object.__new__(M.MacCollector)
+        collector.pid, collector.expected, collector.generation, collector.coalition, collector.uid = 10, "/app", 100, (3, 4), 501
+        root = M.Process(10, 1, 100, "/app", 0, 100, coalition=(3, 4))
+        helper = M.Process(11, 10, 101, "/helper", 0, 100, coalition=(3, 9))
+        records = {row.pid: row for row in [root, helper]}
+        collector.read = records.__getitem__
+        collector.coalition_for = lambda pid: records[pid].coalition
+        collector.bsd = lambda _: SimpleNamespace(credentials=[501])
+        collector.parent_coalition = lambda: (1, 2)
+        collector.coalition_usage = lambda: coalition_samples()[0]["coalition"]
+        def pids(_kind, _uid, buffer, _size):
+            if buffer is not None:
+                buffer[0], buffer[1] = 10, 11
+            return 8
+        collector.lib = SimpleNamespace(proc_listpids=pids)
+        with patch.object(M.C, "CDLL", side_effect=AssertionError("no native loading")):
+            owned, limits = collector.snapshot()
+        self.assertEqual([row.pid for row in owned], [10, 11])
+        self.assertEqual(limits, [])
+        calls = 0
+        def reused_at_final_counter_fence(pid):
+            nonlocal calls
+            if pid == 10:
+                calls += 1
+                if calls == 4:
+                    return M.replace(root, generation=999)
+            return records[pid]
+        collector.read = reused_at_final_counter_fence
+        with self.assertRaises(M.Incomplete):
+            collector.snapshot()
+
+    def test_ai_on_without_lifetime_coverage_cannot_pass(self):
+        for platform in ["darwin", "linux", "win32"]:
+            report = {"errors": [], "ai_mode": "on", "platform": platform,
+                      "resources": M.resource_metrics(native_samples()),
+                      "renderer": {"age_p95_ms": 20, "interaction_p95_ms": 20}}
+            M.finalize_report(report)
+            self.assertFalse(report["passed"])
+            self.assertTrue(report["incomplete"])
+            self.assertIsNone(report["gates"]["cpu"])
+            self.assertIsNone(report["gates"]["rss"])
+
+    def test_zero_delta_cpu_is_valid_but_zero_or_nonmonotonic_lifetime_counters_are_not(self):
+        rows = coalition_samples()
+        for row in rows:
+            row["coalition"]["cpu_ticks"] = 24_000_000
+        self.assertEqual(M.resource_metrics(rows)["mean_one_core_cpu_percent"], 0)
+        rows[0]["coalition"]["cpu_ticks"] = 0
+        with self.assertRaises(M.Incomplete):
+            M.resource_metrics(rows)
+        rows = coalition_samples()
+        rows[60]["coalition"].update(tasks_started=4, tasks_exited=2)
+        with self.assertRaises(M.Incomplete):
+            M.resource_metrics(rows)
+
+    def test_actual_measure_path_retains_cpu_when_final_renderer_trace_is_missing(self):
+        samples = coalition_samples()
+        class FakeMacCollector:
+            generation, started_at_unix_ms = 100, 500
+            def __init__(self, *_):
+                self.index = 0
+            def snapshot(self):
+                sample = samples[self.index]
+                self.index += 1
+                self.coalition_sample = sample["coalition"]
+                return [M.Process(row["pid"], 0, row["generation"], "/app/helper", row["cpu_seconds"], row["rss_bytes"], row["footprint_bytes"]) for row in sample["processes"]], []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "monitor"
+            executable.write_bytes(b"fixture executable identity")
+            trace = root / "probe.jsonl"
+            trace.write_text(json.dumps(header() | {"narrative_preferences_path": str(root / "missing-preferences.json")}) + "\n")
+            arguments = SimpleNamespace(pid=10, ai_mode="off", expected_executable=executable, probe_jsonl=trace)
+            clock = [1.5]
+            def sleep(seconds):
+                clock[0] += seconds
+            with patch.object(M, "MacCollector", FakeMacCollector), patch.object(M.sys, "platform", "darwin"), \
+                    patch.object(M.time, "time", lambda: clock[0]), patch.object(M.time, "monotonic", lambda: clock[0]), \
+                    patch.object(M.time, "sleep", sleep), patch.object(M.C, "CDLL", side_effect=AssertionError("no native loading")):
+                report = M.measure(arguments)
+        self.assertEqual(len(report["samples"]), 121)
+        self.assertAlmostEqual(report["resources"]["mean_one_core_cpu_percent"], 12)
+        self.assertTrue(any("footer missing" in error for error in report["errors"]))
+        self.assertFalse(report["passed"])
+        self.assertIsNone(report["gates"]["age"])
 
 
 class OwnershipTests(unittest.TestCase):

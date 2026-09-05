@@ -228,6 +228,18 @@ interface RequestTicket {
 export class InspectionRequestGate {
   private generation = 0;
   private current: RequestTicket | null = null;
+  beginForVisiblePane(
+    stableId: string,
+    pointLimit: HistoryPointLimit,
+    publication: number,
+    visible: boolean,
+  ): RequestTicket | null {
+    if (!visible) {
+      this.clear();
+      return null;
+    }
+    return this.begin(stableId, pointLimit, publication);
+  }
   begin(stableId: string, pointLimit: HistoryPointLimit, publication: number): RequestTicket {
     const ticket = { generation: ++this.generation, stableId, pointLimit, publication };
     this.current = ticket;

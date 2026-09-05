@@ -51,6 +51,58 @@ test("late responses cannot cross A to B to A or overwrite newer publications", 
   assert.equal(gate.accept(more, { stable_id: "A", publication_seq: 3 }), true);
 });
 
+test("hidden inspection panes issue no reads and reopening refreshes the retained selection", () => {
+  const gate = new InspectionRequestGate();
+  const first = gate.beginForVisiblePane("A", 72, 1, true);
+  assert.ok(first);
+  let reads = 1;
+  // Each hidden publication used to fetch and normalize another complete family/history.
+  for (let publication = 2; publication <= 81; publication++) {
+    if (gate.beginForVisiblePane("A", 72, publication, false)) reads++;
+  }
+  assert.equal(reads, 1);
+  assert.equal(gate.accept(first, { stable_id: "A", publication_seq: 81 }), false);
+  const reopened = gate.beginForVisiblePane("A", 180, 81, true);
+  assert.ok(reopened, "same ID and publication still refresh when its pane reopens");
+  assert.equal(reopened.pointLimit, 180, "the current history window is requested");
+  assert.equal(gate.accept(reopened, { stable_id: "A", publication_seq: 80 }), false);
+  assert.equal(gate.accept(reopened, { stable_id: "A", publication_seq: 81 }), true);
+  gate.beginForVisiblePane("B", 180, 81, true);
+  const backToA = gate.beginForVisiblePane("A", 180, 81, true);
+  assert.ok(backToA);
+  assert.equal(gate.accept(reopened, { stable_id: "A", publication_seq: 82 }), false);
+  assert.equal(gate.accept(backToA, { stable_id: "A", publication_seq: 81 }), true);
+});
+
+test("a response delivered after its pane hides is decoded and acknowledged before discard", async () => {
+  const wire: unknown = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/src/fixtures/workload-inspection-v1.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const expected = decodeWorkloadInspection(wire);
+  const gate = new InspectionRequestGate();
+  const ticket = gate.beginForVisiblePane(expected.stable_id, 72, expected.publication_seq, true);
+  assert.ok(ticket);
+  const calls: string[] = [];
+  let deliver: ((value: unknown) => void) | undefined;
+  const delivery = new Promise<unknown>((resolve) => {
+    deliver = resolve;
+  });
+  const invoke = async <T>(command: string): Promise<T> => {
+    calls.push(command);
+    return (command === "get_workload_inspection" ? await delivery : undefined) as T;
+  };
+  const pending = getWorkloadInspection(invoke, expected.stable_id, 72);
+  gate.beginForVisiblePane(expected.stable_id, 72, expected.publication_seq, false);
+  assert.ok(deliver);
+  deliver(wire);
+  const response = await pending;
+  assert.deepEqual(calls, ["get_workload_inspection", "acknowledge_workload_inspection"]);
+  assert.equal(gate.accept(ticket, response), false);
+});
+
 test("inspection decoder rejects unvalidated details and contradictory history", () => {
   assert.throws(() =>
     decodeWorkloadInspection({
