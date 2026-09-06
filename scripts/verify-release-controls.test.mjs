@@ -273,3 +273,22 @@ test("ad-hoc macOS publication is explicit and restricted to previews", () => {
   assert.match(credentials, /Required release secret .* is missing/);
   assert.match(releaseWorkflow, /macOS preview is ad-hoc signed and is not notarized/);
 });
+
+
+test("reads pending drafts by release ID and requires the public tag after publication", () => {
+  const steps = workflowSteps(workflowJob("finalize"));
+  const create = steps.find(s => s.includes("Create and verify draft GitHub Release"));
+  const publish = steps.find(s => s.includes("Publish verified GitHub Release"));
+  assert.match(create, /gh release view .* --json databaseId --jq .databaseId/);
+  assert.match(create, /releases\/\$\{release_id\}/);
+  assert.match(publish, /releases\/\$\{BATCAVE_RELEASE_ID\}/);
+  assert.match(publish, /Published release tag does not target/);
+  for (const step of [create, publish]) {
+    const guard = step.match(/          \[\[ -z "\$\{(?:tag_sha|remote_tag_sha)\}"[^\n]+Draft release tag targets another commit[^\n]+/)[0];
+    for (const [tagSha, status] of [["", 0], [sourceSha, 0], ["b".repeat(40), 1]]) {
+      assert.equal(spawnSync("bash", ["-c", guard], { env: {
+        ...process.env, tag_sha: tagSha, remote_tag_sha: tagSha, RELEASE_SOURCE_SHA: sourceSha,
+      } }).status, status);
+    }
+  }
+});

@@ -108,11 +108,11 @@ jobs:
           fi
 
           release_error="${RUNNER_TEMP}/release-read-error.txt"
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>"${release_error}"; then
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json databaseId >/dev/null 2>"${release_error}"; then
             echo "GitHub Release ${tag} already exists." >&2
             exit 1
           fi
-          grep -q "HTTP 404" "${release_error}" || { cat "${release_error}" >&2; exit 1; }
+          grep -q "release not found" "${release_error}" || { cat "${release_error}" >&2; exit 1; }
 
           {
             echo "tag=${tag}"
@@ -543,8 +543,13 @@ jobs:
           while IFS= read -r -d '' file; do args+=("${file}"); done < <(find dist -maxdepth 1 -type f -print0 | sort -z)
           gh "${args[@]}"
 
-          [[ "$(remote_tag_source)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag does not target ${RELEASE_SOURCE_SHA}." >&2; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${readback}"
+          # GitHub keeps a new draft's tag pending until publication.
+          tag_sha="$(remote_tag_source)"
+          [[ -z "${tag_sha}" || "${tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag targets another commit." >&2; exit 1; }
+          release_id="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json databaseId --jq .databaseId)"
+          [[ "${release_id}" =~ ^[0-9]+$ ]] || { echo "Missing draft release ID." >&2; exit 1; }
+          echo "BATCAVE_RELEASE_ID=${release_id}" >> "${GITHUB_ENV}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "${readback}"
           node scripts/verify-release-candidate.mjs verify-readback "${candidate}" "${readback}" true
 
       - name: Publish verified GitHub Release
@@ -567,8 +572,8 @@ jobs:
           if [[ -z "${remote_tag_sha}" ]]; then
             remote_tag_sha="$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
           fi
-          [[ "${remote_tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag does not target ${RELEASE_SOURCE_SHA}." >&2; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${draft_readback}"
+          [[ -z "${remote_tag_sha}" || "${remote_tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag targets another commit." >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${BATCAVE_RELEASE_ID}" > "${draft_readback}"
           node scripts/verify-release-candidate.mjs verify-readback "${candidate}" "${draft_readback}" true
 
           publish_args=(release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false)
