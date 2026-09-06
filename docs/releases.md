@@ -8,7 +8,7 @@ BatCave releases must come from an owner-selected commit at the tip of `main` wi
 
 Stable tags use `vMAJOR.MINOR.PATCH`. Prerelease tags add a SemVer suffix, such as `v0.2.0-rc.1`, and must be marked as GitHub prereleases. Stable and prerelease builds use distinct tags and installed versions.
 
-Run `node scripts/verify-release-version.mjs <tag>` before building. Release scripts must use `verifyWorkspaceReleaseVersion` to bind the tag to Cargo. `parseReleaseTag` checks syntax only and is suitable for synthetic test inputs; it cannot establish the repository version.
+Run `node scripts/verify-release-version.mjs <tag>` before building. Build and publication scripts use `verifyWorkspaceReleaseVersion` to bind the tag to Cargo. Post-publication observers parse the original tag and bind it to the retained candidate and downloaded package, so a newer verifier checkout can check an older release.
 
 ## Run the release workflow
 
@@ -34,6 +34,12 @@ A release contains:
 Release workflow artifacts last 30 days. Published GitHub Release assets are durable. The separate `Platform bundles` workflow retains test packages for 90 days.
 
 Trusted `main` builds seed dependency caches. Pull requests and versioned releases restore them without saving workspace-crate output. The Linux package-transport job uses the release profile to reuse those dependencies. All workflow actions remain pinned to immutable commits; cache reuse does not skip verification.
+
+## Recheck a published release
+
+Run `Verify published release` from `main` with the existing tag, original source SHA, and original `Versioned release` run ID. It checks the successful publication job and retained prepublication candidate, then runs the same Linux deb, AppImage, and macOS updater observers used after publication. The verifier comes from the current `main` commit; downloaded packages must match the original release. This workflow has read-only permissions and does not rebuild or republish packages.
+
+The original release run keeps its historical result. A later successful verification run records the checks against those same immutable assets. Candidate inventories remain available for 30 days; an expired inventory blocks a rerun.
 
 ## Windows package ownership
 

@@ -5,8 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const VERSION_PATTERN = /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// Pure tag parsing is for table-driven contracts and tests with synthetic versions.
-// Executable release boundaries must call verifyWorkspaceReleaseVersion instead.
+// Build/publication boundaries bind the tag to Cargo with verifyWorkspaceReleaseVersion.
+// Observers of an older published release bind it to the original candidate and package instead.
 export function parseReleaseTag(tag) {
   const match = VERSION_PATTERN.exec(tag);
   if (!match) throw new Error(`release tag must be v<semver>; received ${tag}`);

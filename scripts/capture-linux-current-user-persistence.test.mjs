@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -368,6 +369,25 @@ test("packet result fails closed when lifecycle or permissions fail", () => {
   );
   candidate.result = "failed";
   assert.equal(validateCurrentUserPersistencePacket(candidate), candidate);
+});
+
+test("failed child reports its fixed operation and bounded stderr without retaining its timeout", { skip: process.platform === "win32" }, () => {
+  const moduleUrl = new URL("./capture-linux-current-user-persistence.mjs", import.meta.url).href;
+  const script = `
+    import { linuxPersistenceCaptureInternals as internals } from ${JSON.stringify(moduleUrl)};
+    try {
+      await internals.runBoundedProcess(process.execPath,
+        ["--eval", 'process.stdout.write("private-receipt");process.stderr.write("x".repeat(4000)+"known-failure-marker");process.exit(2)'],
+        { env: { PATH: process.env.PATH }, operation: "installed telemetry", timeoutMs: 60000 });
+    } catch (error) { console.error(error.message); process.exitCode = 1; }
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script, "process-fixture"], { encoding: "utf8", timeout: 5000 });
+  assert.equal(result.error, undefined, "settled child must not leave a timeout keeping Node alive");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /installed telemetry.*exited unsuccessfully \(2\)/u);
+  assert.match(result.stderr, /known-failure-marker/u);
+  assert.doesNotMatch(result.stderr, /private-receipt/u);
+  assert.ok(result.stderr.length < 2300);
 });
 
 test(
