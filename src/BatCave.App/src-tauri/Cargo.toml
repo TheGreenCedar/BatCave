@@ -49,7 +49,7 @@ tauri-build = { version = "2.6.3", features = [] }
 # The app build script stages the SDK's pinned native runtime into the bundle.
 # This makes that output an ordering dependency instead of relying on Cargo's
 # parallel normal-dependency build.
-foundry-local-sdk = "=1.2.0"
+foundry-local-sdk = "=2.0.1"
 
 [dependencies]
 base64 = "0.22.1"
@@ -107,7 +107,7 @@ windows-sys = { version = "0.61.2", features = [
 libc = "0.2.186"
 
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
-foundry-local-sdk = "=1.2.0"
+foundry-local-sdk = "=2.0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 icns = { version = "0.4.0", default-features = false, features = ["pngio"] }
