@@ -23,7 +23,7 @@ pub struct Compatibility {
 #[cfg_attr(test, derive(TS))]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum ProtocolEvent {
-    RuntimeSnapshot(Box<RuntimeSnapshotPayloadV3>),
+    RuntimeSnapshot(Box<RuntimeSnapshotPayloadV4>),
     ProtocolMismatch(ProtocolMismatchPayload),
 }
 
@@ -50,7 +50,7 @@ pub enum ProtocolMismatchReason {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeSnapshotPayloadV3 {
+pub struct RuntimeSnapshotPayloadV4 {
     #[cfg_attr(test, ts(type = "number"))]
     pub publication_seq: u64,
     #[cfg_attr(test, ts(type = "number"))]
@@ -60,38 +60,39 @@ pub struct RuntimeSnapshotPayloadV3 {
     #[cfg_attr(test, ts(type = "number | null"))]
     pub sampled_at_ms: Option<u64>,
     pub source: String,
-    pub environment: RuntimeEnvironmentV3,
-    pub privileged_collection: RuntimePrivilegedCollectionV3,
-    pub settings: RuntimeSettingsV3,
-    pub health: RuntimeHealthV3,
-    pub persistence: Option<RuntimePersistenceV3>,
+    pub environment: RuntimeEnvironmentV4,
+    pub privileged_collection: RuntimePrivilegedCollectionV4,
+    pub settings: RuntimeSettingsV4,
+    pub health: RuntimeHealthV4,
+    pub persistence: Option<RuntimePersistenceV4>,
     pub descriptors: Vec<MeasurementDescriptor>,
-    pub quality_codes: Vec<MetricQualityV3>,
+    pub quality_codes: Vec<MetricQualityV4>,
     pub limitations: Vec<LimitationEntry>,
-    pub system: SystemDetailV3,
-    pub workloads: Vec<WorkloadDetailV3>,
-    pub contributors: Vec<ProcessContributorV3>,
+    pub system: SystemDetailV4,
+    pub workloads: Vec<WorkloadDetailV4>,
+    pub overview_workloads: Vec<WorkloadDetailV4>,
+    pub contributors: Vec<ProcessContributorV4>,
     pub total_process_count: u32,
     pub visible_process_count: u32,
-    pub warnings: Vec<RuntimeWarningV3>,
+    pub warnings: Vec<RuntimeWarningV4>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeEnvironmentV3 {
-    pub platform: RuntimePlatformV3,
-    pub architecture: RuntimeArchitectureV3,
-    pub process_elevation: RuntimeProcessElevationV3,
-    pub install_kind: RuntimeInstallKindV3,
+pub struct RuntimeEnvironmentV4 {
+    pub platform: RuntimePlatformV4,
+    pub architecture: RuntimeArchitectureV4,
+    pub process_elevation: RuntimeProcessElevationV4,
+    pub install_kind: RuntimeInstallKindV4,
     pub data_directory: Option<String>,
-    pub release_identity: RuntimeReleaseIdentityV3,
+    pub release_identity: RuntimeReleaseIdentityV4,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeReleaseIdentityV3 {
+pub struct RuntimeReleaseIdentityV4 {
     pub app_version: String,
     pub source_commit_sha: Option<String>,
 }
@@ -99,7 +100,7 @@ pub struct RuntimeReleaseIdentityV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeArchitectureV3 {
+pub enum RuntimeArchitectureV4 {
     X86_64,
     Aarch64,
     X86,
@@ -109,7 +110,7 @@ pub enum RuntimeArchitectureV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePlatformV3 {
+pub enum RuntimePlatformV4 {
     Windows,
     Linux,
     Macos,
@@ -119,7 +120,7 @@ pub enum RuntimePlatformV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeProcessElevationV3 {
+pub enum RuntimeProcessElevationV4 {
     Unknown,
     Standard,
     Elevated,
@@ -129,7 +130,7 @@ pub enum RuntimeProcessElevationV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeInstallKindV3 {
+pub enum RuntimeInstallKindV4 {
     Unknown,
     Nsis,
     Appimage,
@@ -143,21 +144,21 @@ pub enum RuntimeInstallKindV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimePrivilegedCollectionV3 {
-    pub state: PrivilegedCollectionStateV3,
-    pub source: PrivilegedCollectionSourceV3,
-    pub preference: PrivilegedCollectionPreferenceV3,
+pub struct RuntimePrivilegedCollectionV4 {
+    pub state: PrivilegedCollectionStateV4,
+    pub source: PrivilegedCollectionSourceV4,
+    pub preference: PrivilegedCollectionPreferenceV4,
     pub standard_fallback_process_etw_disabled: bool,
     pub detail: Option<String>,
     #[cfg_attr(test, ts(type = "number | null"))]
     pub last_success_at_ms: Option<u64>,
-    pub collector_service: Option<CollectorServiceStatusV3>,
+    pub collector_service: Option<CollectorServiceStatusV4>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum PrivilegedCollectionStateV3 {
+pub enum PrivilegedCollectionStateV4 {
     Unavailable,
     StandardOnly,
     Connecting,
@@ -169,7 +170,7 @@ pub enum PrivilegedCollectionStateV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum PrivilegedCollectionSourceV3 {
+pub enum PrivilegedCollectionSourceV4 {
     None,
     LocalProcess,
     CollectorService,
@@ -178,7 +179,7 @@ pub enum PrivilegedCollectionSourceV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum PrivilegedCollectionPreferenceV3 {
+pub enum PrivilegedCollectionPreferenceV4 {
     StandardOnly,
     BestAvailable,
 }
@@ -186,9 +187,9 @@ pub enum PrivilegedCollectionPreferenceV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct CollectorServiceStatusV3 {
-    pub state: CollectorServiceStateV3,
-    pub release_identity: Option<RuntimeReleaseIdentityV3>,
+pub struct CollectorServiceStatusV4 {
+    pub state: CollectorServiceStateV4,
+    pub release_identity: Option<RuntimeReleaseIdentityV4>,
     pub service_version: Option<String>,
     pub negotiated_protocol_version: Option<u16>,
     pub minimum_desktop_version: Option<String>,
@@ -201,7 +202,7 @@ pub struct CollectorServiceStatusV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum CollectorServiceStateV3 {
+pub enum CollectorServiceStateV4 {
     NotInstalled,
     Stopped,
     Connecting,
@@ -215,18 +216,18 @@ pub enum CollectorServiceStateV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeSettingsV3 {
-    pub query: RuntimeQueryV3,
+pub struct RuntimeSettingsV4 {
+    pub query: RuntimeQueryV4,
     pub metric_window_seconds: u32,
     pub effective_sample_interval_ms: u32,
     pub collection_paused: bool,
-    pub ui_preferences: Option<RuntimeUiPreferencesV3>,
+    pub ui_preferences: Option<RuntimeUiPreferencesV4>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeUiPreferencesV3 {
+pub struct RuntimeUiPreferencesV4 {
     pub theme: String,
     pub history_point_limit: u32,
 }
@@ -234,29 +235,29 @@ pub struct RuntimeUiPreferencesV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeQueryInputV3 {
+pub struct RuntimeQueryInputV4 {
     pub filter_text: String,
-    pub focus_mode: ProcessFocusModeV3,
-    pub sort_column: SortColumnV3,
-    pub sort_direction: SortDirectionV3,
+    pub focus_mode: ProcessFocusModeV4,
+    pub sort_column: SortColumnV4,
+    pub sort_direction: SortDirectionV4,
     pub limit: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeQueryV3 {
+pub struct RuntimeQueryV4 {
     pub filter_text: String,
-    pub focus_mode: ProcessFocusModeV3,
-    pub sort_column: SortColumnV3,
-    pub sort_direction: SortDirectionV3,
+    pub focus_mode: ProcessFocusModeV4,
+    pub sort_column: SortColumnV4,
+    pub sort_direction: SortDirectionV4,
     pub limit: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessFocusModeV3 {
+pub enum ProcessFocusModeV4 {
     All,
     Attention,
     Io,
@@ -265,7 +266,7 @@ pub enum ProcessFocusModeV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum SortColumnV3 {
+pub enum SortColumnV4 {
     Attention,
     Name,
     Pid,
@@ -281,7 +282,7 @@ pub enum SortColumnV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum SortDirectionV3 {
+pub enum SortDirectionV4 {
     Asc,
     Desc,
 }
@@ -289,10 +290,12 @@ pub enum SortDirectionV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeHealthV3 {
-    pub engine_state: Option<RuntimeEngineStateV3>,
-    pub collector_state: Option<RuntimeCollectorStateV3>,
+pub struct RuntimeHealthV4 {
+    pub engine_state: Option<RuntimeEngineStateV4>,
+    pub collector_state: Option<RuntimeCollectorStateV4>,
     pub degraded: bool,
+    pub freshness: crate::contracts::RuntimeFreshness,
+    pub reason_codes: Vec<crate::contracts::RuntimeHealthReason>,
     pub status_summary: String,
     #[cfg_attr(test, ts(type = "number"))]
     pub evaluated_at_ms: u64,
@@ -316,13 +319,13 @@ pub struct RuntimeHealthV3 {
     #[cfg_attr(test, ts(type = "number"))]
     pub app_rss_bytes: u64,
     pub last_warning: Option<String>,
-    pub fatal_error: Option<RuntimeFatalErrorV3>,
+    pub fatal_error: Option<RuntimeFatalErrorV4>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeEngineStateV3 {
+pub enum RuntimeEngineStateV4 {
     Starting,
     Running,
     Paused,
@@ -332,7 +335,7 @@ pub enum RuntimeEngineStateV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeCollectorStateV3 {
+pub enum RuntimeCollectorStateV4 {
     Healthy,
     Limited,
     Unavailable,
@@ -341,7 +344,7 @@ pub enum RuntimeCollectorStateV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeFatalErrorV3 {
+pub struct RuntimeFatalErrorV4 {
     pub code: String,
     pub message: String,
     #[cfg_attr(test, ts(type = "number"))]
@@ -351,10 +354,10 @@ pub struct RuntimeFatalErrorV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimePersistenceV3 {
-    pub state: RuntimePersistenceStateV3,
-    pub roots: Vec<RuntimePersistenceRootV3>,
-    pub components: Vec<RuntimePersistenceComponentV3>,
+pub struct RuntimePersistenceV4 {
+    pub state: RuntimePersistenceStateV4,
+    pub roots: Vec<RuntimePersistenceRootV4>,
+    pub components: Vec<RuntimePersistenceComponentV4>,
     #[cfg_attr(test, ts(type = "number"))]
     pub suppressed_diagnostic_events: u64,
 }
@@ -362,7 +365,7 @@ pub struct RuntimePersistenceV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePersistenceStateV3 {
+pub enum RuntimePersistenceStateV4 {
     Healthy,
     Degraded,
     Unavailable,
@@ -371,16 +374,16 @@ pub enum RuntimePersistenceStateV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimePersistenceRootV3 {
-    pub owner: RuntimePersistenceOwnerV3,
+pub struct RuntimePersistenceRootV4 {
+    pub owner: RuntimePersistenceOwnerV4,
     pub directory: Option<String>,
-    pub permission_state: RuntimePersistencePermissionStateV3,
+    pub permission_state: RuntimePersistencePermissionStateV4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePersistenceOwnerV3 {
+pub enum RuntimePersistenceOwnerV4 {
     CurrentUser,
     CollectorService,
 }
@@ -388,7 +391,7 @@ pub enum RuntimePersistenceOwnerV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePersistencePermissionStateV3 {
+pub enum RuntimePersistencePermissionStateV4 {
     Verified,
     Invalid,
     Unavailable,
@@ -397,20 +400,20 @@ pub enum RuntimePersistencePermissionStateV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimePersistenceComponentV3 {
-    pub owner: RuntimePersistenceOwnerV3,
-    pub kind: RuntimePersistenceKindV3,
-    pub state: RuntimePersistenceStateV3,
-    pub durability: RuntimePersistenceDurabilityV3,
+pub struct RuntimePersistenceComponentV4 {
+    pub owner: RuntimePersistenceOwnerV4,
+    pub kind: RuntimePersistenceKindV4,
+    pub state: RuntimePersistenceStateV4,
+    pub durability: RuntimePersistenceDurabilityV4,
     #[cfg_attr(test, ts(type = "number | null"))]
     pub last_success_at_ms: Option<u64>,
-    pub active_failure: Option<RuntimePersistenceFailureV3>,
+    pub active_failure: Option<RuntimePersistenceFailureV4>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePersistenceKindV3 {
+pub enum RuntimePersistenceKindV4 {
     Settings,
     WarmCache,
     Diagnostics,
@@ -420,7 +423,7 @@ pub enum RuntimePersistenceKindV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePersistenceDurabilityV3 {
+pub enum RuntimePersistenceDurabilityV4 {
     Durable,
     NotWritten,
     SessionOnly,
@@ -430,9 +433,9 @@ pub enum RuntimePersistenceDurabilityV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimePersistenceFailureV3 {
+pub struct RuntimePersistenceFailureV4 {
     pub code: String,
-    pub operation: RuntimePersistenceOperationV3,
+    pub operation: RuntimePersistenceOperationV4,
     #[cfg_attr(test, ts(type = "number"))]
     pub occurred_at_ms: u64,
     pub retryable: bool,
@@ -442,7 +445,7 @@ pub struct RuntimePersistenceFailureV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePersistenceOperationV3 {
+pub enum RuntimePersistenceOperationV4 {
     ResolveRoot,
     Create,
     Load,
@@ -466,14 +469,14 @@ pub struct MeasurementDescriptor {
     pub scope: MetricScope,
     pub unit: MetricUnit,
     pub interval_ms: Option<u32>,
-    pub network_scope: Option<NetworkScopeV3>,
-    pub source: MetricSourceV3,
+    pub network_scope: Option<NetworkScopeV4>,
+    pub source: MetricSourceV4,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum NetworkScopeV3 {
+pub enum NetworkScopeV4 {
     NonLoopbackInterfaceAggregate,
     AllInterfaceAggregate,
     IpSocketPayload,
@@ -551,7 +554,7 @@ pub enum MetricUnit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum MetricSourceV3 {
+pub enum MetricSourceV4 {
     Unknown,
     DirectApi,
     Libproc,
@@ -571,7 +574,7 @@ pub enum MetricSourceV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum MetricQualityV3 {
+pub enum MetricQualityV4 {
     Native,
     Estimated,
     Held,
@@ -617,17 +620,17 @@ pub enum LimitationCode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct SystemDetailV3 {
+pub struct SystemDetailV4 {
     pub stable_id: String,
     pub metrics: Vec<MetricObservation>,
-    pub logical_cpus: Vec<LogicalCpuDetailV3>,
-    pub kernel_pool_tags: Vec<KernelPoolTagDetailV3>,
+    pub logical_cpus: Vec<LogicalCpuDetailV4>,
+    pub kernel_pool_tags: Vec<KernelPoolTagDetailV4>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct LogicalCpuDetailV3 {
+pub struct LogicalCpuDetailV4 {
     pub stable_id: String,
     pub index: u16,
     pub metrics: Vec<MetricObservation>,
@@ -636,10 +639,10 @@ pub struct LogicalCpuDetailV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct KernelPoolTagDetailV3 {
+pub struct KernelPoolTagDetailV4 {
     pub stable_id: String,
     pub tag: String,
-    pub kind: KernelPoolKindV3,
+    pub kind: KernelPoolKindV4,
     pub driver_candidates: Vec<String>,
     pub driver_candidates_pending: bool,
     pub metrics: Vec<MetricObservation>,
@@ -648,7 +651,7 @@ pub struct KernelPoolTagDetailV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum KernelPoolKindV3 {
+pub enum KernelPoolKindV4 {
     Paged,
     Nonpaged,
 }
@@ -656,17 +659,17 @@ pub enum KernelPoolKindV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
-pub enum WorkloadDetailV3 {
-    Process(ProcessDetailV3),
-    Group(GroupDetailV3),
+pub enum WorkloadDetailV4 {
+    Process(ProcessDetailV4),
+    Group(GroupDetailV4),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct ProcessDetailV3 {
+pub struct ProcessDetailV4 {
     pub stable_id: String,
-    pub identity_stability: ProcessIdentityStabilityV3,
+    pub identity_stability: ProcessIdentityStabilityV4,
     pub pid: String,
     pub parent_pid: Option<String>,
     pub parent_process_id: Option<String>,
@@ -675,15 +678,15 @@ pub struct ProcessDetailV3 {
     pub display_name: String,
     pub executable: String,
     pub status: String,
-    pub access_state: AccessStateV3,
-    pub presentation: ProcessPresentationV3,
+    pub access_state: AccessStateV4,
+    pub presentation: ProcessPresentationV4,
     pub metrics: Vec<MetricObservation>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessIdentityStabilityV3 {
+pub enum ProcessIdentityStabilityV4 {
     Stable,
     Publication,
 }
@@ -691,7 +694,7 @@ pub enum ProcessIdentityStabilityV3 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum AccessStateV3 {
+pub enum AccessStateV4 {
     Full,
     Partial,
     Denied,
@@ -700,7 +703,7 @@ pub enum AccessStateV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct ProcessPresentationV3 {
+pub struct ProcessPresentationV4 {
     pub group_id: Option<String>,
     pub group_key: String,
     pub group_label: String,
@@ -714,7 +717,7 @@ pub struct ProcessPresentationV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct GroupDetailV3 {
+pub struct GroupDetailV4 {
     pub stable_id: String,
     pub group_key: String,
     pub label: String,
@@ -724,13 +727,13 @@ pub struct GroupDetailV3 {
     pub icon_source: Option<String>,
     pub example_label: Option<String>,
     pub metrics: Vec<MetricObservation>,
-    pub coverage: Vec<GroupMetricCoverageV3>,
+    pub coverage: Vec<GroupMetricCoverageV4>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct GroupMetricCoverageV3 {
+pub struct GroupMetricCoverageV4 {
     pub descriptor_index: u16,
     pub available_contributors: u32,
     pub total_contributors: u32,
@@ -740,22 +743,22 @@ pub struct GroupMetricCoverageV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct ProcessContributorV3 {
-    pub metric: ContributorMetricV3,
+pub struct ProcessContributorV4 {
+    pub metric: ContributorMetricV4,
     pub process_id: Option<String>,
     pub display_name: Option<String>,
     pub name_ambiguous: bool,
     pub available_contributors: u32,
     pub total_contributors: u32,
     pub quality_code: u8,
-    pub source: MetricSourceV3,
+    pub source: MetricSourceV4,
     pub limitation_index: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub enum ContributorMetricV3 {
+pub enum ContributorMetricV4 {
     Cpu,
     Memory,
     Io,
@@ -765,7 +768,7 @@ pub enum ContributorMetricV3 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[serde(rename_all = "snake_case")]
-pub struct RuntimeWarningV3 {
+pub struct RuntimeWarningV4 {
     pub key: String,
     #[cfg_attr(test, ts(type = "number"))]
     pub publication_seq: u64,

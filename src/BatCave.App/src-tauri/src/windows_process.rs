@@ -41,6 +41,10 @@ use windows_sys::Win32::{
 
 #[cfg(windows)]
 pub fn collect_processes(_seq: u64) -> Result<Vec<ProcessSample>, String> {
+    let snapshot_started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "process_snapshot_clock_unavailable".to_string())?
+        .as_millis() as u64;
     let snapshot = SnapshotHandle::create()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: size_of::<PROCESSENTRY32W>() as u32,
@@ -57,7 +61,9 @@ pub fn collect_processes(_seq: u64) -> Result<Vec<ProcessSample>, String> {
 
     let mut processes = Vec::new();
     loop {
-        processes.push(sample_from_entry(&entry));
+        if let Some(sample) = sample_from_entry(&entry, snapshot_started_ms) {
+            processes.push(sample);
+        }
 
         if unsafe { Process32NextW(snapshot.raw(), &mut entry) } == 0 {
             let error = unsafe { GetLastError() };
@@ -77,7 +83,7 @@ pub fn collect_processes(_seq: u64) -> Result<Vec<ProcessSample>, String> {
 }
 
 #[cfg(windows)]
-fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
+fn sample_from_entry(entry: &PROCESSENTRY32W, snapshot_started_ms: u64) -> Option<ProcessSample> {
     let pid = entry.th32ProcessID;
     let parent_pid =
         (entry.th32ParentProcessID != 0).then(|| entry.th32ParentProcessID.to_string());
@@ -114,10 +120,18 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
 
     let Some(process) = ProcessHandle::open(pid) else {
         sample.access_state = resolve_access_state(0, PROCESS_PROBE_COUNT);
-        return sample;
+        return Some(sample);
     };
+    // An entry predates OpenProcess. A later PID generation cannot inherit its parent/threads.
+    let Some(start_time_ms) = query_process_start_time_ms(process.raw()) else {
+        return Some(sample);
+    };
+    if !generation_precedes_snapshot(start_time_ms, snapshot_started_ms) {
+        return None;
+    }
+    sample.start_time_ms = start_time_ms;
 
-    let mut succeeded = 0;
+    let mut succeeded = 1;
     let mut failed = 0;
     let mut probes = ProcessProbeResults {
         threads: true,
@@ -127,14 +141,6 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
     match query_process_image(process.raw()) {
         Some(exe) => {
             sample.exe = exe;
-            succeeded += 1;
-        }
-        None => failed += 1,
-    }
-
-    match query_process_start_time_ms(process.raw()) {
-        Some(start_time_ms) => {
-            sample.start_time_ms = start_time_ms;
             succeeded += 1;
         }
         None => failed += 1,
@@ -172,7 +178,12 @@ fn sample_from_entry(entry: &PROCESSENTRY32W) -> ProcessSample {
 
     sample.access_state = resolve_access_state(succeeded, failed);
     sample.quality = Some(process_metric_quality_from_probes(probes));
-    sample
+    // All auxiliary reads use this retained HANDLE, then its generation is checked again.
+    (query_process_start_time_ms(process.raw()) == Some(start_time_ms)).then_some(sample)
+}
+
+fn generation_precedes_snapshot(start_time_ms: u64, snapshot_started_ms: u64) -> bool {
+    start_time_ms > 0 && start_time_ms < snapshot_started_ms
 }
 
 fn process_metric_quality_from_probes(probes: ProcessProbeResults) -> ProcessMetricQuality {
@@ -424,6 +435,14 @@ mod tests {
     #[test]
     fn filetime_before_epoch_saturates_to_zero_ms() {
         assert_eq!(filetime_100ns_to_unix_ms(1), 0);
+    }
+
+    #[test]
+    fn snapshot_fence_rejects_reused_or_ambiguous_same_millisecond_births() {
+        assert!(generation_precedes_snapshot(999, 1_000));
+        for birth in [0, 1_000, 1_001] {
+            assert!(!generation_precedes_snapshot(birth, 1_000));
+        }
     }
 
     #[test]

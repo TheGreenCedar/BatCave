@@ -1,7 +1,8 @@
 import type { DetailMode } from "./components/metrics/types";
 import type { MetricCoverage, MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "./types";
 
-export type CollectionState = "live" | "paused" | "stale";
+import { metricPresentation, type CollectionState } from "./telemetryPresentation.ts";
+export type { CollectionState } from "./telemetryPresentation.ts";
 export type ResourceConfidence = "High" | "Limited" | "Unavailable";
 
 export interface ResourceBrief {
@@ -35,10 +36,10 @@ export function buildResourceBrief(
   const definition = resourceDefinition(snapshot, mode, values);
   const quality = resourceQuality(snapshot, mode);
   const hasSample = snapshot.sampled_at_ms !== null;
-  const canShowValue =
-    hasSample && quality?.quality !== "unavailable" && quality?.quality !== "held";
-  const stateLabel = resourceStateLabel(quality, collectionState, hasSample);
-  const valueLabel = canShowValue ? definition.valueLabel : unavailableValueLabel(quality);
+  const metric = metricPresentation(quality, collectionState, hasSample);
+  const canShowValue = metric.canDisplay;
+  const stateLabel = metric.label;
+  const valueLabel = canShowValue ? definition.valueLabel : metric.emptyLabel;
   const headline = resourceHeadline(
     definition.semanticLabel,
     valueLabel,
@@ -96,7 +97,7 @@ export function resolveContributorProcess(
   processId: string | null,
 ): ProcessSample | null {
   if (processId === null) return null;
-  const row = snapshot.process_view_rows.find(
+  const row = snapshot.overview_rows.find(
     (candidate) => candidate.kind === "process" && candidate.detail.workload_id === processId,
   );
   return row?.kind === "process" ? row.detail.process : null;
@@ -184,21 +185,6 @@ function resourceQuality(
   return snapshot.system.quality?.[mode];
 }
 
-function resourceStateLabel(
-  quality: MetricQualityInfo | undefined,
-  collectionState: CollectionState,
-  hasSample: boolean,
-): string {
-  if (!hasSample) return "No sample";
-  if (collectionState === "stale") return "Stale";
-  if (collectionState === "paused") return "Paused";
-  if (quality?.quality === "unavailable") return "Unavailable";
-  if (quality?.quality === "held") return "Waiting";
-  if (quality?.quality === "partial") return "Partial";
-  if (quality?.quality === "estimated") return "Estimated";
-  return "Current";
-}
-
 function resourceConfidence(
   snapshot: RuntimeSnapshot,
   mode: DetailMode,
@@ -253,10 +239,6 @@ function contributorStatusLabel(
   return `No process activity attributed${contributorQualitySuffix(quality)}`;
 }
 
-function unavailableValueLabel(quality: MetricQualityInfo | undefined): string {
-  return quality?.quality === "held" ? "Waiting" : "Unavailable";
-}
-
 function resourceHeadline(
   semanticLabel: string,
   valueLabel: string,
@@ -305,7 +287,7 @@ function contributorValueLabel(
 }
 
 function contributorQualityIsPublishable(quality: MetricQualityInfo | undefined): boolean {
-  return quality?.quality !== "unavailable" && quality?.quality !== "held";
+  return metricPresentation(quality, "live", true).canDisplay;
 }
 
 function contributorQualitySuffix(quality: MetricQualityInfo | undefined): string {
@@ -321,7 +303,12 @@ function contributorCoverageSuffix(coverage: MetricCoverage): string {
 }
 
 export function displayProcessName(name: string): string {
-  const normalized = name.replace(/\.exe$/i, "");
+  const normalized =
+    name
+      .split(/[\\/]/)
+      .at(-1)
+      ?.replace(/\.exe$/i, "")
+      .trim() || name;
   if (normalized.toLocaleLowerCase() === "code") return "Visual Studio Code";
   if (normalized.toLocaleLowerCase() === "msedge") return "Microsoft Edge";
   return normalized;

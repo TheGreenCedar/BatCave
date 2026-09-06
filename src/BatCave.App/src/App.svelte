@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { FixtureInspectionArchive, InspectionRequestGate, getWorkloadInspection, type WorkloadInspection } from "./lib/workloadInspection";
   import { invoke } from "@tauri-apps/api/core";
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
@@ -38,7 +39,6 @@
     formatRate,
     logicalCpuMetricQuality,
     metricQualityLabel,
-    metricQualityShortLabel,
     processMemoryQuality,
     processFindingLabel,
   } from "./lib/format";
@@ -46,6 +46,8 @@
   import {
     NarrativeController,
     buildNarrativeFactPacket,
+    admittedNarrativeCandidates,
+    renderNarrative,
     defaultNarrativeCapability,
     isNarrativeRelevant,
     makeNarrativeInvocation,
@@ -55,6 +57,7 @@
     type NarrativeFactPacket,
   } from "./lib/narratives";
   import { buildOverviewStatus, leadingOverviewRows } from "./lib/overview";
+  import { buildTelemetryPresentation, metricPresentation } from "./lib/telemetryPresentation";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -63,24 +66,19 @@
   import {
     defaultSortDirection,
     focusOptions,
-    hasSameProcessOrder,
+    advanceProcessRanking,
     nextSortDirection,
     processColumns,
-    processIoRate,
     processIdentity,
     processNeedsAttention,
-    processOtherIoRate,
     prepareProcessViewRows,
     processSelectionKey,
     processViewRowKey,
-    selectedWorkloadDetail,
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
     shouldHoldProcessOrder,
-    stabilizeProcessRows,
     type FocusMode,
-    type ProcessRates,
     type SortKey,
   } from "./lib/process";
   import {
@@ -99,20 +97,15 @@
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
   import { startRuntimePolling } from "./lib/runtimePolling";
+  import { observeDesktopPublication } from "./lib/desktopProbe";
   import {
     boundedPercent,
     combineSeries,
-    emptyProcessTrendState,
     emptyTrendState,
-    initialWorkloadTrend,
     maxRate,
     nextSystemHistory,
-    nextWorkloadTrend,
     percentage,
-    processRatesFromSamples,
-    trimProcessHistory,
     trimSystemHistory,
-    type ProcessTrendState,
   } from "./lib/telemetryHistory";
   import { AcceptedRuntimeControls } from "./lib/runtimeControls";
   import {
@@ -146,6 +139,7 @@
     getNarrativeFactDigest,
     getNarrativePreferences,
     getRuntimeProcessIcons,
+    observeAcceptedRuntimePublication,
     ProtocolMismatchError,
     readNativeSnapshot,
     refreshRuntime,
@@ -173,6 +167,7 @@
     StableUpdateController,
     type StableUpdateState,
   } from "./lib/stableUpdate";
+  import { RUNTIME_PROTOCOL_VERSION } from "./lib/generated/runtime-protocol-v4";
   import type { ProtocolMismatchView } from "./lib/protocol/runtimeProtocol";
 
   const historyPointOptions = [30, 72, 180, 360] as const;
@@ -221,21 +216,24 @@
   let sortKey: SortKey = "attention";
   let sortDirection: SortDirection = "desc";
   let detailMode: DetailMode = "cpu";
+  let overviewResource: DetailMode = "cpu";
   let themePreference: ThemePreference = defaultThemePreference;
   let systemThemeMode: ResolvedThemeMode = "dark";
   let synchronizedThemeName: ResolvedThemeName | null = null;
   let historyPointLimit: HistoryPointLimit = 72;
   let history = emptyTrendState();
-  let processHistory: ProcessTrendState = emptyProcessTrendState();
-  let processRates: Record<string, ProcessRates> = {};
+  let inspection: WorkloadInspection | null = null;
+  let inspectionLoading = false;
+  let inspectionError = "";
+  const inspectionGate = new InspectionRequestGate();
+  const fixtureInspection = new FixtureInspectionArchive();
   let nativeProcessIcons: Record<string, string> = {};
   let processIcons: ResolvedProcessIconCatalog = {};
   let requestedProcessIcons = new Set<string>();
   let resourceSummaries: ResourceSummaryOption[] = [];
   let displayProcessRows: ProcessViewRow[] = [];
-  let pendingProcessRows: ProcessViewRow[] = [];
+  let pendingProcessRows: ProcessViewRow[] | null = null;
   let queueInteracting = false;
-  let expandedGroupCount = 0;
   let rankingUpdateAvailable = false;
   let settingsOpen = false;
   let diagnosticsOpen = false;
@@ -277,14 +275,19 @@
     snapshot.system.swap_total_bytes ?? 0,
   );
   $: processViewRows = displayProcessRows;
-  $: processIcons = buildResolvedProcessIconCatalog(snapshot.processes, nativeProcessIcons);
+  $: iconProcesses = snapshot.overview_rows.flatMap((row) => row.kind === "process" ? [row.detail.process] : []);
+  $: processIcons = buildResolvedProcessIconCatalog([...iconProcesses, ...snapshot.processes], nativeProcessIcons);
   $: filteredProcesses = processViewRows.flatMap((row) =>
     row.kind === "process" ? [row.detail.process] : [],
   );
-  $: selectedRow =
-    processViewRows.find((row) => processViewRowKey(row) === selectedWorkloadId) ??
-    snapshot.process_view_rows.find((row) => processViewRowKey(row) === selectedWorkloadId) ??
-    null;
+  $: selectedRow = inspection?.stable_id === selectedWorkloadId ? inspection.row : null;
+  $: inspectionCurrent = inspection?.stable_id === selectedWorkloadId && inspection.status === "current" && inspection.sample_seq === snapshot.sample_seq && collectionState === "live" && !inspectionLoading && !inspectionError;
+  $: void refreshInspection(
+    selectedWorkloadId,
+    historyPointLimit,
+    snapshot.publication_seq,
+    activeView === "explore" && detailSubject === "process" && (!isCompactDetail || compactDetailOpen),
+  );
   $: selectedWorkload = selectedRow?.detail ?? null;
   $: selectedProcess =
     selectedWorkload?.kind === "process" ? selectedWorkload.process : null;
@@ -323,10 +326,9 @@
   $: networkTotalHistory = combineSeries(history.netRx, history.netTx);
   $: diskScaleMax = maxRate(diskTotalHistory, 1_000_000);
   $: networkScaleMax = maxRate(networkTotalHistory, 750_000);
-  $: selectedRates = selectedProcess ? processRates[processSelectionKey(selectedProcess)] : undefined;
-  $: processReadRate = selectedRates?.readRate ?? processHistory.readRate.at(-1) ?? 0;
-  $: processWriteRate = selectedRates?.writeRate ?? processHistory.writeRate.at(-1) ?? 0;
-  $: void hydrateProcessIcons(processViewRows, filteredProcesses, selectedProcess);
+  $: processReadRate = selectedProcess?.io_read_bps ?? 0;
+  $: processWriteRate = selectedProcess?.io_write_bps ?? 0;
+  $: void hydrateProcessIcons([...overviewRows, ...processViewRows], [...iconProcesses, ...filteredProcesses], activeView === "overview" ? overviewPrimaryProcess : selectedProcess);
   $: coreLoads = history.cores.flatMap((core, index) =>
     core.length > 0 ? [{ index, load: currentCoreLoad(core), trend: core }] : [],
   );
@@ -335,27 +337,20 @@
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
-  $: collectionState = pollState === "error" ? "stale" : isPaused ? "paused" : "live";
-  $: overviewCpuBrief = buildResourceBrief(
-    snapshot,
-    "cpu",
-    {
-      memoryPercent,
-      diskRate: diskReadRate + diskWriteRate,
-      networkRate: networkDownRate + networkUpRate,
-    },
-    collectionState,
-  );
-  $: leadingCpuProcess = resolveContributorProcess(snapshot, overviewCpuBrief.leadingProcessId);
-  $: leadingCpuIdentity = leadingCpuProcess ? processIdentity(leadingCpuProcess) : null;
-  $: leadingCpuIcon = resolvedProcessIcon(
-    processIcons,
-    leadingCpuProcess ? processIconKey(leadingCpuProcess) : undefined,
-  );
-  $: overviewContributorCopy = overviewNarrative?.text ?? overviewCpuBrief.contributorStatusLabel;
+  $: telemetry = buildTelemetryPresentation(snapshot, pollState === "starting" ? "starting" : pollState === "error" ? "stale" : isPaused ? "paused" : "live");
+  $: collectionState = telemetry.state;
+  $: overviewNarrativeCopy = collectionState === "live" && enhancedNarratives && overviewPrimaryProcess
+    ? renderNarrative(overviewNarrative, processNarrativeFacts(overviewPrimaryProcess, overviewResource === "disk" ? "io" : overviewResource, "top_contributor"),
+      "overview_contributor", overviewPrimaryBrief.leadingProcessId ?? undefined)
+    : null;
+  $: overviewContributorCopy = overviewNarrativeCopy ?? overviewPrimaryBrief.contributorStatusLabel;
+  $: workloadNarrativeCopy = inspectionCurrent && enhancedNarratives && selectedProcess && selectedWorkload?.kind === "process"
+    ? renderNarrative(workloadNarrative, processNarrativeFacts(selectedProcess, leadingNarrativeResource(selectedProcess), "notable"),
+      "workload_insight", selectedWorkload.workload_id)
+    : null;
   $: selectedWorkloadInsight =
-    selectedProcess && processHasNotableFinding(selectedProcess)
-      ? workloadNarrative?.text ?? deterministicProcessFinding(selectedProcess)
+    collectionState === "live" && selectedProcess && processHasNotableFinding(selectedProcess)
+      ? workloadNarrativeCopy ?? deterministicProcessFinding(selectedProcess)
       : null;
   $: limitationCount =
     uniqueWarningCount(snapshot.warnings) || snapshot.health.collector_warning_count;
@@ -363,18 +358,16 @@
     snapshot,
     pollState === "starting" ? "starting" : collectionState,
     limitationCount,
+    overviewResource,
   );
-  $: overviewRows = leadingOverviewRows(processViewRows, 5);
-  $: healthTone = pollState === "error" ? "danger" : isPaused || snapshot.health.degraded ? "warning" : "healthy";
-  $: healthLabel = pollState === "error"
-    ? "Telemetry stale"
-    : isPaused
-      ? "Telemetry paused"
-      : limitationCount > 0
-        ? `${limitationCount} limitation${limitationCount === 1 ? "" : "s"}`
-        : snapshot.health.degraded
-          ? "App resource warning"
-        : "Telemetry healthy";
+  $: overviewRows = leadingOverviewRows(snapshot.overview_rows, overviewResource, 5);
+  $: overviewPrimaryBrief = buildResourceBrief(snapshot, overviewResource, { memoryPercent, diskRate: diskReadRate + diskWriteRate, networkRate: networkDownRate + networkUpRate }, collectionState);
+  $: overviewPrimaryProcess = resolveContributorProcess(snapshot, overviewPrimaryBrief.leadingProcessId);
+  $: overviewPrimaryIdentity = overviewPrimaryProcess ? processIdentity(overviewPrimaryProcess) : null;
+  $: overviewPrimaryIcon = resolvedProcessIcon(processIcons, overviewPrimaryProcess ? processIconKey(overviewPrimaryProcess) : undefined);
+  $: overviewPrimaryMetric = resourceSummaries.find((resource) => resource.mode === overviewResource);
+  $: healthTone = telemetry.tone;
+  $: healthLabel = telemetry.label;
   $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
   $: detailTitle =
     detailMode === "cpu"
@@ -406,11 +399,11 @@
   );
   $: detailReadout =
     detailMode === "cpu"
-      ? cpuDetailValue === "Unavailable" || cpuDetailValue === "Waiting"
+      ? !metricCanDisplay(systemQuality.cpu)
         ? cpuDetailValue
         : `${cpuDetailValue} machine total`
       : detailMode === "memory"
-        ? memoryDetailValue === "Unavailable" || memoryDetailValue === "Waiting"
+        ? !metricCanDisplay(systemQuality.memory)
           ? memoryDetailValue
           : `${memoryDetailValue} used`
         : detailMode === "disk"
@@ -422,14 +415,14 @@
       ariaLabel: "Open CPU logical core detail",
       label: "Machine CPU",
       value: metricValueLabel(snapshot.system.cpu_percent, systemQuality.cpu, formatPercent),
-      supportingLabel: "Peak logical core",
-      supportingValue: metricValueLabel(
-        corePeak,
-        logicalCpuMetricQuality(systemQuality),
-        formatPercent,
-      ),
-      statusLabel: resourceQualityStatus(systemQuality.cpu, "Measured"),
-      shortStatusLabel: resourceQualityShortStatus(systemQuality.cpu, "Measured"),
+      supportingMetrics: [
+        {
+          label: "Peak logical core",
+          value: metricValueLabel(corePeak, logicalCpuMetricQuality(systemQuality), formatPercent),
+        },
+      ],
+      statusLabel: resourceQualityStatus(systemQuality.cpu, collectionState),
+      shortStatusLabel: resourceQualityStatus(systemQuality.cpu, collectionState),
       values: history.cpu,
       max: 100,
       stroke: activeTheme.cpuStroke,
@@ -440,14 +433,14 @@
       ariaLabel: "Open memory detail",
       label: "Memory",
       value: metricValueLabel(memoryPercent, systemQuality.memory, formatPercent),
-      supportingLabel: "Used",
-      supportingValue: metricValueLabel(
-        snapshot.system.memory_used_bytes,
-        systemQuality.memory,
-        formatBytes,
-      ),
-      statusLabel: resourceQualityStatus(systemQuality.memory, "Measured"),
-      shortStatusLabel: resourceQualityShortStatus(systemQuality.memory, "Measured"),
+      supportingMetrics: [
+        {
+          label: "Used",
+          value: metricValueLabel(snapshot.system.memory_used_bytes, systemQuality.memory, formatBytes),
+        },
+      ],
+      statusLabel: resourceQualityStatus(systemQuality.memory, collectionState),
+      shortStatusLabel: resourceQualityStatus(systemQuality.memory, collectionState),
       values: history.memory,
       max: 100,
       stroke: activeTheme.memoryStroke,
@@ -458,12 +451,12 @@
       ariaLabel: "Open disk throughput detail",
       label: "Disk",
       value: metricValueLabel(diskReadRate + diskWriteRate, systemQuality.disk, formatRate),
-      supportingLabel: "Read / write",
-      supportingValue: !metricCanDisplay(systemQuality.disk)
-        ? "No trusted sample"
-        : `${formatRate(diskReadRate)} / ${formatRate(diskWriteRate)}`,
-      statusLabel: resourceQualityStatus(systemQuality.disk, "Aggregate"),
-      shortStatusLabel: resourceQualityShortStatus(systemQuality.disk, "Aggregate"),
+      supportingMetrics: [
+        { label: "Read", value: metricValueLabel(diskReadRate, systemQuality.disk, formatRate) },
+        { label: "Write", value: metricValueLabel(diskWriteRate, systemQuality.disk, formatRate) },
+      ],
+      statusLabel: resourceQualityStatus(systemQuality.disk, collectionState),
+      shortStatusLabel: resourceQualityStatus(systemQuality.disk, collectionState),
       values: diskTotalHistory,
       max: diskScaleMax,
       stroke: activeTheme.diskWriteStroke,
@@ -474,12 +467,12 @@
       ariaLabel: "Open network throughput detail",
       label: "Network",
       value: metricValueLabel(networkDownRate + networkUpRate, systemQuality.network, formatRate),
-      supportingLabel: "Down / up",
-      supportingValue: !metricCanDisplay(systemQuality.network)
-        ? "No trusted sample"
-        : `${formatRate(networkDownRate)} / ${formatRate(networkUpRate)}`,
-      statusLabel: resourceQualityStatus(systemQuality.network, "Aggregate"),
-      shortStatusLabel: resourceQualityShortStatus(systemQuality.network, "Aggregate"),
+      supportingMetrics: [
+        { label: "Down", value: metricValueLabel(networkDownRate, systemQuality.network, formatRate) },
+        { label: "Up", value: metricValueLabel(networkUpRate, systemQuality.network, formatRate) },
+      ],
+      statusLabel: resourceQualityStatus(systemQuality.network, collectionState),
+      shortStatusLabel: resourceQualityStatus(systemQuality.network, collectionState),
       values: networkTotalHistory,
       max: networkScaleMax,
       stroke: activeTheme.networkDownStroke,
@@ -525,11 +518,22 @@
         prepareAccessibilityFixture(next, accessibilityFixtureState);
         ingest(next);
         applyAccessibilityFixtureSelection(next, accessibilityFixtureState);
-        activeView = ["process", "group", "compact"].includes(accessibilityFixtureState)
+        if (accessibilityFixtureState === "exited") {
+          const exited = structuredClone(next);
+          exited.publication_seq += 1;
+          exited.sample_seq += 1;
+          exited.sampled_at_ms = (exited.sampled_at_ms ?? exited.published_at_ms) + 1000;
+          exited.published_at_ms = exited.sampled_at_ms;
+          exited.processes = [];
+          exited.process_view_rows = [];
+          exited.overview_rows = [];
+          ingest(exited);
+        }
+        activeView = ["process", "group", "compact", "exited"].includes(accessibilityFixtureState)
           ? "explore"
           : "overview";
       } else {
-        ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+        ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform, accessibilityFixtureState ? "compact" : "dense"));
       }
     } else if (runtimeMode() === "unavailable") {
       lastError = "BatCave telemetry requires the native desktop runtime.";
@@ -591,6 +595,7 @@
       systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
       compactDetailQuery.removeEventListener("change", handleCompactDetailChange);
       stopPolling?.();
+      inspectionGate.clear();
       if (searchDebounceId !== undefined) {
         window.clearTimeout(searchDebounceId);
       }
@@ -612,7 +617,7 @@
       pollState = "fixture";
       lastError = "";
       protocolMismatch = null;
-      return makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform);
+      return makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform, accessibilityFixtureState ? "compact" : "dense");
     }
     if (mode === "unavailable") {
       const message = "BatCave telemetry requires the native desktop runtime.";
@@ -678,7 +683,9 @@
   }
 
   function seedAccessibilityProcessIcon(next: RuntimeSnapshot): void {
-    const donor = next.processes.find(
+    const donor = next.overview_rows.flatMap((row) =>
+      row.kind === "process" ? [row.detail.process] : [],
+    ).find(
       (process) => processIconFamily(process.name) === "fixtureworker",
     );
     if (donor) nativeProcessIcons = { [processIconKey(donor)]: fixtureProcessIcon };
@@ -692,7 +699,7 @@
     diagnosticsOpen = state === "diagnostics";
     compactDetailOpen = false;
 
-    if (state === "process" || state === "compact") {
+    if (state === "process" || state === "compact" || state === "exited") {
       const processRow = next.process_view_rows.find(
         (row) =>
           row.kind === "process" &&
@@ -873,7 +880,7 @@
   }
 
   async function requestCurrentSurfaceNarrative(): Promise<void> {
-    if (!enhancedNarratives || narrativeCapability.availability !== "available") return;
+    if (!enhancedNarratives || collectionState !== "live" || narrativeCapability.availability !== "available") return;
     if (activeView === "overview") {
       await requestOverviewNarrative();
     } else if (detailSubject === "process") {
@@ -901,7 +908,7 @@
     await narrativeCancellation;
     const epoch = narrativeEpoch;
     const context = currentOverviewNarrativeContext();
-    if (!context || runtimeMode() !== "native") return;
+    if (!context || runtimeMode() !== "native" || !enhancedNarratives || admittedNarrativeCandidates(context.facts, "overview_contributor").length < 2) return;
     const relevanceKey = narrativeRelevanceKey(context.facts);
     const publicationSeq = snapshot.publication_seq;
     let factDigest = "";
@@ -948,7 +955,7 @@
     await narrativeCancellation;
     const epoch = narrativeEpoch;
     const context = currentWorkloadNarrativeContext();
-    if (!context || runtimeMode() !== "native") return;
+    if (!context || runtimeMode() !== "native" || !enhancedNarratives || admittedNarrativeCandidates(context.facts).length < 2) return;
     const relevanceKey = narrativeRelevanceKey(context.facts);
     const publicationSeq = snapshot.publication_seq;
     let factDigest = "";
@@ -990,10 +997,10 @@
     facts: NarrativeFactPacket;
     subjectStableId: string;
   } | null {
-    if (!leadingCpuProcess || !overviewCpuBrief.leadingProcessId) return null;
+    if (collectionState !== "live" || !overviewPrimaryProcess || !overviewPrimaryBrief.leadingProcessId) return null;
     return {
-      facts: processNarrativeFacts(leadingCpuProcess, "cpu", "top_contributor"),
-      subjectStableId: overviewCpuBrief.leadingProcessId,
+      facts: processNarrativeFacts(overviewPrimaryProcess, overviewResource === "disk" ? "io" : overviewResource, "top_contributor"),
+      subjectStableId: overviewPrimaryBrief.leadingProcessId,
     };
   }
 
@@ -1002,6 +1009,8 @@
     subjectStableId: string;
   } | null {
     if (
+      collectionState !== "live" ||
+      !inspectionCurrent ||
       selectedWorkload?.kind !== "process" ||
       !processHasNotableFinding(selectedWorkload.process)
     ) {
@@ -1027,7 +1036,7 @@
       category: processIdentity(process).group,
       cpuPercent: process.cpu_percent,
       memoryBytes: process.memory_bytes,
-      ioBytesPerSecond: processIoRate(process, processRates),
+      ioBytesPerSecond: (process.io_read_bps + process.io_write_bps),
       networkBytesPerSecond:
         (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
       leadingResource,
@@ -1057,7 +1066,7 @@
     const values = [
       ["cpu", process.cpu_percent / 30],
       ["memory", process.memory_bytes / (900 * 1024 ** 2)],
-      ["io", processIoRate(process, processRates) / (500 * 1024)],
+      ["io", (process.io_read_bps + process.io_write_bps) / (500 * 1024)],
       [
         "network",
         ((process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0)) /
@@ -1073,7 +1082,7 @@
   function deterministicProcessFinding(process: ProcessSample): string {
     return processFindingLabel(
       process,
-      processIoRate(process, processRates),
+      (process.io_read_bps + process.io_write_bps),
       (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0),
       presentation.memoryLabel,
     );
@@ -1081,7 +1090,7 @@
 
   function processHasNotableFinding(process: ProcessSample): boolean {
     return deterministicProcessFinding(process) !==
-      "No unusual activity is visible for this workload right now.";
+      "Activity measurements are available for this sample.";
   }
 
   function dropStaleNarratives(): void {
@@ -1230,7 +1239,7 @@
     const mode = runtimeMode();
     if (mode === "fixture") {
       fixtureTick += 1;
-      ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform));
+      ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform, accessibilityFixtureState ? "compact" : "dense"));
       return;
     }
     if (mode === "unavailable") {
@@ -1356,7 +1365,7 @@
     const mode = runtimeMode();
     if (mode === "fixture") {
       runtimeQueryRequestSeq += 1;
-      ingest(makeFixtureSnapshot(fixtureTick, query, browserFixturePlatform));
+      ingest(makeFixtureSnapshot(fixtureTick, query, browserFixturePlatform, accessibilityFixtureState ? "compact" : "dense"));
       onApplied?.();
       return;
     }
@@ -1405,11 +1414,11 @@
     selectedWorkloadId = "";
     hasAutoSelectedWorkload = false;
     history = emptyTrendState();
-    processHistory = emptyProcessTrendState();
-    processRates = {};
+    inspection = null;
+    inspectionGate.clear();
     resourceSummaries = [];
     displayProcessRows = [];
-    pendingProcessRows = [];
+    pendingProcessRows = null;
     runtimeQueryRequestSeq += 1;
     if (searchDebounceId !== undefined) {
       window.clearTimeout(searchDebounceId);
@@ -1436,12 +1445,6 @@
     acceptedRuntimeControls.observe(next);
     const previous = snapshot;
     hydrateRuntimeControls(next);
-    const previousWorkload = selectedWorkloadId
-      ? selectedWorkloadFromSnapshot(previous, selectedWorkloadId)
-      : null;
-    const nextWorkload = selectedWorkloadId
-      ? selectedWorkloadFromSnapshot(next, selectedWorkloadId)
-      : null;
     const hasNewSample = hasNewRuntimeSample(previous, next);
     isPaused = next.settings.paused;
     if (
@@ -1450,8 +1453,10 @@
     ) {
       pollIntervalMs = next.settings.sample_interval_ms as (typeof pollIntervals)[number];
     }
+    if (runtimeMode() === "fixture") fixtureInspection.observe(next);
     snapshot = next;
     updateProcessRows(next.process_view_rows);
+    observeAcceptedRuntimePublication(previous, next, observeDesktopPublication);
     window.queueMicrotask(maybeRequestInitialNarrative);
     if (!selectedWorkloadId && !hasAutoSelectedWorkload) {
       const firstWorkload = next.process_view_rows.find(
@@ -1468,19 +1473,6 @@
       return;
     }
 
-    processRates = processRatesFromSamples(next.processes);
-
-    if (nextWorkload) {
-      processHistory = nextWorkloadTrend(
-        processHistory,
-        nextWorkload,
-        next.system.memory_total_bytes,
-        processRates,
-        historyPointLimit,
-      );
-    } else if (previousWorkload) {
-      processHistory = emptyProcessTrendState();
-    }
 
     history = nextSystemHistory(history, next, historyPointLimit);
     dropStaleNarratives();
@@ -1494,7 +1486,7 @@
     const useAttentionByDefault =
       next.settings.query.focus_mode === "all" &&
       !next.settings.query.filter_text.trim() &&
-      isSystemPressured(next) &&
+      hasHighResourceUtilization(next) &&
       next.processes.some(processNeedsAttention);
     const focusHydration = planAutomaticRuntimeFocusHydration(next, useAttentionByDefault);
     searchText = next.settings.query.filter_text;
@@ -1545,7 +1537,7 @@
     );
   }
 
-  function isSystemPressured(next: RuntimeSnapshot): boolean {
+  function hasHighResourceUtilization(next: RuntimeSnapshot): boolean {
     return (
       next.system.cpu_percent >= 75 ||
       percentage(next.system.memory_used_bytes, next.system.memory_total_bytes) >= 85
@@ -1555,13 +1547,15 @@
   function selectProcess(selection: string): void {
     cancelNarrativeWork();
     activeView = "explore";
+    const changedSelection = selectedWorkloadId !== selection;
     selectedWorkloadId = selection;
     detailSubject = "process";
     copyStatus = "";
     openCompactDetail();
-    const workload = selectedWorkloadFromSnapshot(snapshot, selection);
-    if (workload) {
-      resetWorkloadHistory(workload);
+    if (changedSelection) {
+      inspection = null;
+      inspectionError = "";
+      inspectionGate.clear();
     }
     window.queueMicrotask(() => void requestWorkloadNarrative());
   }
@@ -1662,10 +1656,17 @@
     }
   }
 
+  function selectOverviewResource(mode: DetailMode): void {
+    cancelNarrativeWork();
+    overviewResource = mode;
+    void requestCurrentSurfaceNarrative();
+  }
+
   function navigateTo(view: AppView): void {
     cancelNarrativeWork();
     activeView = view;
     if (view === "overview") {
+      queueInteracting = false;
       compactDetailOpen = false;
       applyPendingRankingIfReleased();
     }
@@ -1725,59 +1726,30 @@
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
     const prepared = prepareProcessViewRows(incoming, selectedWorkloadId, 180);
-    if (selectedWorkloadId && !prepared.selection) {
-      selectedWorkloadId = "";
-      detailSubject = "system";
-      compactDetailOpen = false;
-    }
     incoming = prepared.rows;
 
-    const rankingConfirmationPending = rankingUpdateAvailable;
-    if (
-      forceRankingRefresh ||
-      displayProcessRows.length === 0 ||
-      (!shouldHoldRanking() && !rankingConfirmationPending)
-    ) {
-      displayProcessRows = incoming;
-      pendingProcessRows = [];
-      rankingUpdateAvailable = false;
-      forceRankingRefresh = false;
-      return;
-    }
-
-    rankingUpdateAvailable =
-      rankingConfirmationPending || !hasSameProcessOrder(displayProcessRows, incoming);
-    pendingProcessRows = incoming;
-    displayProcessRows = stabilizeProcessRows(displayProcessRows, incoming);
+    const hold = !forceRankingRefresh && shouldHoldRanking();
+    const ranking = advanceProcessRanking(displayProcessRows, incoming, hold);
+    displayProcessRows = ranking.rows;
+    rankingUpdateAvailable = ranking.updateAvailable;
+    pendingProcessRows = hold ? incoming : null;
+    forceRankingRefresh = false;
   }
 
   function shouldHoldRanking(): boolean {
-    const detailOpen = !isCompactDetail || compactDetailOpen;
-    const selectedWorkloadVisible =
-      !!selectedWorkloadId && selectionIsVisible(processViewRows, selectedWorkloadId);
-    return shouldHoldProcessOrder(
-      sortKey,
-      queueInteracting,
-      expandedGroupCount,
-      detailSubject === "process" && detailOpen && selectedWorkloadVisible,
-    );
-  }
-
-  function selectionIsVisible(rows: ProcessViewRow[], selection: string): boolean {
-    const row = rows.find((candidate) => processViewRowKey(candidate) === selection);
-    return !!row && (row.kind === "group" || !row.is_grouped || expandedGroupCount > 0);
+    return shouldHoldProcessOrder({ view: activeView, interacting: queueInteracting });
   }
 
   function applyPendingRanking(): void {
-    if (pendingProcessRows.length > 0) {
+    if (pendingProcessRows !== null) {
       displayProcessRows = pendingProcessRows;
     }
-    pendingProcessRows = [];
+    pendingProcessRows = null;
     rankingUpdateAvailable = false;
   }
 
   function applyPendingRankingIfReleased(): void {
-    if (!shouldHoldRanking() && !rankingUpdateAvailable) {
+    if (!shouldHoldRanking()) {
       applyPendingRanking();
     }
   }
@@ -1789,32 +1761,28 @@
     }
   }
 
-  function setExpandedGroupCount(count: number): void {
-    expandedGroupCount = count;
-    if (count === 0) {
-      applyPendingRankingIfReleased();
+  function resetHistory(): void { history = emptyTrendState(); }
+  function trimHistory(): void { history = trimSystemHistory(history, historyPointLimit); }
+
+  async function refreshInspection(stableId: string, pointLimit: HistoryPointLimit, publication: number, visible: boolean): Promise<void> {
+    const ticket = inspectionGate.beginForVisiblePane(stableId, pointLimit, publication, visible && !!stableId && !protocolMismatch);
+    if (!stableId || protocolMismatch) { inspection = null; inspectionLoading = false; return; }
+    if (!ticket) { inspectionLoading = false; return; }
+    inspectionLoading = true;
+    inspectionError = "";
+    try {
+      const result = runtimeMode() === "native"
+        ? await getWorkloadInspection(invoke, stableId, pointLimit)
+        : await Promise.resolve(fixtureInspection.read(stableId, pointLimit));
+      if (!inspectionGate.accept(ticket, result)) return;
+      inspection = result;
+      inspectionLoading = false;
+      window.queueMicrotask(() => void requestWorkloadNarrative());
+    } catch (error) {
+      if (!inspectionGate.accept(ticket, { stable_id: stableId, publication_seq: publication })) return;
+      inspectionLoading = false;
+      inspectionError = commandErrorMessage(error, "Unable to load this workload.");
     }
-  }
-
-  function resetWorkloadHistory(workload: WorkloadDetail): void {
-    processHistory = initialWorkloadTrend(
-      workload,
-      snapshot.system.memory_total_bytes,
-      processRates,
-      historyPointLimit,
-    );
-  }
-
-  function resetHistory(): void {
-    history = emptyTrendState();
-    if (selectedWorkload) {
-      resetWorkloadHistory(selectedWorkload);
-    }
-  }
-
-  function trimHistory(): void {
-    history = trimSystemHistory(history, historyPointLimit);
-    processHistory = trimProcessHistory(processHistory, historyPointLimit);
   }
 
   function metricValueLabel(
@@ -1822,52 +1790,16 @@
     quality: MetricQualityInfo | undefined,
     formatter: (value: number) => string,
   ): string {
-    if (snapshot.sampled_at_ms === null || quality?.quality === "unavailable") {
-      return "Unavailable";
-    }
-    if (quality?.quality === "held") return "Waiting";
-    return formatter(value);
+    const metric = metricPresentation(quality, collectionState, snapshot.sampled_at_ms !== null);
+    return metric.canDisplay ? formatter(value) : metric.emptyLabel;
   }
 
   function metricCanDisplay(quality: MetricQualityInfo | undefined): boolean {
-    return (
-      snapshot.sampled_at_ms !== null &&
-      quality?.quality !== "unavailable" &&
-      quality?.quality !== "held"
-    );
+    return metricPresentation(quality, collectionState, snapshot.sampled_at_ms !== null).canDisplay;
   }
 
-  function resourceQualityStatus(
-    quality: MetricQualityInfo | undefined,
-    fallback: string,
-  ): string {
-    if (snapshot.sampled_at_ms === null) return "No sample";
-    if (pollState === "error") return "Stale last sample";
-    if (isPaused) return "Paused at last sample";
-    if (quality?.quality === "unavailable" || quality?.quality === "held" || quality?.quality === "partial") {
-      return metricQualityLabel(quality, fallback);
-    }
-    return metricQualityLabel(quality, fallback);
-  }
-
-  function resourceQualityShortStatus(
-    quality: MetricQualityInfo | undefined,
-    fallback: string,
-  ): string {
-    if (snapshot.sampled_at_ms === null) return "No sample";
-    if (pollState === "error") return "Stale";
-    if (isPaused) return "Paused";
-    if (quality?.quality === "unavailable" || quality?.quality === "held" || quality?.quality === "partial") {
-      return metricQualityShortLabel(quality, fallback);
-    }
-    return metricQualityShortLabel(quality, fallback);
-  }
-
-  function selectedWorkloadFromSnapshot(
-    source: RuntimeSnapshot,
-    selection: string,
-  ): WorkloadDetail | null {
-    return selectedWorkloadDetail(source.process_view_rows, selection);
+  function resourceQualityStatus(quality: MetricQualityInfo | undefined, state: CollectionState): string {
+    return metricPresentation(quality, state, snapshot.sampled_at_ms !== null).label;
   }
 
   function currentCoreLoad(points: number[]): number {
@@ -1908,14 +1840,14 @@
       `CPU (one-core-equivalent): ${displayProcessMetricValue(process.cpu_percent, process.quality?.cpu, formatPercent)}`,
       `${presentation.memoryLabel}: ${residentMemoryValue(process, snapshot.environment.platform)}`,
       `${presentation.privateMemoryLabel}: ${privateMemoryValue(process, snapshot.environment.platform)}`,
-      `Read/write I/O rate: ${displayProcessMetricValue(processIoRate(process, processRates), process.quality?.io, formatRate)}`,
-      `Other I/O rate: ${displayProcessMetricValue(processOtherIoRate(process, processRates), process.quality?.other_io, formatOptionalRate)}`,
+      `Read/write I/O rate: ${displayProcessMetricValue((process.io_read_bps + process.io_write_bps), process.quality?.io, formatRate)}`,
+      `Other I/O rate: ${displayProcessMetricValue(process.other_io_bps, process.quality?.other_io, formatOptionalRate)}`,
       `Network: ${processNetworkLabel(process)}`,
       `Access: ${accessLabel(process.access_state)}`,
       `Memory quality: ${metricQualityLabel(processMemoryQuality(process) as MetricQualityInfo | undefined, "Measured")}`,
       `Path: ${process.exe || "Path unavailable"}`,
-      `Publication seq: ${snapshot.publication_seq}`,
-      `Sample seq: ${snapshot.sample_seq}`,
+      `Inspection publication seq: ${inspection?.publication_seq ?? "Unavailable"}`,
+      `Sample seq: ${inspection?.catalog?.sample_seq ?? "Unavailable"}`,
       `Snapshot source: ${snapshot.source}`,
     ].join("\n");
   }
@@ -1938,8 +1870,8 @@
       `Other I/O coverage: ${group.coverage.other_io.available}/${group.coverage.other_io.total}`,
       `Network coverage: ${group.coverage.network.available}/${group.coverage.network.total}`,
       `Thread coverage: ${group.coverage.threads.available}/${group.coverage.threads.total}`,
-      `Publication seq: ${snapshot.publication_seq}`,
-      `Sample seq: ${snapshot.sample_seq}`,
+      `Inspection publication seq: ${inspection?.publication_seq ?? "Unavailable"}`,
+      `Sample seq: ${inspection?.catalog?.sample_seq ?? "Unavailable"}`,
       `Snapshot source: ${snapshot.source}`,
     ].join("\n");
   }
@@ -1955,13 +1887,13 @@
     }
 
     try {
-      await navigator.clipboard.writeText(workloadSummary(selectedWorkload));
+      await navigator.clipboard.writeText((inspectionCurrent ? workloadSummary(selectedWorkload) : `Last recorded sample (${inspection?.catalog?.sampled_at_ms ? new Date(inspection.catalog.sampled_at_ms).toISOString() : "time unavailable"})\n${workloadSummary(selectedWorkload)}`));
       copyStatus = "Workload summary copied.";
       commandError = "";
     } catch (error) {
       const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const textarea = document.createElement("textarea");
-      textarea.value = workloadSummary(selectedWorkload);
+      textarea.value = (inspectionCurrent ? workloadSummary(selectedWorkload) : `Last recorded sample (${inspection?.catalog?.sampled_at_ms ? new Date(inspection.catalog.sampled_at_ms).toISOString() : "time unavailable"})\n${workloadSummary(selectedWorkload)}`);
       textarea.setAttribute("readonly", "");
       textarea.style.position = "fixed";
       textarea.style.opacity = "0";
@@ -1998,7 +1930,7 @@
       <strong>Telemetry protocol mismatch</strong>
       <span>{protocolMismatch.message}</span>
       <small>
-        Reader v3 · writer {protocolMismatch.writerVersion ?? "unknown"} · minimum reader
+        Reader v{RUNTIME_PROTOCOL_VERSION} · writer {protocolMismatch.writerVersion ?? "unknown"} · minimum reader
         {protocolMismatch.minimumReaderVersion ?? "unknown"}
       </small>
     </section>
@@ -2024,26 +1956,24 @@
       resources={resourceSummaries}
       leadingRows={overviewRows}
       {processIcons}
-      primaryCpuValue={snapshot.system.cpu_percent}
-      primaryCpuHistory={history.cpu}
-      primaryCpuStroke={activeTheme.cpuStroke}
-      primaryCpuFill={activeTheme.cpuFill}
-      leadingCpuName={overviewCpuBrief.leadingWorkload}
-      leadingCpuValue={overviewContributorCopy}
-      leadingCpuNarrativeGenerated={overviewNarrative !== null}
-      leadingCpuSelection={overviewCpuBrief.leadingProcessId}
-      leadingCpuIconKind={leadingCpuIdentity?.icon ?? "process"}
-      leadingCpuIconSrc={leadingCpuIcon.src}
-      leadingCpuIconMatched={leadingCpuIcon.origin === "name_match"}
-      onSelectResource={selectDetailMode}
+      primaryMetric={overviewPrimaryMetric}
+      leadingName={overviewPrimaryBrief.leadingWorkload}
+      leadingValue={overviewContributorCopy}
+      leadingNarrativeGenerated={overviewNarrativeCopy !== null}
+      leadingSelection={overviewPrimaryBrief.leadingProcessId}
+      leadingIconKind={overviewPrimaryIdentity?.icon ?? "process"}
+      leadingIconSrc={overviewPrimaryIcon.src}
+      leadingIconMatched={overviewPrimaryIcon.origin === "name_match"}
+      onSelectResource={selectOverviewResource}
+      onInspectResource={() => selectDetailMode(overviewResource)}
+      onOpenDiagnostics={() => (diagnosticsOpen = true)}
       onSelectWorkload={selectProcess}
       onOpenExplore={openExplore}
     />
   {:else}
     <main class="explore-view" aria-labelledby="explore-heading">
       <header class="explore-heading">
-        <h2 id="explore-heading">Explore your workloads</h2>
-        <p>Search live activity and inspect any app, process, or group.</p>
+        <h2 id="explore-heading">Workloads</h2>
       </header>
       <div class="explore-toolbar">
         <label class="explore-search" for="process-search">
@@ -2091,12 +2021,12 @@
             onSelect={selectProcess}
             onToggleSort={toggleSortKey}
             onInteractionChange={setQueueInteraction}
-            onExpandedChange={setExpandedGroupCount}
           />
         </div>
         {#if !isCompactDetail || compactDetailOpen}
           <DetailPane
             subject={detailSubject}
+            telemetryStatus={telemetry}
             compact={isCompactDetail}
             onClose={closeCompactDetail}
             onShowSystem={() => selectDetailMode(detailMode)}
@@ -2104,8 +2034,10 @@
             {selectedWorkloadIconKind}
             {selectedWorkloadIconSrc}
             {selectedWorkloadIconMatched}
-            {processHistory}
-            {processRates}
+            {inspection}
+            {inspectionLoading}
+            {inspectionError}
+            {inspectionCurrent}
             {processReadRate}
             {processWriteRate}
             {processIcons}
@@ -2114,7 +2046,7 @@
             {presentation}
             {processNetworkLabel}
             insightNarrative={selectedWorkloadInsight}
-            insightNarrativeGenerated={workloadNarrative !== null}
+            insightNarrativeGenerated={workloadNarrativeCopy !== null}
             onCopy={() => void copySelectedWorkloadSummary()}
             {detailMode}
             {detailTitle}

@@ -14,11 +14,19 @@ export interface NarrativeRequest {
   fact_digest: string;
 }
 
+export type NarrativeExplanationId =
+  | "cpu_usage"
+  | "memory_usage"
+  | "disk_activity"
+  | "network_activity";
+
 export interface NarrativeResult {
   provider: NarrativeProvider;
   publication_seq: number;
   fact_digest: string;
-  text: string;
+  surface: NarrativeSurface;
+  subject_stable_id?: string;
+  explanation_id: NarrativeExplanationId;
 }
 
 export interface NarrativeMetricFact {
@@ -97,20 +105,24 @@ export function buildNarrativeFactPacket(
     display_name: cleanFactText(input.displayName, "Unknown workload", 120),
     category: cleanFactText(input.category, "Process", 80),
     metrics: [
-      { kind: "cpu", rounded_value: roundNumber(input.cpuPercent, 1), unit: "percent" },
+      {
+        kind: "cpu",
+        rounded_value: roundNumber(input.cpuPercent, 1),
+        unit: "percent",
+      },
       {
         kind: "memory",
-        rounded_value: Math.round(Math.max(0, input.memoryBytes) / 1024 ** 2),
+        rounded_value: roundNumber(input.memoryBytes / 1024 ** 2, 0),
         unit: "megabytes",
       },
       {
         kind: "io",
-        rounded_value: Math.round(Math.max(0, input.ioBytesPerSecond) / 1024),
+        rounded_value: roundNumber(input.ioBytesPerSecond / 1024, 0),
         unit: "kilobytes_per_second",
       },
       {
         kind: "network",
-        rounded_value: Math.round(Math.max(0, input.networkBytesPerSecond) / 1024),
+        rounded_value: roundNumber(input.networkBytesPerSecond / 1024, 0),
         unit: "kilobytes_per_second",
       },
     ],
@@ -125,9 +137,8 @@ export function narrativeFactDigest(facts: NarrativeFactPacket): string {
 }
 
 /**
- * Generated copy is deliberately qualitative, so it remains relevant while live
- * metric values move. A change to identity, interpretation, or measurement
- * quality invalidates it; a routine sample refresh does not.
+ * Only the resource selection is cached. Wording, numbers, and qualifications
+ * are rendered from current facts; eligibility and quality changes invalidate it.
  */
 export function narrativeRelevanceKey(facts: NarrativeFactPacket): string {
   return hashNarrativeValue({
@@ -136,6 +147,7 @@ export function narrativeRelevanceKey(facts: NarrativeFactPacket): string {
     leading_resource: facts.leading_resource ?? null,
     ranking_state: facts.ranking_state,
     measurement_limitations: facts.measurement_limitations,
+    candidate_ids: admittedNarrativeCandidates(facts),
   });
 }
 
@@ -169,7 +181,7 @@ export function makeNarrativeInvocation(
 
 export function narrativeCapabilityExplanation(capability: NarrativeCapability): string {
   if (capability.availability === "available") {
-    return "Ready to generate short explanations locally.";
+    return "Ready to choose among explanations supported by local measurements.";
   }
   if (capability.availability === "model_not_ready") {
     return capability.can_download
@@ -186,8 +198,6 @@ export function narrativeCapabilityExplanation(capability: NarrativeCapability):
 }
 
 export interface AcceptedNarrative extends NarrativeResult {
-  surface: NarrativeSurface;
-  subject_stable_id?: string;
   relevance_key: string;
 }
 
@@ -198,33 +208,115 @@ export function validateNarrativeResult(
   if (
     value.publication_seq !== invocation.request.publication_seq ||
     value.fact_digest !== invocation.request.fact_digest ||
-    !["apple_foundation", "foundry_local"].includes(value.provider)
+    value.surface !== invocation.request.surface ||
+    value.subject_stable_id !== invocation.request.subject_stable_id ||
+    !["apple_foundation", "foundry_local"].includes(value.provider) ||
+    !admittedNarrativeCandidates(invocation.facts, invocation.request.surface).includes(
+      value.explanation_id,
+    )
   ) {
     return null;
   }
+  return { ...value, relevance_key: narrativeRelevanceKey(invocation.facts) };
+}
 
-  const text = value.text.trim();
-  if (
-    text.length === 0 ||
-    text.length > 180 ||
-    /[\r\n\t<>]/u.test(text) ||
-    /^(?:[-*#]|\d+[.)])\s/u.test(text) ||
-    sentenceBoundaryCount(text) > 1 ||
-    hasUnsupportedNumericClaim(text, invocation.facts) ||
-    !hasRequiredGrounding(text, invocation.facts)
-  ) {
-    return null;
+export function isNarrativeExplanationId(value: unknown): value is NarrativeExplanationId {
+  return (
+    value === "cpu_usage" ||
+    value === "memory_usage" ||
+    value === "disk_activity" ||
+    value === "network_activity"
+  );
+}
+
+const explanationResource: Record<NarrativeExplanationId, NarrativeMetricFact["kind"]> = {
+  cpu_usage: "cpu",
+  memory_usage: "memory",
+  disk_activity: "io",
+  network_activity: "network",
+};
+
+/** Mirrors native admission for display invalidation; Rust remains the generation authority. */
+export function admittedNarrativeCandidates(
+  facts: NarrativeFactPacket,
+  surface: NarrativeSurface = "workload_insight",
+): NarrativeExplanationId[] {
+  const metricKinds = new Set<NarrativeMetricFact["kind"]>();
+  const qualityKinds = new Set<NarrativeMetricFact["kind"]>();
+  for (const metric of facts.metrics) {
+    const scale = metric.kind === "cpu" ? 10 : 1;
+    const expectedUnit =
+      metric.kind === "cpu"
+        ? "percent"
+        : metric.kind === "memory"
+          ? "megabytes"
+          : "kilobytes_per_second";
+    if (
+      !Number.isFinite(metric.rounded_value) ||
+      metric.rounded_value < 0 ||
+      metric.rounded_value > 1_000_000_000 ||
+      metric.unit !== expectedUnit ||
+      metric.rounded_value !== Math.round(metric.rounded_value * scale) / scale ||
+      metricKinds.has(metric.kind)
+    )
+      return [];
+    metricKinds.add(metric.kind);
   }
+  if (facts.leading_resource && !metricKinds.has(facts.leading_resource)) return [];
+  for (const limitation of facts.measurement_limitations) {
+    if (!metricKinds.has(limitation.kind) || qualityKinds.has(limitation.kind)) return [];
+    qualityKinds.add(limitation.kind);
+  }
+  const candidates: NarrativeExplanationId[] = [
+    "cpu_usage",
+    "memory_usage",
+    "disk_activity",
+    "network_activity",
+  ];
+  return candidates.filter((id) => {
+    if (surface === "overview_contributor" && explanationResource[id] !== facts.leading_resource)
+      return false;
+    const resource = explanationResource[id];
+    return (
+      facts.metrics.some((metric) => metric.kind === resource && metric.rounded_value > 0) &&
+      !facts.measurement_limitations.some(
+        (limitation) =>
+          limitation.kind === resource &&
+          (limitation.quality === "stale" || limitation.quality === "unavailable"),
+      )
+    );
+  });
+}
 
-  return {
-    ...value,
-    text,
-    surface: invocation.request.surface,
-    relevance_key: narrativeRelevanceKey(invocation.facts),
-    ...(invocation.request.subject_stable_id
-      ? { subject_stable_id: invocation.request.subject_stable_id }
-      : {}),
-  };
+/** No provider-authored text reaches this renderer. Values always come from the current sample. */
+export function renderNarrative(
+  narrative: AcceptedNarrative | null,
+  facts: NarrativeFactPacket,
+  surface: NarrativeSurface,
+  subjectStableId?: string,
+): string | null {
+  if (!narrative || !isNarrativeRelevant(narrative, facts, surface, subjectStableId)) return null;
+  const resource = explanationResource[narrative.explanation_id];
+  const metric = facts.metrics.find((value) => value.kind === resource);
+  if (!metric) return null;
+  const quality = facts.measurement_limitations.find((value) => value.kind === resource)?.quality;
+  const qualification =
+    quality === "estimated" ? " (estimated)" : quality === "limited" ? " (limited coverage)" : "";
+  const measured = formatMeasuredResource(resource, metric.rounded_value);
+  return `${facts.display_name}: ${measured} in this sample${qualification}.`;
+}
+
+function formatMeasuredResource(resource: NarrativeMetricFact["kind"], value: number): string {
+  switch (resource) {
+    case "cpu":
+      return `${value}% CPU relative to one logical core`;
+    case "memory":
+      return `${value} MiB of memory`;
+    case "io":
+      return `${value} KiB/s of recorded read/write I/O`;
+    case "network":
+      return `${value} KiB/s of recorded network activity`;
+  }
 }
 
 export function isNarrativeRelevant(
@@ -236,7 +328,8 @@ export function isNarrativeRelevant(
   return (
     narrative.surface === surface &&
     narrative.subject_stable_id === subjectStableId &&
-    narrative.relevance_key === narrativeRelevanceKey(facts)
+    narrative.relevance_key === narrativeRelevanceKey(facts) &&
+    admittedNarrativeCandidates(facts, surface).includes(narrative.explanation_id)
   );
 }
 
@@ -265,7 +358,11 @@ export class NarrativeController {
   }
 
   async request(invocation: NarrativeInvocation): Promise<AcceptedNarrative | null> {
-    if (this.disposed) return null;
+    if (
+      this.disposed ||
+      admittedNarrativeCandidates(invocation.facts, invocation.request.surface).length < 2
+    )
+      return null;
     const cacheKey = invocationCacheKey(invocation);
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
@@ -351,137 +448,4 @@ function deduplicateLimitations(
 function roundNumber(value: number, decimalPlaces: number): number {
   const safe = Number.isFinite(value) ? Math.max(0, value) : 0;
   return Number(safe.toFixed(decimalPlaces));
-}
-
-function sentenceBoundaryCount(text: string): number {
-  return text.match(/[.!?](?=\s|$)/gu)?.length ?? 0;
-}
-
-function hasUnsupportedNumericClaim(text: string, facts: NarrativeFactPacket): boolean {
-  const withoutExactIdentity = text.split(facts.display_name).join(" ");
-  return (withoutExactIdentity.match(/\d+(?:[.,]\d+)?/gu) ?? []).length > 0;
-}
-
-const genericNameTokens = new Set([
-  "app",
-  "application",
-  "gpu",
-  "helper",
-  "process",
-  "renderer",
-  "service",
-  "utility",
-  "worker",
-]);
-
-const allowedNarrativeWords = new Set([
-  "a",
-  "active",
-  "activity",
-  "an",
-  "and",
-  "appears",
-  "as",
-  "at",
-  "attention",
-  "category",
-  "contributor",
-  "contributes",
-  "contributing",
-  "current",
-  "currently",
-  "dominant",
-  "driver",
-  "driving",
-  "elevated",
-  "for",
-  "from",
-  "has",
-  "heavy",
-  "highest",
-  "in",
-  "is",
-  "its",
-  "largest",
-  "leader",
-  "leading",
-  "load",
-  "main",
-  "monitoring",
-  "more",
-  "most",
-  "normal",
-  "notable",
-  "now",
-  "of",
-  "on",
-  "other",
-  "pressure",
-  "primary",
-  "remains",
-  "resource",
-  "resources",
-  "right",
-  "showing",
-  "shows",
-  "source",
-  "steady",
-  "surface",
-  "than",
-  "the",
-  "this",
-  "to",
-  "top",
-  "usage",
-  "use",
-  "uses",
-  "using",
-  "with",
-  "workload",
-]);
-
-function hasRequiredGrounding(text: string, facts: NarrativeFactPacket): boolean {
-  if (!text.includes(facts.display_name)) return false;
-  const textTokens = normalizedWords(text);
-  const nameTokens = normalizedWords(facts.display_name).filter(
-    (token) => token.length >= 3 && !genericNameTokens.has(token) && !/^\d+$/u.test(token),
-  );
-  if (nameTokens.length === 0 || !nameTokens.some((token) => textTokens.includes(token))) {
-    return false;
-  }
-
-  const resourceAliases: Record<NarrativeMetricFact["kind"], readonly string[]> = {
-    cpu: ["cpu", "processor"],
-    memory: ["memory", "ram"],
-    io: ["disk", "storage", "io"],
-    network: ["network"],
-  };
-  if (
-    facts.leading_resource !== undefined &&
-    !resourceAliases[facts.leading_resource].some((alias) => textTokens.includes(alias))
-  ) {
-    return false;
-  }
-
-  const allowed = new Set(allowedNarrativeWords);
-  for (const token of normalizedWords(`${facts.display_name} ${facts.category}`)) {
-    allowed.add(token);
-  }
-  for (const aliases of Object.values(resourceAliases)) {
-    for (const alias of aliases) allowed.add(alias);
-  }
-  for (const limitation of facts.measurement_limitations) {
-    allowed.add(limitation.kind);
-    allowed.add(limitation.quality);
-  }
-  return textTokens.every((token) => allowed.has(token));
-}
-
-function normalizedWords(value: string): string[] {
-  return (
-    value
-      .normalize("NFKC")
-      .toLocaleLowerCase("en-US")
-      .match(/[\p{L}\p{N}]+/gu) ?? []
-  );
 }

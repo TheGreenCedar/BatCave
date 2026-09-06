@@ -71,12 +71,131 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         }
     }
     validate_system(&payload.system, payload)?;
-    let process_details = payload
-        .workloads
+    validate_workload_set(&payload.workloads, payload.visible_process_count, payload)?;
+    validate_workload_set(
+        &payload.overview_workloads,
+        payload
+            .overview_workloads
+            .iter()
+            .filter(|row| matches!(row, WorkloadDetailV4::Process(_)))
+            .count()
+            .try_into()
+            .map_err(|_| "protocol_overview_count_out_of_range".to_string())?,
+        payload,
+    )?;
+    let mut contributor_metrics = HashSet::new();
+    for contributor in &payload.contributors {
+        if usize::from(contributor.quality_code) >= payload.quality_codes.len()
+            || contributor.available_contributors > contributor.total_contributors
+            || contributor.total_contributors != payload.total_process_count
+        {
+            return Err("protocol_contributor_invalid".to_string());
+        }
+        if !contributor_metrics.insert(contributor.metric) {
+            return Err("protocol_duplicate_contributor_metric".to_string());
+        }
+        let quality = payload.quality_codes[usize::from(contributor.quality_code)];
+        if contributor.process_id.is_some()
+            && (contributor
+                .display_name
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+                || contributor.available_contributors != contributor.total_contributors
+                || contributor.total_contributors == 0
+                || matches!(
+                    quality,
+                    MetricQualityV4::Held | MetricQualityV4::Unavailable
+                ))
+        {
+            return Err("protocol_contributor_identity_invalid".to_string());
+        }
+        if contributor
+            .process_id
+            .as_deref()
+            .is_some_and(|id| !valid_process_id(id, payload.sample_seq))
+        {
+            return Err("protocol_contributor_identity_malformed".to_string());
+        }
+        if contributor.process_id.is_none() && contributor.display_name.is_some() {
+            return Err("protocol_contributor_name_without_identity".to_string());
+        }
+        if contributor.available_contributors < contributor.total_contributors
+            && contributor.limitation_index.is_none()
+        {
+            return Err("protocol_contributor_coverage_unexplained".to_string());
+        }
+        validate_quality_limitation(quality, contributor.limitation_index, payload)?;
+        if matches!(contributor.source, MetricSourceV4::Unknown)
+            && (quality != MetricQualityV4::Unavailable
+                || contributor
+                    .limitation_index
+                    .map(|index| payload.limitations[usize::from(index)].code)
+                    != Some(LimitationCode::MissingMetadata))
+        {
+            return Err("protocol_contributor_source_quality_contradiction".to_string());
+        }
+        if contributor.available_contributors < contributor.total_contributors
+            && matches!(
+                quality,
+                MetricQualityV4::Native | MetricQualityV4::Estimated
+            )
+        {
+            return Err("protocol_contributor_quality_coverage_contradiction".to_string());
+        }
+    }
+    if contributor_metrics
+        != HashSet::from([
+            ContributorMetricV4::Cpu,
+            ContributorMetricV4::Memory,
+            ContributorMetricV4::Io,
+            ContributorMetricV4::Network,
+        ])
+    {
+        return Err("protocol_contributor_catalog_incomplete".to_string());
+    }
+    validate_warnings(payload)?;
+    Ok(())
+}
+
+fn validate_release_identity(identity: &RuntimeReleaseIdentityV4) -> Result<(), String> {
+    let app_version = identity.app_version.trim();
+    if app_version.is_empty() || app_version.len() > 64 {
+        return Err("protocol_release_version_invalid".to_string());
+    }
+    if identity
+        .source_commit_sha
+        .as_deref()
+        .is_some_and(|sha| sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err("protocol_release_commit_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_settings(settings: &RuntimeSettingsV4) -> Result<(), String> {
+    if settings.metric_window_seconds == 0 || settings.effective_sample_interval_ms == 0 {
+        return Err("protocol_runtime_settings_invalid".to_string());
+    }
+    if settings.ui_preferences.as_ref().is_some_and(|preferences| {
+        preferences.theme.trim().is_empty()
+            || preferences.theme.chars().count() > 64
+            || preferences.history_point_limit == 0
+    }) {
+        return Err("protocol_ui_preferences_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_workload_set(
+    workloads: &[WorkloadDetailV4],
+    visible_process_count: u32,
+    payload: &RuntimeSnapshotPayloadV4,
+) -> Result<(), String> {
+    let process_details = workloads
         .iter()
         .filter_map(|workload| match workload {
-            WorkloadDetailV3::Process(detail) => Some((detail.stable_id.as_str(), detail)),
-            WorkloadDetailV3::Group(_) => None,
+            WorkloadDetailV4::Process(detail) => Some((detail.stable_id.as_str(), detail)),
+            WorkloadDetailV4::Group(_) => None,
         })
         .collect::<Vec<_>>();
     if process_details
@@ -88,10 +207,10 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
     {
         return Err("protocol_duplicate_process_id".to_string());
     }
-    if usize::try_from(payload.visible_process_count).ok() != Some(process_details.len()) {
+    if usize::try_from(visible_process_count).ok() != Some(process_details.len()) {
         return Err("protocol_visible_process_count_mismatch".to_string());
     }
-    if payload.total_process_count < payload.visible_process_count {
+    if payload.total_process_count < visible_process_count {
         return Err("protocol_total_process_count_invalid".to_string());
     }
     let known_processes = process_details.into_iter().collect::<HashMap<_, _>>();
@@ -101,7 +220,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
                 || start_time > JS_MAX_SAFE_INTEGER
                 || !matches!(
                     process.identity_stability,
-                    ProcessIdentityStabilityV3::Stable
+                    ProcessIdentityStabilityV4::Stable
                 )
             {
                 return Err("protocol_process_identity_stability_invalid".to_string());
@@ -110,7 +229,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         } else {
             if !matches!(
                 process.identity_stability,
-                ProcessIdentityStabilityV3::Publication
+                ProcessIdentityStabilityV4::Publication
             ) {
                 return Err("protocol_process_identity_stability_invalid".to_string());
             }
@@ -131,6 +250,16 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
         {
             return Err("protocol_process_presentation_invalid".to_string());
         }
+        let mut chain = HashSet::new();
+        let mut cursor = Some(process.stable_id.as_str());
+        while let Some(current) = cursor {
+            if !chain.insert(current) {
+                return Err("protocol_parent_identity_cycle".to_string());
+            }
+            cursor = known_processes
+                .get(current)
+                .and_then(|process| process.parent_process_id.as_deref());
+        }
         if let Some(parent_id) = &process.parent_process_id {
             let parent_pid = process
                 .parent_pid
@@ -139,7 +268,12 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
             let parent = known_processes
                 .get(parent_id.as_str())
                 .ok_or_else(|| "protocol_parent_identity_invalid".to_string())?;
-            if parent.pid != parent_pid {
+            if parent.pid != parent_pid
+                || parent.start_time_ms.is_none()
+                || process.start_time_ms.is_none()
+                || parent.start_time_ms >= process.start_time_ms
+                || parent_id == &process.stable_id
+            {
                 return Err("protocol_parent_identity_invalid".to_string());
             }
         }
@@ -154,12 +288,12 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
     for tag in &payload.system.kernel_pool_tags {
         validate_observations(&tag.metrics, MetricScope::System, payload)?;
     }
-    for workload in &payload.workloads {
+    for workload in workloads {
         match workload {
-            WorkloadDetailV3::Process(detail) => {
+            WorkloadDetailV4::Process(detail) => {
                 validate_observations(&detail.metrics, MetricScope::Process, payload)?;
             }
-            WorkloadDetailV3::Group(detail) => {
+            WorkloadDetailV4::Group(detail) => {
                 if detail.stable_id != format!("group:{}", detail.group_key) {
                     return Err("protocol_group_identity_invalid".to_string());
                 }
@@ -240,7 +374,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
                     if coverage.available_contributors < coverage.total_contributors
                         && matches!(
                             payload.quality_codes[usize::from(observation.2)],
-                            MetricQualityV3::Native | MetricQualityV3::Estimated
+                            MetricQualityV4::Native | MetricQualityV4::Estimated
                         )
                     {
                         return Err("protocol_group_quality_coverage_contradiction".to_string());
@@ -258,112 +392,12 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
             return Err("protocol_process_group_state_mismatch".to_string());
         }
     }
-    let mut contributor_metrics = HashSet::new();
-    for contributor in &payload.contributors {
-        if usize::from(contributor.quality_code) >= payload.quality_codes.len()
-            || contributor.available_contributors > contributor.total_contributors
-            || contributor.total_contributors != payload.total_process_count
-        {
-            return Err("protocol_contributor_invalid".to_string());
-        }
-        if !contributor_metrics.insert(contributor.metric) {
-            return Err("protocol_duplicate_contributor_metric".to_string());
-        }
-        let quality = payload.quality_codes[usize::from(contributor.quality_code)];
-        if contributor.process_id.is_some()
-            && (contributor
-                .display_name
-                .as_deref()
-                .is_none_or(|name| name.trim().is_empty())
-                || contributor.available_contributors != contributor.total_contributors
-                || contributor.total_contributors == 0
-                || matches!(
-                    quality,
-                    MetricQualityV3::Held | MetricQualityV3::Unavailable
-                ))
-        {
-            return Err("protocol_contributor_identity_invalid".to_string());
-        }
-        if contributor
-            .process_id
-            .as_deref()
-            .is_some_and(|id| !valid_process_id(id, payload.sample_seq))
-        {
-            return Err("protocol_contributor_identity_malformed".to_string());
-        }
-        if contributor.process_id.is_none() && contributor.display_name.is_some() {
-            return Err("protocol_contributor_name_without_identity".to_string());
-        }
-        if contributor.available_contributors < contributor.total_contributors
-            && contributor.limitation_index.is_none()
-        {
-            return Err("protocol_contributor_coverage_unexplained".to_string());
-        }
-        validate_quality_limitation(quality, contributor.limitation_index, payload)?;
-        if matches!(contributor.source, MetricSourceV3::Unknown)
-            && (quality != MetricQualityV3::Unavailable
-                || contributor
-                    .limitation_index
-                    .map(|index| payload.limitations[usize::from(index)].code)
-                    != Some(LimitationCode::MissingMetadata))
-        {
-            return Err("protocol_contributor_source_quality_contradiction".to_string());
-        }
-        if contributor.available_contributors < contributor.total_contributors
-            && matches!(
-                quality,
-                MetricQualityV3::Native | MetricQualityV3::Estimated
-            )
-        {
-            return Err("protocol_contributor_quality_coverage_contradiction".to_string());
-        }
-    }
-    if contributor_metrics
-        != HashSet::from([
-            ContributorMetricV3::Cpu,
-            ContributorMetricV3::Memory,
-            ContributorMetricV3::Io,
-            ContributorMetricV3::Network,
-        ])
-    {
-        return Err("protocol_contributor_catalog_incomplete".to_string());
-    }
-    validate_warnings(payload)?;
-    Ok(())
-}
-
-fn validate_release_identity(identity: &RuntimeReleaseIdentityV3) -> Result<(), String> {
-    let app_version = identity.app_version.trim();
-    if app_version.is_empty() || app_version.len() > 64 {
-        return Err("protocol_release_version_invalid".to_string());
-    }
-    if identity
-        .source_commit_sha
-        .as_deref()
-        .is_some_and(|sha| sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
-        return Err("protocol_release_commit_invalid".to_string());
-    }
-    Ok(())
-}
-
-fn validate_settings(settings: &RuntimeSettingsV3) -> Result<(), String> {
-    if settings.metric_window_seconds == 0 || settings.effective_sample_interval_ms == 0 {
-        return Err("protocol_runtime_settings_invalid".to_string());
-    }
-    if settings.ui_preferences.as_ref().is_some_and(|preferences| {
-        preferences.theme.trim().is_empty()
-            || preferences.theme.chars().count() > 64
-            || preferences.history_point_limit == 0
-    }) {
-        return Err("protocol_ui_preferences_invalid".to_string());
-    }
     Ok(())
 }
 
 fn validate_system(
-    system: &SystemDetailV3,
-    _payload: &RuntimeSnapshotPayloadV3,
+    system: &SystemDetailV4,
+    _payload: &RuntimeSnapshotPayloadV4,
 ) -> Result<(), String> {
     if system.stable_id != "system:local" {
         return Err("protocol_system_identity_invalid".to_string());
@@ -396,7 +430,7 @@ fn validate_system(
     Ok(())
 }
 
-fn validate_warnings(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
+fn validate_warnings(payload: &RuntimeSnapshotPayloadV4) -> Result<(), String> {
     let mut keys = HashSet::new();
     for warning in &payload.warnings {
         if warning.publication_seq > JS_MAX_SAFE_INTEGER
@@ -415,9 +449,9 @@ fn validate_warnings(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
 }
 
 fn validate_quality_limitation(
-    quality: MetricQualityV3,
+    quality: MetricQualityV4,
     limitation_index: Option<u16>,
-    payload: &RuntimeSnapshotPayloadV3,
+    payload: &RuntimeSnapshotPayloadV4,
 ) -> Result<(), String> {
     validate_limitation_index(limitation_index, payload)?;
     let code = limitation_index.map(|index| payload.limitations[usize::from(index)].code);
@@ -434,7 +468,7 @@ fn validate_quality_limitation(
 }
 
 fn validate_persistence(
-    persistence: Option<&RuntimePersistenceV3>,
+    persistence: Option<&RuntimePersistenceV4>,
     evaluated_at_ms: u64,
 ) -> Result<(), String> {
     let Some(persistence) = persistence else {
@@ -450,7 +484,7 @@ fn validate_persistence(
             return Err("protocol_persistence_root_duplicate".to_string());
         }
         match root.permission_state {
-            RuntimePersistencePermissionStateV3::Verified
+            RuntimePersistencePermissionStateV4::Verified
                 if root
                     .directory
                     .as_deref()
@@ -458,17 +492,17 @@ fn validate_persistence(
             {
                 return Err("protocol_persistence_root_state_invalid".to_string());
             }
-            RuntimePersistencePermissionStateV3::Unavailable if root.directory.is_some() => {
+            RuntimePersistencePermissionStateV4::Unavailable if root.directory.is_some() => {
                 return Err("protocol_persistence_root_state_invalid".to_string());
             }
-            RuntimePersistencePermissionStateV3::Verified => {
-                record_persistence_state(&mut worst_state, RuntimePersistenceStateV3::Healthy)
+            RuntimePersistencePermissionStateV4::Verified => {
+                record_persistence_state(&mut worst_state, RuntimePersistenceStateV4::Healthy)
             }
-            RuntimePersistencePermissionStateV3::Invalid => {
-                record_persistence_state(&mut worst_state, RuntimePersistenceStateV3::Degraded)
+            RuntimePersistencePermissionStateV4::Invalid => {
+                record_persistence_state(&mut worst_state, RuntimePersistenceStateV4::Degraded)
             }
-            RuntimePersistencePermissionStateV3::Unavailable => {
-                record_persistence_state(&mut worst_state, RuntimePersistenceStateV3::Unavailable)
+            RuntimePersistencePermissionStateV4::Unavailable => {
+                record_persistence_state(&mut worst_state, RuntimePersistenceStateV4::Unavailable)
             }
         }
     }
@@ -488,23 +522,22 @@ fn validate_persistence(
         }
         let requires_failure = matches!(
             component.state,
-            RuntimePersistenceStateV3::Degraded | RuntimePersistenceStateV3::Unavailable
+            RuntimePersistenceStateV4::Degraded | RuntimePersistenceStateV4::Unavailable
         );
         if requires_failure != component.active_failure.is_some() {
             return Err("protocol_persistence_failure_state_invalid".to_string());
         }
-        if matches!(component.state, RuntimePersistenceStateV3::Healthy)
+        if matches!(component.state, RuntimePersistenceStateV4::Healthy)
             && matches!(
                 component.durability,
-                RuntimePersistenceDurabilityV3::SessionOnly
-                    | RuntimePersistenceDurabilityV3::NotWritten
+                RuntimePersistenceDurabilityV4::NotWritten
             )
         {
             return Err("protocol_persistence_durability_state_invalid".to_string());
         }
         if matches!(
             component.durability,
-            RuntimePersistenceDurabilityV3::NotApplicable
+            RuntimePersistenceDurabilityV4::NotApplicable
         ) && (component.last_success_at_ms.is_some() || component.active_failure.is_some())
         {
             return Err("protocol_persistence_not_applicable_invalid".to_string());
@@ -520,13 +553,13 @@ fn validate_persistence(
         }
         if !matches!(
             component.durability,
-            RuntimePersistenceDurabilityV3::NotApplicable
+            RuntimePersistenceDurabilityV4::NotApplicable
         ) {
             record_persistence_state(&mut worst_state, component.state);
         }
     }
-    let expected_state = worst_state.unwrap_or(RuntimePersistenceStateV3::Unavailable);
-    if !matches!(persistence.state, RuntimePersistenceStateV3::Unavailable)
+    let expected_state = worst_state.unwrap_or(RuntimePersistenceStateV4::Unavailable);
+    if !matches!(persistence.state, RuntimePersistenceStateV4::Unavailable)
         && (persistence.roots.is_empty() || persistence.components.is_empty())
     {
         return Err("protocol_persistence_nonempty_state_invalid".to_string());
@@ -538,20 +571,20 @@ fn validate_persistence(
 }
 
 fn record_persistence_state(
-    worst: &mut Option<RuntimePersistenceStateV3>,
-    candidate: RuntimePersistenceStateV3,
+    worst: &mut Option<RuntimePersistenceStateV4>,
+    candidate: RuntimePersistenceStateV4,
 ) {
     let rank = |state| match state {
-        RuntimePersistenceStateV3::Healthy => 0,
-        RuntimePersistenceStateV3::Degraded => 1,
-        RuntimePersistenceStateV3::Unavailable => 2,
+        RuntimePersistenceStateV4::Healthy => 0,
+        RuntimePersistenceStateV4::Degraded => 1,
+        RuntimePersistenceStateV4::Unavailable => 2,
     };
     if worst.is_none_or(|current| rank(candidate) > rank(current)) {
         *worst = Some(candidate);
     }
 }
 
-fn validate_health(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
+fn validate_health(payload: &RuntimeSnapshotPayloadV4) -> Result<(), String> {
     let health = &payload.health;
     let engine_integer_facts = [
         health.last_heartbeat_at_ms,
@@ -620,38 +653,38 @@ fn validate_health(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
         return Err("protocol_deadline_lateness_without_misses".to_string());
     }
     match health.engine_state {
-        Some(RuntimeEngineStateV3::Fatal) if health.fatal_error.is_none() => {
+        Some(RuntimeEngineStateV4::Fatal) if health.fatal_error.is_none() => {
             return Err("protocol_fatal_state_without_error".to_string());
         }
         Some(
-            RuntimeEngineStateV3::Starting
-            | RuntimeEngineStateV3::Running
-            | RuntimeEngineStateV3::Paused,
+            RuntimeEngineStateV4::Starting
+            | RuntimeEngineStateV4::Running
+            | RuntimeEngineStateV4::Paused,
         ) if health.fatal_error.is_some() => {
             return Err("protocol_nonfatal_state_has_error".to_string());
         }
         _ => {}
     }
     if !health.degraded
-        && (matches!(health.engine_state, Some(RuntimeEngineStateV3::Fatal))
+        && (matches!(health.engine_state, Some(RuntimeEngineStateV4::Fatal))
             || matches!(
                 health.collector_state,
-                Some(RuntimeCollectorStateV3::Limited | RuntimeCollectorStateV3::Unavailable)
+                Some(RuntimeCollectorStateV4::Limited | RuntimeCollectorStateV4::Unavailable)
             ))
     {
         return Err("protocol_health_degraded_state_invalid".to_string());
     }
-    if !matches!(health.engine_state, Some(RuntimeEngineStateV3::Fatal)) {
+    if !matches!(health.engine_state, Some(RuntimeEngineStateV4::Fatal)) {
         if payload.settings.collection_paused
             && !matches!(
                 health.engine_state,
-                None | Some(RuntimeEngineStateV3::Paused)
+                None | Some(RuntimeEngineStateV4::Paused)
             )
         {
             return Err("protocol_engine_pause_state_invalid".to_string());
         }
         if !payload.settings.collection_paused
-            && matches!(health.engine_state, Some(RuntimeEngineStateV3::Paused))
+            && matches!(health.engine_state, Some(RuntimeEngineStateV4::Paused))
         {
             return Err("protocol_engine_pause_state_invalid".to_string());
         }
@@ -665,22 +698,75 @@ fn validate_health(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
             return Err("protocol_fatal_error_invalid".to_string());
         }
     }
+    use crate::contracts::{RuntimeFreshness, RuntimeHealthReason::*};
+    let reasons = &health.reason_codes;
+    let unique: std::collections::HashSet<_> = reasons.iter().collect();
+    if unique.len() != reasons.len() || health.degraded != !reasons.is_empty() {
+        return Err("protocol_health_reasons_invalid".to_string());
+    }
+    let fatal = health.engine_state == Some(RuntimeEngineStateV4::Fatal);
+    let paused = payload.settings.collection_paused
+        || health.engine_state == Some(RuntimeEngineStateV4::Paused);
+    let starting = payload.sampled_at_ms.is_none()
+        || health.engine_state == Some(RuntimeEngineStateV4::Starting);
+    let active = !fatal && !paused && !starting;
+    let budget = u64::from(
+        payload
+            .settings
+            .effective_sample_interval_ms
+            .clamp(500, 5_000),
+    ) * 2;
+    let running = health.engine_state == Some(RuntimeEngineStateV4::Running);
+    let heartbeat_stale =
+        active && running && health.heartbeat_age_ms.is_none_or(|age| age > budget);
+    let publication_stale = active && running && health.publication_age_ms > budget;
+    let sample_stale = active && health.sample_age_ms.is_none_or(|age| age > budget);
+    let unavailable = health.collector_state == Some(RuntimeCollectorStateV4::Unavailable);
+    for (reason, required) in [
+        (EngineFatal, fatal),
+        (CollectorUnavailable, unavailable),
+        (
+            CollectorLimited,
+            health.collector_state == Some(RuntimeCollectorStateV4::Limited),
+        ),
+        (HeartbeatStale, heartbeat_stale),
+        (PublicationStale, publication_stale),
+        (SampleStale, sample_stale),
+    ] {
+        if reasons.contains(&reason) != required {
+            return Err("protocol_health_reason_fact_mismatch".to_string());
+        }
+    }
+    let expected = if fatal {
+        RuntimeFreshness::Stale
+    } else if paused {
+        RuntimeFreshness::Paused
+    } else if starting {
+        RuntimeFreshness::Starting
+    } else if unavailable || heartbeat_stale || publication_stale || sample_stale {
+        RuntimeFreshness::Stale
+    } else {
+        RuntimeFreshness::Live
+    };
+    if health.freshness != expected {
+        return Err("protocol_health_freshness_invalid".to_string());
+    }
     Ok(())
 }
 
-fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<(), String> {
+fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV4) -> Result<(), String> {
     let privileged = &payload.privileged_collection;
-    if matches!(privileged.state, PrivilegedCollectionStateV3::Active)
-        == matches!(privileged.source, PrivilegedCollectionSourceV3::None)
+    if matches!(privileged.state, PrivilegedCollectionStateV4::Active)
+        == matches!(privileged.source, PrivilegedCollectionSourceV4::None)
     {
         return Err("protocol_privileged_collection_state_source_invalid".to_string());
     }
     if matches!(
         privileged.source,
-        PrivilegedCollectionSourceV3::LocalProcess
+        PrivilegedCollectionSourceV4::LocalProcess
     ) && !matches!(
         payload.environment.process_elevation,
-        RuntimeProcessElevationV3::Elevated
+        RuntimeProcessElevationV4::Elevated
     ) {
         return Err("protocol_local_process_elevation_invalid".to_string());
     }
@@ -699,7 +785,7 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
         }) {
             return Err("protocol_collector_service_timestamp_invalid".to_string());
         }
-        if matches!(service.state, CollectorServiceStateV3::Active)
+        if matches!(service.state, CollectorServiceStateV4::Active)
             && (service.release_identity.is_none()
                 || service
                     .service_version
@@ -714,7 +800,7 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
         {
             return Err("protocol_collector_service_active_identity_invalid".to_string());
         }
-        if matches!(service.state, CollectorServiceStateV3::Active) {
+        if matches!(service.state, CollectorServiceStateV4::Active) {
             let service_release = service
                 .release_identity
                 .as_ref()
@@ -727,7 +813,7 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
                 return Err("protocol_collector_service_release_mismatch".to_string());
             }
         }
-        if matches!(service.state, CollectorServiceStateV3::Incompatible)
+        if matches!(service.state, CollectorServiceStateV4::Incompatible)
             && (service
                 .service_version
                 .as_deref()
@@ -742,36 +828,36 @@ fn validate_privileged_collection(payload: &RuntimeSnapshotPayloadV3) -> Result<
     }
     if matches!(
         privileged.source,
-        PrivilegedCollectionSourceV3::CollectorService
-    ) && (!matches!(privileged.state, PrivilegedCollectionStateV3::Active)
+        PrivilegedCollectionSourceV4::CollectorService
+    ) && (!matches!(privileged.state, PrivilegedCollectionStateV4::Active)
         || !privileged
             .collector_service
             .as_ref()
-            .is_some_and(|service| matches!(service.state, CollectorServiceStateV3::Active)))
+            .is_some_and(|service| matches!(service.state, CollectorServiceStateV4::Active)))
     {
         return Err("protocol_collector_service_source_invalid".to_string());
     }
     if matches!(
         privileged.source,
-        PrivilegedCollectionSourceV3::LocalProcess
+        PrivilegedCollectionSourceV4::LocalProcess
     ) && privileged
         .collector_service
         .as_ref()
-        .is_some_and(|service| matches!(service.state, CollectorServiceStateV3::Active))
+        .is_some_and(|service| matches!(service.state, CollectorServiceStateV4::Active))
     {
         return Err("protocol_local_and_service_collection_conflict".to_string());
     }
     if privileged.standard_fallback_process_etw_disabled
-        && (!matches!(payload.environment.platform, RuntimePlatformV3::Windows)
+        && (!matches!(payload.environment.platform, RuntimePlatformV4::Windows)
             || !matches!(
                 payload.environment.process_elevation,
-                RuntimeProcessElevationV3::Standard
+                RuntimeProcessElevationV4::Standard
             )
-            || !matches!(privileged.source, PrivilegedCollectionSourceV3::None)
+            || !matches!(privileged.source, PrivilegedCollectionSourceV4::None)
             || privileged
                 .collector_service
                 .as_ref()
-                .is_some_and(|service| matches!(service.state, CollectorServiceStateV3::Active)))
+                .is_some_and(|service| matches!(service.state, CollectorServiceStateV4::Active)))
     {
         return Err("protocol_standard_fallback_etw_authority_invalid".to_string());
     }
@@ -813,7 +899,7 @@ fn valid_js_safe_decimal(value: &str, allow_zero: bool) -> Option<u64> {
 fn validate_observations(
     observations: &[MetricObservation],
     expected_scope: MetricScope,
-    payload: &RuntimeSnapshotPayloadV3,
+    payload: &RuntimeSnapshotPayloadV4,
 ) -> Result<(), String> {
     let mut semantics = HashSet::new();
     for observation in observations {
@@ -831,12 +917,12 @@ fn validate_observations(
             .quality_codes
             .get(usize::from(observation.2))
             .ok_or_else(|| "protocol_observation_quality_out_of_range".to_string())?;
-        if *quality == MetricQualityV3::Unavailable && observation.1.is_some() {
+        if *quality == MetricQualityV4::Unavailable && observation.1.is_some() {
             return Err("protocol_unavailable_observation_has_value".to_string());
         }
         if observation.1.is_none()
-            && !(*quality == MetricQualityV3::Unavailable
-                || (*quality == MetricQualityV3::Held && observation.4.is_some()))
+            && !(*quality == MetricQualityV4::Unavailable
+                || (*quality == MetricQualityV4::Held && observation.4.is_some()))
         {
             return Err("protocol_null_observation_quality_invalid".to_string());
         }
@@ -858,7 +944,7 @@ fn validate_observations(
         {
             return Err("protocol_observation_after_publication".to_string());
         }
-        if *quality == MetricQualityV3::Held
+        if *quality == MetricQualityV4::Held
             && observation.3.is_some_and(|observed| {
                 payload
                     .sampled_at_ms
@@ -868,8 +954,8 @@ fn validate_observations(
             return Err("protocol_held_observation_after_sample".to_string());
         }
         validate_quality_limitation(*quality, observation.4, payload)?;
-        if matches!(descriptor.source, MetricSourceV3::Unknown)
-            && (*quality != MetricQualityV3::Unavailable
+        if matches!(descriptor.source, MetricSourceV4::Unknown)
+            && (*quality != MetricQualityV4::Unavailable
                 || observation
                     .4
                     .map(|index| payload.limitations[usize::from(index)].code)
@@ -883,7 +969,7 @@ fn validate_observations(
 
 fn validate_limitation_index(
     index: Option<u16>,
-    payload: &RuntimeSnapshotPayloadV3,
+    payload: &RuntimeSnapshotPayloadV4,
 ) -> Result<(), String> {
     if index.is_some_and(|index| usize::from(index) >= payload.limitations.len()) {
         return Err("protocol_limitation_out_of_range".to_string());

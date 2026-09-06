@@ -1,7 +1,7 @@
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "compatibility": {
-    "minimum_reader_version": 3,
+    "minimum_reader_version": 4,
     "breaking": true
   },
   "event": {
@@ -13,20 +13,20 @@
       "sampled_at_ms": 1700000000000,
       "source": "protocol_fixture",
       "environment": {
-        "platform": "windows",
-        "architecture": "x86_64",
-        "process_elevation": "elevated",
-        "install_kind": "portable",
-        "data_directory": "C:\\Users\\test\\BatCaveMonitor",
+        "platform": "linux",
+        "architecture": "aarch64",
+        "process_elevation": "not_applicable",
+        "install_kind": "appimage",
+        "data_directory": "/home/test/.local/share/BatCaveMonitor",
         "release_identity": {
           "app_version": "development",
           "source_commit_sha": null
         }
       },
       "privileged_collection": {
-        "state": "active",
-        "source": "local_process",
-        "preference": "best_available",
+        "state": "unavailable",
+        "source": "none",
+        "preference": "standard_only",
         "standard_fallback_process_etw_disabled": false,
         "detail": null,
         "last_success_at_ms": null,
@@ -49,6 +49,8 @@
         "engine_state": null,
         "collector_state": null,
         "degraded": false,
+        "freshness": "live",
+        "reason_codes": [],
         "status_summary": "Collecting local telemetry.",
         "evaluated_at_ms": 1700000000123,
         "last_heartbeat_at_ms": null,
@@ -418,7 +420,7 @@
           "unit": "bytes",
           "interval_ms": null,
           "network_scope": null,
-          "source": "direct_api"
+          "source": "procfs"
         },
         {
           "id": 39,
@@ -427,7 +429,7 @@
           "unit": "bytes",
           "interval_ms": null,
           "network_scope": null,
-          "source": "direct_api"
+          "source": "procfs"
         },
         {
           "id": 40,
@@ -436,7 +438,7 @@
           "unit": "bytes",
           "interval_ms": null,
           "network_scope": null,
-          "source": "direct_api"
+          "source": "procfs"
         },
         {
           "id": 41,
@@ -548,6 +550,10 @@
         {
           "code": "group_partial_coverage",
           "message": "0 of 2 processes contribute to this aggregate."
+        },
+        {
+          "code": "access_denied",
+          "message": "Some process fields were denied by procfs."
         },
         {
           "code": "unsupported_metric",
@@ -945,23 +951,23 @@
               [
                 38,
                 65536.0,
-                0,
+                3,
                 1700000000000,
-                null
+                3
               ],
               [
                 39,
                 32768.0,
-                0,
+                3,
                 1700000000000,
-                null
+                3
               ],
               [
                 40,
                 null,
                 4,
                 null,
-                1
+                3
               ],
               [
                 41,
@@ -982,7 +988,7 @@
                 null,
                 4,
                 null,
-                3
+                4
               ],
               [
                 44,
@@ -1003,21 +1009,21 @@
                 null,
                 4,
                 null,
-                3
+                4
               ],
               [
                 47,
                 null,
                 2,
                 null,
-                4
+                5
               ],
               [
                 48,
                 null,
                 2,
                 null,
-                4
+                5
               ],
               [
                 49,
@@ -1077,23 +1083,23 @@
               [
                 38,
                 48000.0,
-                0,
+                3,
                 1700000000000,
-                null
+                3
               ],
               [
                 39,
                 24000.0,
-                0,
+                3,
                 1700000000000,
-                null
+                3
               ],
               [
                 40,
                 null,
                 4,
                 null,
-                1
+                3
               ],
               [
                 41,
@@ -1114,7 +1120,7 @@
                 null,
                 4,
                 null,
-                3
+                4
               ],
               [
                 44,
@@ -1135,21 +1141,385 @@
                 null,
                 4,
                 null,
-                3
+                4
               ],
               [
                 47,
                 null,
                 2,
                 null,
-                4
+                5
               ],
               [
                 48,
                 null,
                 2,
                 null,
+                5
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        }
+      ],
+      "overview_workloads": [
+        {
+          "kind": "group",
+          "detail": {
+            "stable_id": "group:batcave.app.exe",
+            "group_key": "batcave.app.exe",
+            "label": "BatCave.App.exe",
+            "category": "BatCave",
+            "member_ids": [
+              "process:1234:1699999999000",
+              "process:1235:1699999999001"
+            ],
+            "icon_kind": "batcave",
+            "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "example_label": "BatCave.App",
+            "metrics": [
+              [
+                30,
+                12.5,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                31,
+                113536.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                32,
+                22.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                33,
+                null,
+                4,
+                null,
+                2
+              ],
+              [
+                34,
+                null,
+                4,
+                null,
+                2
+              ],
+              [
+                35,
+                18.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ],
+            "coverage": [
+              {
+                "descriptor_index": 30,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 31,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 32,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              },
+              {
+                "descriptor_index": 33,
+                "available_contributors": 0,
+                "total_contributors": 2,
+                "limitation_index": 2
+              },
+              {
+                "descriptor_index": 34,
+                "available_contributors": 0,
+                "total_contributors": 2,
+                "limitation_index": 2
+              },
+              {
+                "descriptor_index": 35,
+                "available_contributors": 2,
+                "total_contributors": 2,
+                "limitation_index": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:1234:1699999999000",
+            "identity_stability": "stable",
+            "pid": "1234",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999999000,
+            "display_name": "BatCave.App",
+            "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "status": "run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "group_label": "BatCave.App.exe",
+              "group_category": "BatCave",
+              "group_count": 2,
+              "icon_kind": "batcave",
+              "is_child": false,
+              "is_grouped": true
+            },
+            "metrics": [
+              [
+                36,
+                8.25,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                65536.0,
+                3,
+                1700000000000,
+                3
+              ],
+              [
+                39,
+                32768.0,
+                3,
+                1700000000000,
+                3
+              ],
+              [
+                40,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                41,
+                123.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                456.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
                 4
+              ],
+              [
+                44,
+                7.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                8.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                47,
+                null,
+                2,
+                null,
+                5
+              ],
+              [
+                48,
+                null,
+                2,
+                null,
+                5
+              ],
+              [
+                49,
+                9.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                50,
+                10.0,
+                0,
+                1700000000000,
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "kind": "process",
+          "detail": {
+            "stable_id": "process:1235:1699999999001",
+            "identity_stability": "stable",
+            "pid": "1235",
+            "parent_pid": null,
+            "parent_process_id": null,
+            "start_time_ms": 1699999999001,
+            "display_name": "BatCave.App",
+            "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+            "status": "run",
+            "access_state": "full",
+            "presentation": {
+              "group_id": "group:batcave.app.exe",
+              "group_key": "batcave.app.exe",
+              "group_label": "BatCave.App.exe",
+              "group_category": "BatCave",
+              "group_count": 2,
+              "icon_kind": "batcave",
+              "is_child": true,
+              "is_grouped": true
+            },
+            "metrics": [
+              [
+                36,
+                4.25,
+                1,
+                1700000000000,
+                null
+              ],
+              [
+                37,
+                null,
+                4,
+                null,
+                1
+              ],
+              [
+                38,
+                48000.0,
+                3,
+                1700000000000,
+                3
+              ],
+              [
+                39,
+                24000.0,
+                3,
+                1700000000000,
+                3
+              ],
+              [
+                40,
+                null,
+                4,
+                null,
+                3
+              ],
+              [
+                41,
+                100.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                42,
+                200.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                43,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                44,
+                3.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                45,
+                4.0,
+                0,
+                1700000000000,
+                null
+              ],
+              [
+                46,
+                null,
+                4,
+                null,
+                4
+              ],
+              [
+                47,
+                null,
+                2,
+                null,
+                5
+              ],
+              [
+                48,
+                null,
+                2,
+                null,
+                5
               ],
               [
                 49,
@@ -1188,9 +1558,9 @@
           "name_ambiguous": true,
           "available_contributors": 2,
           "total_contributors": 2,
-          "quality_code": 0,
-          "source": "direct_api",
-          "limitation_index": null
+          "quality_code": 3,
+          "source": "procfs",
+          "limitation_index": 3
         },
         {
           "metric": "io",
@@ -1212,7 +1582,7 @@
           "total_contributors": 2,
           "quality_code": 2,
           "source": "etw",
-          "limitation_index": 4
+          "limitation_index": 5
         }
       ],
       "total_process_count": 2,

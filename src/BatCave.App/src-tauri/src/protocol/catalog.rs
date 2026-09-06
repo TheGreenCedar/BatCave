@@ -1,22 +1,22 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use super::types::{
-    LimitationCode, LimitationEntry, MeasurementDescriptor, MetricObservation, MetricQualityV3,
-    MetricScope, MetricSemantic, MetricSourceV3, MetricUnit, NetworkScopeV3,
+    LimitationCode, LimitationEntry, MeasurementDescriptor, MetricObservation, MetricQualityV4,
+    MetricScope, MetricSemantic, MetricSourceV4, MetricUnit, NetworkScopeV4,
 };
 use crate::contracts::{MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource};
 
-pub const QUALITY_CODES: [MetricQualityV3; 5] = [
-    MetricQualityV3::Native,
-    MetricQualityV3::Estimated,
-    MetricQualityV3::Held,
-    MetricQualityV3::Partial,
-    MetricQualityV3::Unavailable,
+pub const QUALITY_CODES: [MetricQualityV4; 5] = [
+    MetricQualityV4::Native,
+    MetricQualityV4::Estimated,
+    MetricQualityV4::Held,
+    MetricQualityV4::Partial,
+    MetricQualityV4::Unavailable,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QualityLimitationPolicy {
-    pub quality: MetricQualityV3,
+    pub quality: MetricQualityV4,
     pub requires_limitation: bool,
     pub allowed_codes: &'static [LimitationCode],
 }
@@ -58,33 +58,33 @@ const UNAVAILABLE_LIMITATIONS: &[LimitationCode] = &[
 /// Canonical quality/limitation compatibility policy for both protocol validators.
 pub const QUALITY_LIMITATION_POLICIES: &[QualityLimitationPolicy] = &[
     QualityLimitationPolicy {
-        quality: MetricQualityV3::Native,
+        quality: MetricQualityV4::Native,
         requires_limitation: false,
         allowed_codes: &[],
     },
     QualityLimitationPolicy {
-        quality: MetricQualityV3::Estimated,
+        quality: MetricQualityV4::Estimated,
         requires_limitation: false,
         allowed_codes: ESTIMATED_LIMITATIONS,
     },
     QualityLimitationPolicy {
-        quality: MetricQualityV3::Held,
+        quality: MetricQualityV4::Held,
         requires_limitation: true,
         allowed_codes: HELD_LIMITATIONS,
     },
     QualityLimitationPolicy {
-        quality: MetricQualityV3::Partial,
+        quality: MetricQualityV4::Partial,
         requires_limitation: true,
         allowed_codes: PARTIAL_LIMITATIONS,
     },
     QualityLimitationPolicy {
-        quality: MetricQualityV3::Unavailable,
+        quality: MetricQualityV4::Unavailable,
         requires_limitation: true,
         allowed_codes: UNAVAILABLE_LIMITATIONS,
     },
 ];
 
-pub fn quality_limitation_policy(quality: MetricQualityV3) -> &'static QualityLimitationPolicy {
+pub fn quality_limitation_policy(quality: MetricQualityV4) -> &'static QualityLimitationPolicy {
     QUALITY_LIMITATION_POLICIES
         .iter()
         .find(|policy| policy.quality == quality)
@@ -104,8 +104,8 @@ pub struct SemanticDefinition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkScopePolicy {
-    pub default: Option<NetworkScopeV3>,
-    pub sysinfo: Option<NetworkScopeV3>,
+    pub default: Option<NetworkScopeV4>,
+    pub sysinfo: Option<NetworkScopeV4>,
 }
 
 impl NetworkScopePolicy {
@@ -114,18 +114,18 @@ impl NetworkScopePolicy {
         sysinfo: None,
     };
     const SYSTEM_INTERFACE: Self = Self {
-        default: Some(NetworkScopeV3::NonLoopbackInterfaceAggregate),
-        sysinfo: Some(NetworkScopeV3::AllInterfaceAggregate),
+        default: Some(NetworkScopeV4::NonLoopbackInterfaceAggregate),
+        sysinfo: Some(NetworkScopeV4::AllInterfaceAggregate),
     };
     const IP_SOCKET_PAYLOAD: Self = Self {
-        default: Some(NetworkScopeV3::IpSocketPayload),
-        sysinfo: Some(NetworkScopeV3::IpSocketPayload),
+        default: Some(NetworkScopeV4::IpSocketPayload),
+        sysinfo: Some(NetworkScopeV4::IpSocketPayload),
     };
 
-    fn resolve(self, source: MetricSourceV3) -> Option<NetworkScopeV3> {
+    fn resolve(self, source: MetricSourceV4) -> Option<NetworkScopeV4> {
         match source {
-            MetricSourceV3::Unknown => None,
-            MetricSourceV3::Sysinfo => self.sysinfo,
+            MetricSourceV4::Unknown => None,
+            MetricSourceV4::Sysinfo => self.sysinfo,
             _ => self.default,
         }
     }
@@ -484,8 +484,8 @@ pub fn semantic_definition(
 pub fn network_scope_definition(
     semantic: MetricSemantic,
     scope: MetricScope,
-    source: MetricSourceV3,
-) -> Option<NetworkScopeV3> {
+    source: MetricSourceV4,
+) -> Option<NetworkScopeV4> {
     semantic_definition(semantic, scope)
         .and_then(|definition| definition.network_scope.resolve(source))
 }
@@ -559,7 +559,7 @@ impl CatalogBuilder {
         let source = quality
             .and_then(|quality| quality.source)
             .map(metric_source)
-            .unwrap_or(MetricSourceV3::Unknown);
+            .unwrap_or(MetricSourceV4::Unknown);
         let descriptor_index = self.descriptor(definition, source)?;
         let mut quality_code = quality
             .map(|quality| metric_quality_code(quality.quality))
@@ -615,7 +615,7 @@ impl CatalogBuilder {
         let quality_value = QUALITY_CODES
             .get(quality_code as usize)
             .ok_or_else(|| "protocol_quality_code_out_of_range".to_string())?;
-        if *quality_value == MetricQualityV3::Unavailable {
+        if *quality_value == MetricQualityV4::Unavailable {
             normalized_value = None;
             limitation.get_or_insert((
                 LimitationCode::UnsupportedMetric,
@@ -696,7 +696,7 @@ impl CatalogBuilder {
     fn descriptor(
         &mut self,
         definition: MetricDefinition,
-        source: MetricSourceV3,
+        source: MetricSourceV4,
     ) -> Result<u16, String> {
         if let Some(index) = self.descriptors.iter().position(|descriptor| {
             descriptor.semantic == definition.semantic
@@ -735,21 +735,21 @@ pub fn metric_quality_code(quality: MetricQuality) -> u8 {
     }
 }
 
-pub fn metric_source(source: MetricSource) -> MetricSourceV3 {
+pub fn metric_source(source: MetricSource) -> MetricSourceV4 {
     match source {
-        MetricSource::DirectApi => MetricSourceV3::DirectApi,
-        MetricSource::Libproc => MetricSourceV3::Libproc,
-        MetricSource::Iokit => MetricSourceV3::Iokit,
-        MetricSource::Pdh => MetricSourceV3::Pdh,
-        MetricSource::InterfaceAggregate => MetricSourceV3::InterfaceAggregate,
-        MetricSource::ProcessAggregate => MetricSourceV3::ProcessAggregate,
-        MetricSource::Sysinfo => MetricSourceV3::Sysinfo,
-        MetricSource::Runtime => MetricSourceV3::Runtime,
-        MetricSource::Etw => MetricSourceV3::Etw,
-        MetricSource::Nstat => MetricSourceV3::Nstat,
-        MetricSource::Procfs => MetricSourceV3::Procfs,
-        MetricSource::Ebpf => MetricSourceV3::Ebpf,
-        MetricSource::Fixture => MetricSourceV3::Fixture,
+        MetricSource::DirectApi => MetricSourceV4::DirectApi,
+        MetricSource::Libproc => MetricSourceV4::Libproc,
+        MetricSource::Iokit => MetricSourceV4::Iokit,
+        MetricSource::Pdh => MetricSourceV4::Pdh,
+        MetricSource::InterfaceAggregate => MetricSourceV4::InterfaceAggregate,
+        MetricSource::ProcessAggregate => MetricSourceV4::ProcessAggregate,
+        MetricSource::Sysinfo => MetricSourceV4::Sysinfo,
+        MetricSource::Runtime => MetricSourceV4::Runtime,
+        MetricSource::Etw => MetricSourceV4::Etw,
+        MetricSource::Nstat => MetricSourceV4::Nstat,
+        MetricSource::Procfs => MetricSourceV4::Procfs,
+        MetricSource::Ebpf => MetricSourceV4::Ebpf,
+        MetricSource::Fixture => MetricSourceV4::Fixture,
     }
 }
 

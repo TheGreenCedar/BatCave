@@ -36,7 +36,7 @@ The probe:
 
 The probe never maps a post-spawn supervisor error to "not started" or "settled." It reports `retained_process_unsettled`, keeps the child, open descriptor, private root, and mount authority together, and suppresses cleanup until a bounded settlement retry succeeds. If the authority is dropped while settlement remains unproven, those resources move to an internal long-lived recovery owner; a deterministic hostile case proves later settlement and zero-residue cleanup. The sanitized outcome keeps the original failure boundary and any retained cleanup boundary distinct.
 
-The cleanup-failure case deliberately retains its private fixture root and reports `retained_cleanup_failed`; a bounded retry then removes it. Every case that starts `hdiutil` either settles the owned process group before releasing resources or explicitly retains ownership. Every case other than deliberate retention leaves no mount or temporary residue, and each retained case proves a zero-residue retry.
+The cleanup-failure case retains its private fixture root and reports `retained_cleanup_failed`; a bounded retry then removes it. Every case that starts `hdiutil` either settles the owned process group before releasing resources or explicitly retains ownership. Every case other than deliberate retention leaves no mount or temporary residue, and each retained case proves a zero-residue retry.
 
 On Windows and Linux, the integration test reports the host as unsupported without running a process or creating a file.
 
@@ -44,7 +44,7 @@ On Windows and Linux, the integration test reports the host as unsupported witho
 
 `hdiutil` does accept ordinary filesystem paths, but a random name and mode-`0700` parent do not isolate a file from another process running as the same user. That same-user process can enumerate, rename, replace, or remove the path. Holding a Rust descriptor and rehashing before attachment does not prove that DiskImages later opened the same bytes.
 
-This spike therefore does not adopt a private-path design. A later issue may evaluate a macOS primitive that binds DiskImages to immutable authority-owned storage, but it must prove the exact bytes consumed across open, attach, mount, detach, and cleanup. Until that exists, the DMG native adapter remains unsupported. It must not silently fall back to a caller-visible or merely randomized path.
+This spike therefore does not adopt a private-path design. A later issue may evaluate a macOS API that binds DiskImages to immutable authority-owned storage, but it must prove the exact bytes consumed across open, attach, mount, detach, and cleanup. Until that exists, the DMG native adapter remains unsupported. It must not silently fall back to a caller-visible or merely randomized path.
 
 ## Verification
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { metricPresentation } from "../../telemetryPresentation";
   import MiniChart from "../../MiniChart.svelte";
   import { makeEmptySnapshot } from "../../runtimeSnapshot";
   import {
@@ -65,10 +66,7 @@
   $: logicalCpuQuality = logicalCpuMetricQuality(systemQuality);
   $: logicalCpuValue = <T>(value: T, formatter: (value: T) => string) =>
     displayMetricValue(value, logicalCpuQuality, snapshot.sampled_at_ms, formatter);
-  $: logicalCpuCanDisplay =
-    snapshot.sampled_at_ms !== null &&
-    logicalCpuQuality?.quality !== "held" &&
-    logicalCpuQuality?.quality !== "unavailable";
+  $: logicalCpuCanDisplay = metricPresentation(logicalCpuQuality, snapshot.health.freshness, snapshot.sampled_at_ms !== null).canDisplay;
   $: memoryValue = <T>(value: T, formatter: (value: T) => string) =>
     displayMetricValue(value, systemQuality.memory, snapshot.sampled_at_ms, formatter);
   $: diskValue = <T>(value: T, formatter: (value: T) => string) =>
@@ -101,15 +99,15 @@
     <div class="detail-summary compact-summary" aria-label="CPU summary">
       <div><span>Machine total</span><strong>{cpuValue(snapshot.system.cpu_percent, formatPercent)}</strong></div>
       <div><span>Peak core</span><strong>{logicalCpuValue(corePeak, formatPercent)}</strong></div>
-      <div><span>Hot cores</span><strong>{logicalCpuValue(hotCoreCount, String)}</strong></div>
-      <div><span>Busy cores</span><strong>{logicalCpuValue(busyCoreCount, String)}</strong></div>
+      <div><span>Cores at 75%+</span><strong>{logicalCpuValue(hotCoreCount, String)}</strong></div>
+      <div><span>Cores at 45%+</span><strong>{logicalCpuValue(busyCoreCount, String)}</strong></div>
     </div>
     <div class="detail-hero-chart">
       <div><span>Machine-total CPU use</span><strong>{detailReadout}</strong></div>
       <MiniChart values={history.cpu} max={100} stroke={activeTheme.cpuStroke} fill={activeTheme.cpuFill} />
     </div>
     <section class="core-distribution" aria-labelledby="core-distribution-title">
-      <header><h3 id="core-distribution-title">Hottest logical cores</h3><span>{logicalCpuCanDisplay ? `${formatPercent(coreSpread)} spread` : logicalCpuValue(coreSpread, formatPercent)}</span></header>
+      <header><h3 id="core-distribution-title">Busiest logical cores</h3><span>{logicalCpuCanDisplay ? `${formatPercent(coreSpread)} spread` : logicalCpuValue(coreSpread, formatPercent)}</span></header>
       <div class="core-bars">
         {#each hottestCores as core (core.index)}
           <div class={`core-bar ${coreTone(core.load)}`}>
@@ -153,8 +151,8 @@
         </div>
       {:else}
         <div class="detail-chart-card unavailable-card">
-          <div><span>Swap pressure</span><strong>Unavailable</strong></div>
-          <p>{systemQuality.swap?.message ?? "This collector does not expose swap pressure."}</p>
+          <div><span>Swap usage</span><strong>Unavailable</strong></div>
+          <p>{systemQuality.swap?.message ?? "This collector does not expose swap usage."}</p>
         </div>
       {/if}
     </div>

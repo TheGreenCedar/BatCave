@@ -1,0 +1,636 @@
+{
+  "response_token": "inspection:1",
+  "inspection_version": 1,
+  "runtime_protocol_version": 4,
+  "stable_id": "group:batcave.app.exe",
+  "publication_seq": 42,
+  "sample_seq": 40,
+  "status": "current",
+  "catalog": {
+    "sample_seq": 40,
+    "sampled_at_ms": 1700000000000,
+    "published_at_ms": 1700000000123,
+    "descriptors": [
+      {
+        "id": 0,
+        "semantic": "cpu_usage",
+        "scope": "group",
+        "unit": "percent_one_core",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "process_aggregate"
+      },
+      {
+        "id": 1,
+        "semantic": "resident_memory",
+        "scope": "group",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "process_aggregate"
+      },
+      {
+        "id": 2,
+        "semantic": "read_write_io_rate",
+        "scope": "group",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "process_aggregate"
+      },
+      {
+        "id": 3,
+        "semantic": "other_io_rate",
+        "scope": "group",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "process_aggregate"
+      },
+      {
+        "id": 4,
+        "semantic": "network_rate",
+        "scope": "group",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": "ip_socket_payload",
+        "source": "process_aggregate"
+      },
+      {
+        "id": 5,
+        "semantic": "thread_count",
+        "scope": "group",
+        "unit": "count",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "process_aggregate"
+      },
+      {
+        "id": 6,
+        "semantic": "cpu_usage",
+        "scope": "process",
+        "unit": "percent_one_core",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "sysinfo"
+      },
+      {
+        "id": 7,
+        "semantic": "kernel_cpu_usage",
+        "scope": "process",
+        "unit": "percent_one_core",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "sysinfo"
+      },
+      {
+        "id": 8,
+        "semantic": "resident_memory",
+        "scope": "process",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 9,
+        "semantic": "private_memory",
+        "scope": "process",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 10,
+        "semantic": "virtual_memory",
+        "scope": "process",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 11,
+        "semantic": "read_io_total",
+        "scope": "process",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 12,
+        "semantic": "write_io_total",
+        "scope": "process",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 13,
+        "semantic": "other_io_total",
+        "scope": "process",
+        "unit": "bytes",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 14,
+        "semantic": "read_io_rate",
+        "scope": "process",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 15,
+        "semantic": "write_io_rate",
+        "scope": "process",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 16,
+        "semantic": "other_io_rate",
+        "scope": "process",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 17,
+        "semantic": "network_receive_rate",
+        "scope": "process",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": "ip_socket_payload",
+        "source": "etw"
+      },
+      {
+        "id": 18,
+        "semantic": "network_transmit_rate",
+        "scope": "process",
+        "unit": "bytes_per_second",
+        "interval_ms": 1000,
+        "network_scope": "ip_socket_payload",
+        "source": "etw"
+      },
+      {
+        "id": 19,
+        "semantic": "thread_count",
+        "scope": "process",
+        "unit": "count",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      },
+      {
+        "id": 20,
+        "semantic": "handle_count",
+        "scope": "process",
+        "unit": "count",
+        "interval_ms": null,
+        "network_scope": null,
+        "source": "direct_api"
+      }
+    ],
+    "quality_codes": [
+      "native",
+      "estimated",
+      "held",
+      "partial",
+      "unavailable"
+    ],
+    "limitations": [
+      {
+        "code": "group_partial_coverage",
+        "message": "0 of 2 processes contribute to this aggregate."
+      },
+      {
+        "code": "unsupported_metric",
+        "message": "Metric value was not reported by the collector."
+      },
+      {
+        "code": "unsupported_metric",
+        "message": "Other I/O is not reported by this fixture."
+      },
+      {
+        "code": "pending_baseline",
+        "message": "Waiting for process network attribution."
+      }
+    ],
+    "workloads": [
+      {
+        "kind": "group",
+        "detail": {
+          "stable_id": "group:batcave.app.exe",
+          "group_key": "batcave.app.exe",
+          "label": "BatCave.App.exe",
+          "category": "BatCave",
+          "member_ids": [
+            "process:1234:1699999999000",
+            "process:1235:1699999999001"
+          ],
+          "icon_kind": "batcave",
+          "icon_source": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+          "example_label": "BatCave.App",
+          "metrics": [
+            [
+              0,
+              12.5,
+              1,
+              1700000000000,
+              null
+            ],
+            [
+              1,
+              113536.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              2,
+              22.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              3,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              4,
+              null,
+              4,
+              null,
+              0
+            ],
+            [
+              5,
+              18.0,
+              0,
+              1700000000000,
+              null
+            ]
+          ],
+          "coverage": [
+            {
+              "descriptor_index": 0,
+              "available_contributors": 2,
+              "total_contributors": 2,
+              "limitation_index": null
+            },
+            {
+              "descriptor_index": 1,
+              "available_contributors": 2,
+              "total_contributors": 2,
+              "limitation_index": null
+            },
+            {
+              "descriptor_index": 2,
+              "available_contributors": 2,
+              "total_contributors": 2,
+              "limitation_index": null
+            },
+            {
+              "descriptor_index": 3,
+              "available_contributors": 0,
+              "total_contributors": 2,
+              "limitation_index": 0
+            },
+            {
+              "descriptor_index": 4,
+              "available_contributors": 0,
+              "total_contributors": 2,
+              "limitation_index": 0
+            },
+            {
+              "descriptor_index": 5,
+              "available_contributors": 2,
+              "total_contributors": 2,
+              "limitation_index": null
+            }
+          ]
+        }
+      },
+      {
+        "kind": "process",
+        "detail": {
+          "stable_id": "process:1234:1699999999000",
+          "identity_stability": "stable",
+          "pid": "1234",
+          "parent_pid": null,
+          "parent_process_id": null,
+          "start_time_ms": 1699999999000,
+          "display_name": "BatCave.App",
+          "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+          "status": "run",
+          "access_state": "full",
+          "presentation": {
+            "group_id": "group:batcave.app.exe",
+            "group_key": "batcave.app.exe",
+            "group_label": "BatCave.App.exe",
+            "group_category": "BatCave",
+            "group_count": 2,
+            "icon_kind": "batcave",
+            "is_child": false,
+            "is_grouped": true
+          },
+          "metrics": [
+            [
+              6,
+              8.25,
+              1,
+              1700000000000,
+              null
+            ],
+            [
+              7,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              8,
+              65536.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              9,
+              32768.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              10,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              11,
+              123.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              12,
+              456.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              13,
+              null,
+              4,
+              null,
+              2
+            ],
+            [
+              14,
+              7.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              15,
+              8.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              16,
+              null,
+              4,
+              null,
+              2
+            ],
+            [
+              17,
+              null,
+              2,
+              null,
+              3
+            ],
+            [
+              18,
+              null,
+              2,
+              null,
+              3
+            ],
+            [
+              19,
+              9.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              20,
+              10.0,
+              0,
+              1700000000000,
+              null
+            ]
+          ]
+        }
+      },
+      {
+        "kind": "process",
+        "detail": {
+          "stable_id": "process:1235:1699999999001",
+          "identity_stability": "stable",
+          "pid": "1235",
+          "parent_pid": null,
+          "parent_process_id": null,
+          "start_time_ms": 1699999999001,
+          "display_name": "BatCave.App",
+          "executable": "C:\\Program Files\\BatCave\\BatCave.App.exe",
+          "status": "run",
+          "access_state": "full",
+          "presentation": {
+            "group_id": "group:batcave.app.exe",
+            "group_key": "batcave.app.exe",
+            "group_label": "BatCave.App.exe",
+            "group_category": "BatCave",
+            "group_count": 2,
+            "icon_kind": "batcave",
+            "is_child": true,
+            "is_grouped": true
+          },
+          "metrics": [
+            [
+              6,
+              4.25,
+              1,
+              1700000000000,
+              null
+            ],
+            [
+              7,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              8,
+              48000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              9,
+              24000.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              10,
+              null,
+              4,
+              null,
+              1
+            ],
+            [
+              11,
+              100.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              12,
+              200.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              13,
+              null,
+              4,
+              null,
+              2
+            ],
+            [
+              14,
+              3.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              15,
+              4.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              16,
+              null,
+              4,
+              null,
+              2
+            ],
+            [
+              17,
+              null,
+              2,
+              null,
+              3
+            ],
+            [
+              18,
+              null,
+              2,
+              null,
+              3
+            ],
+            [
+              19,
+              9.0,
+              0,
+              1700000000000,
+              null
+            ],
+            [
+              20,
+              10.0,
+              0,
+              1700000000000,
+              null
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  "retained_points": 1,
+  "history_truncated": false,
+  "history": [
+    {
+      "sample_seq": 40,
+      "sampled_at_ms": 1700000000000,
+      "interval_ms": 1000,
+      "gap_before": true,
+      "cpu": {
+        "value": 12.5,
+        "quality": "estimated",
+        "source": "process_aggregate",
+        "network_scope": null,
+        "available": 2,
+        "total": 2
+      },
+      "memory": {
+        "value": 113536.0,
+        "quality": "native",
+        "source": "process_aggregate",
+        "network_scope": null,
+        "available": 2,
+        "total": 2
+      },
+      "io": {
+        "value": 22.0,
+        "quality": "native",
+        "source": "process_aggregate",
+        "network_scope": null,
+        "available": 2,
+        "total": 2
+      },
+      "network": {
+        "value": null,
+        "quality": "unavailable",
+        "source": "process_aggregate",
+        "network_scope": "ip_socket_payload",
+        "available": 0,
+        "total": 2
+      }
+    }
+  ]
+}

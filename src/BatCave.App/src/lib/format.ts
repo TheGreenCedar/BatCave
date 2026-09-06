@@ -1,3 +1,4 @@
+import { metricPresentation } from "./telemetryPresentation.ts";
 import type {
   AccessState,
   KernelPoolKind,
@@ -88,13 +89,8 @@ export function displayMetricValue<T>(
   sampledAtMs: number | null,
   formatter: (value: T) => string,
 ): string {
-  if (sampledAtMs === null || metric?.quality === "unavailable") {
-    return "Unavailable";
-  }
-  if (metric?.quality === "held") {
-    return "Waiting";
-  }
-  return formatter(value);
+  const presentation = metricPresentation(metric, "live", sampledAtMs !== null);
+  return presentation.canDisplay ? formatter(value) : presentation.emptyLabel;
 }
 
 export function displayAccountingMetricValue<T>(
@@ -125,10 +121,8 @@ export function displayProcessMetricValue<T>(
   metric: MetricQualityInfo | undefined,
   formatter: (value: T) => string,
 ): string {
-  if (!metric) return "Quality not reported";
-  if (metric?.quality === "unavailable") return "Unavailable";
-  if (metric?.quality === "held") return "Pending";
-  return formatter(value);
+  const presentation = metricPresentation(metric, "live", true);
+  return presentation.canDisplay ? formatter(value) : presentation.emptyLabel;
 }
 
 export function processMetricIsPublishable(metric: MetricQualityInfo | undefined): boolean {
@@ -146,6 +140,14 @@ export function nextProcessMetricHistory(
   return [...points, nextValue].slice(-Math.max(1, maxPoints));
 }
 
+function observationQualifier(quality: MetricQualityInfo | undefined): string {
+  return quality?.quality === "estimated"
+    ? ", estimated"
+    : quality?.quality === "partial"
+      ? ", limited coverage"
+      : "";
+}
+
 export function processFindingLabel(
   process: ProcessSample,
   readWriteIoRate: number,
@@ -153,19 +155,19 @@ export function processFindingLabel(
   memoryLabel: string,
 ): string {
   if (processMetricIsPublishable(process.quality?.cpu) && process.cpu_percent >= 30) {
-    return "High CPU usage relative to other workloads.";
+    return `CPU usage is ${formatPercent(process.cpu_percent)} of one logical core${observationQualifier(process.quality?.cpu)}.`;
   }
   if (
     processMetricIsPublishable(process.quality?.memory) &&
     process.memory_bytes >= 900 * 1024 * 1024
   ) {
-    return `High ${memoryLabel.toLocaleLowerCase()} relative to other workloads.`;
+    return `${memoryLabel} is ${formatBytes(process.memory_bytes)}${observationQualifier(process.quality?.memory)}.`;
   }
   if (processMetricIsPublishable(process.quality?.io) && readWriteIoRate >= 500 * 1024) {
-    return "High read/write I/O relative to other workloads.";
+    return `Read/write I/O is ${formatRate(readWriteIoRate)}${observationQualifier(process.quality?.io)}.`;
   }
   if (processMetricIsPublishable(process.quality?.network) && networkRate >= 1024 * 1024) {
-    return "High network activity relative to other workloads.";
+    return `Process network traffic is ${formatRate(networkRate)}${observationQualifier(process.quality?.network)}.`;
   }
   const activityQuality = [
     process.quality?.cpu,
@@ -182,7 +184,7 @@ export function processFindingLabel(
   if (activityQuality.some((quality) => quality === undefined)) {
     return "Some activity metric quality was not reported for this workload.";
   }
-  return "No unusual activity is visible for this workload right now.";
+  return "Activity measurements are available for this sample.";
 }
 
 export function processActivityLabel(
@@ -190,12 +192,12 @@ export function processActivityLabel(
   readWriteIoRate: number,
   networkRate: number,
 ): string {
-  if (processMetricIsPublishable(process.quality?.cpu) && process.cpu_percent >= 30) return "Hot";
+  if (processMetricIsPublishable(process.quality?.cpu) && process.cpu_percent >= 30) return "CPU";
   if (
     processMetricIsPublishable(process.quality?.memory) &&
     process.memory_bytes >= 900 * 1024 * 1024
   ) {
-    return "Heavy";
+    return "Memory";
   }
   if (processMetricIsPublishable(process.quality?.io) && readWriteIoRate >= 500 * 1024) {
     return "I/O";
@@ -213,7 +215,7 @@ export function processActivityLabel(
   if (activityQuality.some((quality) => quality === undefined)) return "Quality not reported";
   if (activityQuality.every((quality) => quality?.quality === "unavailable")) return "Unavailable";
   if (activityQuality.some((quality) => quality?.quality === "unavailable")) return "Partial";
-  return "Normal";
+  return "Sampled";
 }
 
 export function processTrustLabel(process: ProcessSample): string {
@@ -307,7 +309,7 @@ function groupHighFinding(
 export function groupFindingLabel(detail: GroupDetail): string {
   if (groupMetricCanDisplay(detail.quality.cpu, detail.coverage.cpu) && detail.cpu_percent >= 30) {
     return groupHighFinding(
-      "Aggregate CPU use is high right now.",
+      `Aggregate CPU usage is ${formatPercent(detail.cpu_percent)} of one logical core.`,
       detail.quality.cpu,
       detail.coverage.cpu,
     );
@@ -317,14 +319,14 @@ export function groupFindingLabel(detail: GroupDetail): string {
     detail.memory_bytes >= 900 * 1024 * 1024
   ) {
     return groupHighFinding(
-      "Aggregate memory use is high right now.",
+      `Aggregate resident memory is ${formatBytes(detail.memory_bytes)}.`,
       detail.quality.memory,
       detail.coverage.memory,
     );
   }
   if (groupMetricCanDisplay(detail.quality.io, detail.coverage.io) && detail.io_bps >= 500 * 1024) {
     return groupHighFinding(
-      "Aggregate read/write I/O is high right now.",
+      `Aggregate read/write I/O is ${formatRate(detail.io_bps)}.`,
       detail.quality.io,
       detail.coverage.io,
     );
@@ -334,7 +336,7 @@ export function groupFindingLabel(detail: GroupDetail): string {
     detail.network_bps >= 1024 * 1024
   ) {
     return groupHighFinding(
-      "Aggregate network use is high right now.",
+      `Aggregate network traffic is ${formatRate(detail.network_bps)}.`,
       detail.quality.network,
       detail.coverage.network,
     );
@@ -367,7 +369,7 @@ export function groupFindingLabel(detail: GroupDetail): string {
     return "Some aggregate activity is limited by process telemetry coverage.";
   }
 
-  return "No unusual aggregate activity is visible for this group right now.";
+  return "Aggregate measurements are available for this sample.";
 }
 
 export function metricQualityAction(metric: MetricQualityInfo | undefined): string {

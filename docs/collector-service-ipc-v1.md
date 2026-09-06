@@ -1,8 +1,8 @@
 # Collector service IPC v1
 
-BatCave's Windows collector service uses a separate local protocol from runtime protocol v3. This contract carries an immutable, unshaped collector snapshot to the standard-user desktop. The desktop remains responsible for query filtering, grouping, sorting, contributor selection, and presentation.
+BatCave's Windows collector service uses a separate local protocol from runtime protocol v4. The service sends an immutable raw collector snapshot to the standard-user desktop. The desktop remains responsible for query filtering, grouping, sorting, contributor selection, and presentation.
 
-## Request surface
+## Requests
 
 | Operation | Purpose | Mutable service state |
 | --- | --- | --- |

@@ -1,24 +1,29 @@
-mod catalog;
-mod encode;
-mod types;
+pub(crate) mod catalog;
+pub(crate) mod encode;
+pub(crate) mod types;
 mod validate;
 
 pub use encode::encode_snapshot;
-pub(crate) use types::RuntimeReleaseIdentityV3;
+pub(crate) use types::RuntimeReleaseIdentityV4;
 pub use types::{
-    ProcessFocusModeV3, ProtocolEnvelope, RuntimeQueryInputV3, RuntimeUiPreferencesV3,
-    SortColumnV3, SortDirectionV3,
+    ProcessFocusModeV4, ProtocolEnvelope, RuntimeQueryInputV4, RuntimeUiPreferencesV4,
+    SortColumnV4, SortDirectionV4,
 };
 
-pub const RUNTIME_PROTOCOL_VERSION: u16 = 3;
+pub const RUNTIME_PROTOCOL_VERSION: u16 = 4;
 
-pub(crate) fn release_identity() -> RuntimeReleaseIdentityV3 {
-    RuntimeReleaseIdentityV3 {
+pub(crate) fn release_identity() -> RuntimeReleaseIdentityV4 {
+    RuntimeReleaseIdentityV4 {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         source_commit_sha: option_env!("BATCAVE_SOURCE_COMMIT_SHA")
             .filter(|value| !value.is_empty())
             .map(str::to_string),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_runtime_snapshot() -> crate::contracts::RuntimeSnapshot {
+    tests::fixture_snapshot()
 }
 
 #[cfg(test)]
@@ -48,6 +53,77 @@ mod tests {
         SystemMetricQuality,
     };
     use ts_rs::{Config, TS};
+
+    #[test]
+    fn encoding_preserves_runtime_clock_instead_of_resampling_wall_time() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.health.updated_at_ms = snapshot.published_at_ms + 125;
+        let expected_evaluation = snapshot.health.updated_at_ms;
+        let expected_sample_age = snapshot
+            .sampled_at_ms
+            .map(|sample| expected_evaluation - sample);
+        let envelope = encode_snapshot(snapshot).expect("encode fixed runtime timeline");
+        let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            panic!("snapshot event expected");
+        };
+        assert_eq!(payload.health.evaluated_at_ms, expected_evaluation);
+        assert_eq!(payload.health.sample_age_ms, expected_sample_age);
+    }
+
+    fn normalize_fixture_metadata(snapshot: &mut RuntimeSnapshot) {
+        use crate::contracts::{RuntimeCollectorState, RuntimeHealthReason};
+        snapshot.overview_rows = snapshot.process_view_rows.clone();
+        snapshot.health.reason_codes.clear();
+        match snapshot.health.collector_state {
+            Some(RuntimeCollectorState::Unavailable) => snapshot
+                .health
+                .reason_codes
+                .push(RuntimeHealthReason::CollectorUnavailable),
+            Some(RuntimeCollectorState::Limited) => snapshot
+                .health
+                .reason_codes
+                .push(RuntimeHealthReason::CollectorLimited),
+            _ => {}
+        }
+        if snapshot.health.collector_warnings > 0 {
+            snapshot
+                .health
+                .reason_codes
+                .push(RuntimeHealthReason::CollectorWarning);
+        }
+        let now = snapshot.health.updated_at_ms.max(snapshot.published_at_ms);
+        crate::runtime_health::evaluate_snapshot_health(snapshot, now);
+    }
+
+    #[test]
+    fn health_contract_rejects_missing_duplicate_and_contradictory_reasons() {
+        let original = encode_snapshot(fixture_snapshot()).unwrap();
+        for change in 0..4 {
+            let mut envelope = original.clone();
+            let ProtocolEvent::RuntimeSnapshot(payload) = &mut envelope.event else {
+                unreachable!()
+            };
+            match change {
+                0 => payload
+                    .health
+                    .reason_codes
+                    .push(crate::contracts::RuntimeHealthReason::SampleStale),
+                1 => payload
+                    .health
+                    .reason_codes
+                    .extend([crate::contracts::RuntimeHealthReason::CollectorWarning; 2]),
+                2 => payload.health.degraded = !payload.health.degraded,
+                _ => payload.health.freshness = crate::contracts::RuntimeFreshness::Paused,
+            }
+            assert!(validate_envelope(&envelope).is_err(), "corruption {change}");
+        }
+        let mut json = serde_json::to_value(original).unwrap();
+        json["event"]["payload"]["health"]
+            .as_object_mut()
+            .unwrap()
+            .remove("reason_codes");
+        assert!(serde_json::from_value::<ProtocolEnvelope>(json).is_err());
+    }
 
     fn generated_protocol_policy() -> String {
         let semantic_definitions = SEMANTIC_DEFINITIONS
@@ -89,70 +165,72 @@ mod tests {
             Compatibility::decl(&config),
             ProtocolMismatchReason::decl(&config),
             ProtocolMismatchPayload::decl(&config),
-            RuntimePlatformV3::decl(&config),
-            RuntimeArchitectureV3::decl(&config),
-            RuntimeProcessElevationV3::decl(&config),
-            RuntimeInstallKindV3::decl(&config),
-            RuntimeReleaseIdentityV3::decl(&config),
-            PrivilegedCollectionStateV3::decl(&config),
-            PrivilegedCollectionSourceV3::decl(&config),
-            PrivilegedCollectionPreferenceV3::decl(&config),
-            CollectorServiceStatusV3::decl(&config),
-            CollectorServiceStateV3::decl(&config),
-            RuntimeEnvironmentV3::decl(&config),
-            RuntimePrivilegedCollectionV3::decl(&config),
-            ProcessFocusModeV3::decl(&config),
-            SortColumnV3::decl(&config),
-            SortDirectionV3::decl(&config),
-            RuntimeQueryInputV3::decl(&config),
-            RuntimeQueryV3::decl(&config),
-            RuntimeSettingsV3::decl(&config),
-            RuntimeUiPreferencesV3::decl(&config),
-            RuntimeHealthV3::decl(&config),
-            RuntimeEngineStateV3::decl(&config),
-            RuntimeCollectorStateV3::decl(&config),
-            RuntimeFatalErrorV3::decl(&config),
-            RuntimePersistenceV3::decl(&config),
-            RuntimePersistenceStateV3::decl(&config),
-            RuntimePersistenceRootV3::decl(&config),
-            RuntimePersistenceOwnerV3::decl(&config),
-            RuntimePersistencePermissionStateV3::decl(&config),
-            RuntimePersistenceComponentV3::decl(&config),
-            RuntimePersistenceKindV3::decl(&config),
-            RuntimePersistenceDurabilityV3::decl(&config),
-            RuntimePersistenceFailureV3::decl(&config),
-            RuntimePersistenceOperationV3::decl(&config),
+            RuntimePlatformV4::decl(&config),
+            RuntimeArchitectureV4::decl(&config),
+            RuntimeProcessElevationV4::decl(&config),
+            RuntimeInstallKindV4::decl(&config),
+            RuntimeReleaseIdentityV4::decl(&config),
+            PrivilegedCollectionStateV4::decl(&config),
+            PrivilegedCollectionSourceV4::decl(&config),
+            PrivilegedCollectionPreferenceV4::decl(&config),
+            CollectorServiceStatusV4::decl(&config),
+            CollectorServiceStateV4::decl(&config),
+            RuntimeEnvironmentV4::decl(&config),
+            RuntimePrivilegedCollectionV4::decl(&config),
+            ProcessFocusModeV4::decl(&config),
+            SortColumnV4::decl(&config),
+            SortDirectionV4::decl(&config),
+            RuntimeQueryInputV4::decl(&config),
+            RuntimeQueryV4::decl(&config),
+            RuntimeSettingsV4::decl(&config),
+            RuntimeUiPreferencesV4::decl(&config),
+            RuntimeHealthV4::decl(&config),
+            crate::contracts::RuntimeFreshness::decl(&config),
+            crate::contracts::RuntimeHealthReason::decl(&config),
+            RuntimeEngineStateV4::decl(&config),
+            RuntimeCollectorStateV4::decl(&config),
+            RuntimeFatalErrorV4::decl(&config),
+            RuntimePersistenceV4::decl(&config),
+            RuntimePersistenceStateV4::decl(&config),
+            RuntimePersistenceRootV4::decl(&config),
+            RuntimePersistenceOwnerV4::decl(&config),
+            RuntimePersistencePermissionStateV4::decl(&config),
+            RuntimePersistenceComponentV4::decl(&config),
+            RuntimePersistenceKindV4::decl(&config),
+            RuntimePersistenceDurabilityV4::decl(&config),
+            RuntimePersistenceFailureV4::decl(&config),
+            RuntimePersistenceOperationV4::decl(&config),
             MetricSemantic::decl(&config),
             MetricScope::decl(&config),
             MetricUnit::decl(&config),
-            MetricSourceV3::decl(&config),
-            MetricQualityV3::decl(&config),
+            MetricSourceV4::decl(&config),
+            MetricQualityV4::decl(&config),
             MeasurementDescriptor::decl(&config),
-            NetworkScopeV3::decl(&config),
+            NetworkScopeV4::decl(&config),
             MetricObservation::decl(&config),
             LimitationCode::decl(&config),
             LimitationEntry::decl(&config),
-            LogicalCpuDetailV3::decl(&config),
-            KernelPoolKindV3::decl(&config),
-            KernelPoolTagDetailV3::decl(&config),
-            SystemDetailV3::decl(&config),
-            ProcessIdentityStabilityV3::decl(&config),
-            AccessStateV3::decl(&config),
-            ProcessPresentationV3::decl(&config),
-            ProcessDetailV3::decl(&config),
-            GroupMetricCoverageV3::decl(&config),
-            GroupDetailV3::decl(&config),
-            WorkloadDetailV3::decl(&config),
-            ContributorMetricV3::decl(&config),
-            ProcessContributorV3::decl(&config),
-            RuntimeWarningV3::decl(&config),
-            RuntimeSnapshotPayloadV3::decl(&config),
+            LogicalCpuDetailV4::decl(&config),
+            KernelPoolKindV4::decl(&config),
+            KernelPoolTagDetailV4::decl(&config),
+            SystemDetailV4::decl(&config),
+            ProcessIdentityStabilityV4::decl(&config),
+            AccessStateV4::decl(&config),
+            ProcessPresentationV4::decl(&config),
+            ProcessDetailV4::decl(&config),
+            GroupMetricCoverageV4::decl(&config),
+            GroupDetailV4::decl(&config),
+            WorkloadDetailV4::decl(&config),
+            ContributorMetricV4::decl(&config),
+            ProcessContributorV4::decl(&config),
+            RuntimeWarningV4::decl(&config),
+            RuntimeSnapshotPayloadV4::decl(&config),
             ProtocolEvent::decl(&config),
             ProtocolEnvelope::decl(&config),
         ]
         .map(|declaration| declaration.replacen("type ", "export type ", 1));
         format!(
-            "// Generated from the production Rust protocol; do not edit by hand.\nexport const RUNTIME_PROTOCOL_VERSION = 3 as const;\n\nexport const RUNTIME_PROTOCOL_POLICY = {} as const;\n\n{}\n",
+            "// Generated from the production Rust protocol; do not edit by hand.\nexport const RUNTIME_PROTOCOL_VERSION = 4 as const;\n\nexport const RUNTIME_PROTOCOL_POLICY = {} as const;\n\n{}\n",
             generated_protocol_policy(),
             declarations.join("\n\n"),
         )
@@ -164,7 +242,7 @@ mod tests {
             std::fs::write(
                 concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../src/lib/generated/runtime-protocol-v3.ts"
+                    "/../src/lib/generated/runtime-protocol-v4.ts"
                 ),
                 generated_typescript(),
             )
@@ -173,7 +251,7 @@ mod tests {
         }
         assert_eq!(
             generated_typescript(),
-            include_str!("../../../src/lib/generated/runtime-protocol-v3.ts")
+            include_str!("../../../src/lib/generated/runtime-protocol-v4.ts")
         );
     }
 
@@ -202,7 +280,7 @@ mod tests {
                 super::catalog::network_scope_definition(
                     definition.semantic,
                     definition.scope,
-                    MetricSourceV3::Unknown,
+                    MetricSourceV4::Unknown,
                 ),
                 None,
                 "unknown sources must never claim a network scope"
@@ -242,7 +320,7 @@ mod tests {
                 policy.requires_limitation,
                 matches!(
                     quality,
-                    MetricQualityV3::Held | MetricQualityV3::Partial | MetricQualityV3::Unavailable
+                    MetricQualityV4::Held | MetricQualityV4::Partial | MetricQualityV4::Unavailable
                 )
             );
             for (index, code) in policy.allowed_codes.iter().enumerate() {
@@ -258,14 +336,14 @@ mod tests {
         MetricQualityInfo::new(quality, source)
     }
 
-    fn rewrite_first_process_pid(payload: &mut RuntimeSnapshotPayloadV3, pid: &str) {
+    fn rewrite_first_process_pid(payload: &mut RuntimeSnapshotPayloadV4, pid: &str) {
         let (old_id, new_id) = {
             let process = payload
                 .workloads
                 .iter_mut()
                 .find_map(|workload| match workload {
-                    WorkloadDetailV3::Process(process) => Some(process),
-                    WorkloadDetailV3::Group(_) => None,
+                    WorkloadDetailV4::Process(process) => Some(process),
+                    WorkloadDetailV4::Group(_) => None,
                 })
                 .expect("process fixture");
             let old_id = process.stable_id.clone();
@@ -279,20 +357,20 @@ mod tests {
         };
         for workload in &mut payload.workloads {
             match workload {
-                WorkloadDetailV3::Process(process)
+                WorkloadDetailV4::Process(process)
                     if process.parent_process_id.as_deref() == Some(old_id.as_str()) =>
                 {
                     process.parent_pid = Some(pid.to_string());
                     process.parent_process_id = Some(new_id.clone());
                 }
-                WorkloadDetailV3::Group(group) => {
+                WorkloadDetailV4::Group(group) => {
                     for member_id in &mut group.member_ids {
                         if *member_id == old_id {
                             member_id.clone_from(&new_id);
                         }
                     }
                 }
-                WorkloadDetailV3::Process(_) => {}
+                WorkloadDetailV4::Process(_) => {}
             }
         }
         for contributor in &mut payload.contributors {
@@ -302,7 +380,7 @@ mod tests {
         }
     }
 
-    fn fixture_snapshot() -> RuntimeSnapshot {
+    pub(super) fn fixture_snapshot() -> RuntimeSnapshot {
         let mut snapshot: RuntimeSnapshot = serde_json::from_str(include_str!(
             "../../../scripts/fixtures/runtime-snapshot.v2.json"
         ))
@@ -497,6 +575,7 @@ mod tests {
             ),
             network_name_ambiguous: false,
         };
+        normalize_fixture_metadata(&mut snapshot);
         snapshot
     }
 
@@ -612,6 +691,7 @@ mod tests {
             }
             RuntimePlatform::Fixture => unreachable!("goldens model real platforms"),
         }
+        normalize_fixture_metadata(&mut snapshot);
         snapshot
     }
 
@@ -680,12 +760,13 @@ mod tests {
                 ProcessViewRow::Group { .. } => false,
             });
         snapshot.process_view_rows = canonical_rows.into_iter().chain(singleton_rows).collect();
+        normalize_fixture_metadata(&mut snapshot);
         snapshot
     }
 
     fn encode_fixture(
         snapshot: RuntimeSnapshot,
-        architecture: RuntimeArchitectureV3,
+        architecture: RuntimeArchitectureV4,
     ) -> ProtocolEnvelope {
         let evaluated_at_ms = snapshot.published_at_ms;
         encode_snapshot_at(snapshot, evaluated_at_ms, architecture).expect("fixture encodes")
@@ -731,7 +812,7 @@ mod tests {
             suppressed_diagnostic_events: 0,
         });
 
-        let envelope = encode_fixture(snapshot, RuntimeArchitectureV3::Aarch64);
+        let envelope = encode_fixture(snapshot, RuntimeArchitectureV4::Aarch64);
         let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
             unreachable!()
         };
@@ -743,35 +824,35 @@ mod tests {
 
         assert_eq!(preferences.theme, "aurora");
         assert_eq!(preferences.history_point_limit, 180);
-        assert_eq!(persistence.state, RuntimePersistenceStateV3::Healthy);
+        assert_eq!(persistence.state, RuntimePersistenceStateV4::Healthy);
         assert_eq!(
             persistence.roots[0].owner,
-            RuntimePersistenceOwnerV3::CurrentUser
+            RuntimePersistenceOwnerV4::CurrentUser
         );
         assert_eq!(
             persistence.components[0].kind,
-            RuntimePersistenceKindV3::Settings
+            RuntimePersistenceKindV4::Settings
         );
     }
 
     #[test]
     fn production_protocol_fixtures_match_encoder() {
         let fixture_dir =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/runtime-protocol-v3");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/runtime-protocol-v4");
         let windows = encode_fixture(
             fixture_for(RuntimePlatform::Windows),
-            RuntimeArchitectureV3::X86_64,
+            RuntimeArchitectureV4::X86_64,
         );
         update_or_assert(
             &fixture_dir.join("windows-standard.json"),
             json_with_newline(&windows),
-            include_str!("../fixtures/runtime-protocol-v3/windows-standard.json"),
+            include_str!("../fixtures/runtime-protocol-v4/windows-standard.json"),
         );
         update_or_assert(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../scripts/fixtures/runtime-snapshot.v3.json"),
+                .join("../scripts/fixtures/runtime-snapshot.v4.json"),
             json_with_newline(&windows),
-            include_str!("../../../scripts/fixtures/runtime-snapshot.v3.json"),
+            include_str!("../../../scripts/fixtures/runtime-snapshot.v4.json"),
         );
 
         let mut elevated = fixture_for(RuntimePlatform::Windows);
@@ -780,56 +861,56 @@ mod tests {
         elevated.admin_mode.source = RuntimePrivilegedSource::CurrentProcess;
         update_or_assert(
             &fixture_dir.join("windows-elevated.json"),
-            json_with_newline(&encode_fixture(elevated, RuntimeArchitectureV3::X86_64)),
-            include_str!("../fixtures/runtime-protocol-v3/windows-elevated.json"),
+            json_with_newline(&encode_fixture(elevated, RuntimeArchitectureV4::X86_64)),
+            include_str!("../fixtures/runtime-protocol-v4/windows-elevated.json"),
         );
         update_or_assert(
             &fixture_dir.join("linux-partial.json"),
             json_with_newline(&encode_fixture(
                 fixture_for(RuntimePlatform::Linux),
-                RuntimeArchitectureV3::Aarch64,
+                RuntimeArchitectureV4::Aarch64,
             )),
-            include_str!("../fixtures/runtime-protocol-v3/linux-partial.json"),
+            include_str!("../fixtures/runtime-protocol-v4/linux-partial.json"),
         );
         update_or_assert(
             &fixture_dir.join("macos-limited.json"),
             json_with_newline(&encode_fixture(
                 fixture_for(RuntimePlatform::Macos),
-                RuntimeArchitectureV3::Aarch64,
+                RuntimeArchitectureV4::Aarch64,
             )),
-            include_str!("../fixtures/runtime-protocol-v3/macos-limited.json"),
+            include_str!("../fixtures/runtime-protocol-v4/macos-limited.json"),
         );
         update_or_assert(
             &fixture_dir.join("browser-windows.json"),
             json_with_newline(&encode_fixture(
                 browser_fixture_for(RuntimePlatform::Windows, 46),
-                RuntimeArchitectureV3::X86_64,
+                RuntimeArchitectureV4::X86_64,
             )),
-            include_str!("../fixtures/runtime-protocol-v3/browser-windows.json"),
+            include_str!("../fixtures/runtime-protocol-v4/browser-windows.json"),
         );
         update_or_assert(
             &fixture_dir.join("browser-linux.json"),
             json_with_newline(&encode_fixture(
                 browser_fixture_for(RuntimePlatform::Linux, 46),
-                RuntimeArchitectureV3::Aarch64,
+                RuntimeArchitectureV4::Aarch64,
             )),
-            include_str!("../fixtures/runtime-protocol-v3/browser-linux.json"),
+            include_str!("../fixtures/runtime-protocol-v4/browser-linux.json"),
         );
         update_or_assert(
             &fixture_dir.join("browser-macos.json"),
             json_with_newline(&encode_fixture(
                 browser_fixture_for(RuntimePlatform::Macos, 46),
-                RuntimeArchitectureV3::Aarch64,
+                RuntimeArchitectureV4::Aarch64,
             )),
-            include_str!("../fixtures/runtime-protocol-v3/browser-macos.json"),
+            include_str!("../fixtures/runtime-protocol-v4/browser-macos.json"),
         );
         update_or_assert(
             &fixture_dir.join("browser-macos-dense.json"),
             json_with_newline(&encode_fixture(
                 browser_fixture_for(RuntimePlatform::Macos, 180),
-                RuntimeArchitectureV3::Aarch64,
+                RuntimeArchitectureV4::Aarch64,
             )),
-            include_str!("../fixtures/runtime-protocol-v3/browser-macos-dense.json"),
+            include_str!("../fixtures/runtime-protocol-v4/browser-macos-dense.json"),
         );
 
         let transitions = [
@@ -871,36 +952,36 @@ mod tests {
                     detail.process.quality.as_mut().expect("fixture quality").io = Some(value);
                 }
             }
-            encode_fixture(snapshot, RuntimeArchitectureV3::X86_64)
+            encode_fixture(snapshot, RuntimeArchitectureV4::X86_64)
         })
         .collect::<Vec<_>>();
         update_or_assert(
             &fixture_dir.join("quality-transitions.json"),
             json_with_newline(&transitions),
-            include_str!("../fixtures/runtime-protocol-v3/quality-transitions.json"),
+            include_str!("../fixtures/runtime-protocol-v4/quality-transitions.json"),
         );
     }
 
     #[test]
     fn incompatible_fixture_is_explicit() {
         let incompatible = serde_json::json!({
-            "protocol_version": 4,
-            "compatibility": { "minimum_reader_version": 4, "breaking": true },
+            "protocol_version": 5,
+            "compatibility": { "minimum_reader_version": 5, "breaking": true },
             "event": {
                 "kind": "protocol_mismatch",
                 "payload": {
                     "reason": "reader_too_old",
-                    "writer_version": 4,
-                    "minimum_reader_version": 4,
+                    "writer_version": 5,
+                    "minimum_reader_version": 5,
                     "message": "This fixture requires a newer BatCave reader."
                 }
             }
         });
         update_or_assert(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/fixtures/runtime-protocol-v3/incompatible.json"),
+                .join("src/fixtures/runtime-protocol-v4/incompatible.json"),
             json_with_newline(&incompatible),
-            include_str!("../fixtures/runtime-protocol-v3/incompatible.json"),
+            include_str!("../fixtures/runtime-protocol-v4/incompatible.json"),
         );
     }
 
@@ -959,8 +1040,8 @@ mod tests {
             .workloads
             .iter_mut()
             .find_map(|workload| match workload {
-                WorkloadDetailV3::Group(group) => Some(group),
-                WorkloadDetailV3::Process(_) => None,
+                WorkloadDetailV4::Group(group) => Some(group),
+                WorkloadDetailV4::Process(_) => None,
             })
             .expect("group fixture");
         group.member_ids[0] = "process:missing".to_string();
@@ -983,7 +1064,7 @@ mod tests {
             .iter_mut()
             .find(|descriptor| descriptor.semantic == MetricSemantic::NetworkReceiveTotal)
             .expect("network descriptor");
-        descriptor.network_scope = Some(NetworkScopeV3::IpSocketPayload);
+        descriptor.network_scope = Some(NetworkScopeV4::IpSocketPayload);
         assert_eq!(
             validate_envelope(&wrong_network_scope),
             Err("protocol_semantic_network_scope_invalid".to_string())
@@ -993,7 +1074,7 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut fatal_without_error.event else {
             unreachable!()
         };
-        payload.health.engine_state = Some(RuntimeEngineStateV3::Fatal);
+        payload.health.engine_state = Some(RuntimeEngineStateV4::Fatal);
         assert_eq!(
             validate_envelope(&fatal_without_error),
             Err("protocol_fatal_state_without_error".to_string())
@@ -1003,8 +1084,8 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_fatal.event else {
             unreachable!()
         };
-        payload.health.engine_state = Some(RuntimeEngineStateV3::Fatal);
-        payload.health.fatal_error = Some(RuntimeFatalErrorV3 {
+        payload.health.engine_state = Some(RuntimeEngineStateV4::Fatal);
+        payload.health.fatal_error = Some(RuntimeFatalErrorV4 {
             code: "runtime_failed".to_string(),
             message: "The runtime failed.".to_string(),
             occurred_at_ms: payload.published_at_ms,
@@ -1018,8 +1099,8 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_limited.event else {
             unreachable!()
         };
-        payload.health.engine_state = Some(RuntimeEngineStateV3::Running);
-        payload.health.collector_state = Some(RuntimeCollectorStateV3::Limited);
+        payload.health.engine_state = Some(RuntimeEngineStateV4::Running);
+        payload.health.collector_state = Some(RuntimeCollectorStateV4::Limited);
         assert_eq!(
             validate_envelope(&nondegraded_limited),
             Err("protocol_health_degraded_state_invalid".to_string())
@@ -1028,14 +1109,17 @@ mod tests {
             unreachable!()
         };
         payload.health.degraded = true;
+        payload.health.reason_codes = vec![crate::contracts::RuntimeHealthReason::CollectorLimited];
+        payload.health.last_heartbeat_at_ms = Some(payload.health.evaluated_at_ms);
+        payload.health.heartbeat_age_ms = Some(0);
         assert_eq!(validate_envelope(&nondegraded_limited), Ok(()));
 
         let mut nondegraded_unavailable = envelope.clone();
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut nondegraded_unavailable.event else {
             unreachable!()
         };
-        payload.health.engine_state = Some(RuntimeEngineStateV3::Running);
-        payload.health.collector_state = Some(RuntimeCollectorStateV3::Unavailable);
+        payload.health.engine_state = Some(RuntimeEngineStateV4::Running);
+        payload.health.collector_state = Some(RuntimeCollectorStateV4::Unavailable);
         assert_eq!(
             validate_envelope(&nondegraded_unavailable),
             Err("protocol_health_degraded_state_invalid".to_string())
@@ -1045,8 +1129,8 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut healthy_without_persistence.event else {
             unreachable!()
         };
-        payload.persistence = Some(RuntimePersistenceV3 {
-            state: RuntimePersistenceStateV3::Healthy,
+        payload.persistence = Some(RuntimePersistenceV4 {
+            state: RuntimePersistenceStateV4::Healthy,
             roots: Vec::new(),
             components: Vec::new(),
             suppressed_diagnostic_events: 0,
@@ -1060,8 +1144,8 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut standard_local_process.event else {
             unreachable!()
         };
-        payload.privileged_collection.state = PrivilegedCollectionStateV3::Active;
-        payload.privileged_collection.source = PrivilegedCollectionSourceV3::LocalProcess;
+        payload.privileged_collection.state = PrivilegedCollectionStateV4::Active;
+        payload.privileged_collection.source = PrivilegedCollectionSourceV4::LocalProcess;
         assert_eq!(
             validate_envelope(&standard_local_process),
             Err("protocol_local_process_elevation_invalid".to_string())
@@ -1071,10 +1155,10 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut service_without_identity.event else {
             unreachable!()
         };
-        payload.privileged_collection.state = PrivilegedCollectionStateV3::Active;
-        payload.privileged_collection.source = PrivilegedCollectionSourceV3::CollectorService;
-        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV3 {
-            state: CollectorServiceStateV3::Active,
+        payload.privileged_collection.state = PrivilegedCollectionStateV4::Active;
+        payload.privileged_collection.source = PrivilegedCollectionSourceV4::CollectorService;
+        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV4 {
+            state: CollectorServiceStateV4::Active,
             release_identity: None,
             service_version: None,
             negotiated_protocol_version: None,
@@ -1101,7 +1185,7 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut non_windows_fallback.event else {
             unreachable!()
         };
-        payload.environment.platform = RuntimePlatformV3::Linux;
+        payload.environment.platform = RuntimePlatformV4::Linux;
         assert_eq!(
             validate_envelope(&non_windows_fallback),
             Err("protocol_standard_fallback_etw_authority_invalid".to_string())
@@ -1111,7 +1195,7 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut elevated_fallback.event else {
             unreachable!()
         };
-        payload.environment.process_elevation = RuntimeProcessElevationV3::Elevated;
+        payload.environment.process_elevation = RuntimeProcessElevationV4::Elevated;
         assert_eq!(
             validate_envelope(&elevated_fallback),
             Err("protocol_standard_fallback_etw_authority_invalid".to_string())
@@ -1122,8 +1206,8 @@ mod tests {
         else {
             unreachable!()
         };
-        payload.privileged_collection.state = PrivilegedCollectionStateV3::Active;
-        payload.privileged_collection.source = PrivilegedCollectionSourceV3::LocalProcess;
+        payload.privileged_collection.state = PrivilegedCollectionStateV4::Active;
+        payload.privileged_collection.source = PrivilegedCollectionSourceV4::LocalProcess;
         assert_eq!(
             validate_envelope(&elevated_local_process_fallback),
             Err("protocol_standard_fallback_etw_authority_invalid".to_string())
@@ -1133,7 +1217,7 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut unknown_elevation_fallback.event else {
             unreachable!()
         };
-        payload.environment.process_elevation = RuntimeProcessElevationV3::Unknown;
+        payload.environment.process_elevation = RuntimeProcessElevationV4::Unknown;
         assert_eq!(
             validate_envelope(&unknown_elevation_fallback),
             Err("protocol_standard_fallback_etw_authority_invalid".to_string())
@@ -1143,10 +1227,10 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut matching_service.event else {
             unreachable!()
         };
-        payload.privileged_collection.state = PrivilegedCollectionStateV3::Active;
-        payload.privileged_collection.source = PrivilegedCollectionSourceV3::CollectorService;
-        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV3 {
-            state: CollectorServiceStateV3::Active,
+        payload.privileged_collection.state = PrivilegedCollectionStateV4::Active;
+        payload.privileged_collection.source = PrivilegedCollectionSourceV4::CollectorService;
+        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV4 {
+            state: CollectorServiceStateV4::Active,
             release_identity: Some(payload.environment.release_identity.clone()),
             service_version: Some("1.0.0".to_string()),
             negotiated_protocol_version: Some(super::RUNTIME_PROTOCOL_VERSION),
@@ -1175,9 +1259,9 @@ mod tests {
         else {
             unreachable!()
         };
-        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV3 {
-            state: CollectorServiceStateV3::Incompatible,
-            release_identity: Some(RuntimeReleaseIdentityV3 {
+        payload.privileged_collection.collector_service = Some(CollectorServiceStatusV4 {
+            state: CollectorServiceStateV4::Incompatible,
+            release_identity: Some(RuntimeReleaseIdentityV4 {
                 app_version: "1.0.0".to_string(),
                 source_commit_sha: None,
             }),
@@ -1288,8 +1372,8 @@ mod tests {
             .workloads
             .iter_mut()
             .find_map(|workload| match workload {
-                WorkloadDetailV3::Process(process) => Some(process),
-                WorkloadDetailV3::Group(_) => None,
+                WorkloadDetailV4::Process(process) => Some(process),
+                WorkloadDetailV4::Group(_) => None,
             })
             .expect("process fixture");
         process.stable_id = format!("process:{}:1", process.pid);
@@ -1320,7 +1404,7 @@ mod tests {
         assert_eq!(descriptor.interval_ms, Some(250));
         assert_eq!(
             descriptor.network_scope,
-            Some(NetworkScopeV3::IpSocketPayload)
+            Some(NetworkScopeV4::IpSocketPayload)
         );
     }
 
@@ -1344,7 +1428,7 @@ mod tests {
         assert_eq!(observation.1, None);
         assert_eq!(
             QUALITY_CODES[usize::from(observation.2)],
-            MetricQualityV3::Unavailable
+            MetricQualityV4::Unavailable
         );
         assert_eq!(observation.3, None);
         assert_eq!(
@@ -1374,8 +1458,8 @@ mod tests {
             .workloads
             .iter()
             .find_map(|workload| match workload {
-                WorkloadDetailV3::Process(process) => Some(process),
-                WorkloadDetailV3::Group(_) => None,
+                WorkloadDetailV4::Process(process) => Some(process),
+                WorkloadDetailV4::Group(_) => None,
             })
             .expect("process fixture");
         for semantic in [MetricSemantic::ReadIoTotal, MetricSemantic::WriteIoTotal] {
@@ -1428,7 +1512,7 @@ mod tests {
         let cpu = full
             .contributors
             .iter()
-            .find(|contributor| matches!(contributor.metric, ContributorMetricV3::Cpu))
+            .find(|contributor| matches!(contributor.metric, ContributorMetricV4::Cpu))
             .expect("CPU contributor");
         assert_eq!(
             cpu.process_id.as_deref(),
@@ -1436,7 +1520,7 @@ mod tests {
         );
         assert!(cpu.name_ambiguous);
 
-        let normalized = |payload: &RuntimeSnapshotPayloadV3| {
+        let normalized = |payload: &RuntimeSnapshotPayloadV4| {
             payload
                 .contributors
                 .iter()
@@ -1474,7 +1558,7 @@ mod tests {
         let cpu = payload
             .contributors
             .iter()
-            .find(|contributor| matches!(contributor.metric, ContributorMetricV3::Cpu))
+            .find(|contributor| matches!(contributor.metric, ContributorMetricV4::Cpu))
             .expect("CPU contributor");
         assert_eq!(
             cpu.process_id.as_deref(),
@@ -1501,7 +1585,7 @@ mod tests {
         let cpu = payload
             .contributors
             .iter()
-            .find(|contributor| matches!(contributor.metric, ContributorMetricV3::Cpu))
+            .find(|contributor| matches!(contributor.metric, ContributorMetricV4::Cpu))
             .expect("CPU contributor");
         assert_eq!(cpu.process_id, None);
         assert_eq!(cpu.available_contributors, 1);
@@ -1518,11 +1602,11 @@ mod tests {
         let network = payload
             .contributors
             .iter()
-            .find(|contributor| contributor.metric == ContributorMetricV3::Network)
+            .find(|contributor| contributor.metric == ContributorMetricV4::Network)
             .expect("network contributor");
         assert_eq!(
             payload.quality_codes[usize::from(network.quality_code)],
-            MetricQualityV3::Held
+            MetricQualityV4::Held
         );
         assert_eq!(
             network
@@ -1554,13 +1638,13 @@ mod tests {
         let cpu_contributor = payload
             .contributors
             .iter()
-            .find(|contributor| contributor.metric == ContributorMetricV3::Cpu)
+            .find(|contributor| contributor.metric == ContributorMetricV4::Cpu)
             .expect("CPU contributor");
-        assert_eq!(cpu_contributor.source, MetricSourceV3::Unknown);
+        assert_eq!(cpu_contributor.source, MetricSourceV4::Unknown);
         assert_eq!(cpu_contributor.process_id, None);
         assert_eq!(
             payload.quality_codes[usize::from(cpu_contributor.quality_code)],
-            MetricQualityV3::Unavailable
+            MetricQualityV4::Unavailable
         );
         assert_eq!(
             cpu_contributor
@@ -1571,11 +1655,11 @@ mod tests {
         let system_cpu = &payload.system.metrics[0];
         assert_eq!(
             payload.descriptors[usize::from(system_cpu.0)].source,
-            MetricSourceV3::Unknown
+            MetricSourceV4::Unknown
         );
         assert_eq!(
             payload.quality_codes[usize::from(system_cpu.2)],
-            MetricQualityV3::Unavailable
+            MetricQualityV4::Unavailable
         );
         assert_eq!(
             system_cpu
@@ -1607,7 +1691,7 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut duplicate.event else {
             unreachable!()
         };
-        payload.contributors[1].metric = ContributorMetricV3::Cpu;
+        payload.contributors[1].metric = ContributorMetricV4::Cpu;
         assert_eq!(
             validate_envelope(&duplicate),
             Err("protocol_duplicate_contributor_metric".to_string())
@@ -1723,8 +1807,8 @@ mod tests {
             .workloads
             .iter_mut()
             .find_map(|workload| match workload {
-                WorkloadDetailV3::Group(group) => Some(group),
-                WorkloadDetailV3::Process(_) => None,
+                WorkloadDetailV4::Group(group) => Some(group),
+                WorkloadDetailV4::Process(_) => None,
             })
             .expect("group fixture");
         group.coverage[0].available_contributors = 1;
@@ -1744,7 +1828,7 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut oversized_theme.event else {
             unreachable!()
         };
-        payload.settings.ui_preferences = Some(RuntimeUiPreferencesV3 {
+        payload.settings.ui_preferences = Some(RuntimeUiPreferencesV4 {
             theme: "x".repeat(65),
             history_point_limit: 72,
         });
@@ -1821,8 +1905,8 @@ mod tests {
             .workloads
             .iter_mut()
             .find_map(|workload| match workload {
-                WorkloadDetailV3::Process(process) => Some(process),
-                WorkloadDetailV3::Group(_) => None,
+                WorkloadDetailV4::Process(process) => Some(process),
+                WorkloadDetailV4::Group(_) => None,
             })
             .expect("process fixture");
         process.start_time_ms = Some(9_007_199_254_740_992);
@@ -1836,18 +1920,18 @@ mod tests {
         let ProtocolEvent::RuntimeSnapshot(payload) = &mut orphan_component.event else {
             unreachable!()
         };
-        payload.persistence = Some(RuntimePersistenceV3 {
-            state: RuntimePersistenceStateV3::Healthy,
-            roots: vec![RuntimePersistenceRootV3 {
-                owner: RuntimePersistenceOwnerV3::CurrentUser,
+        payload.persistence = Some(RuntimePersistenceV4 {
+            state: RuntimePersistenceStateV4::Healthy,
+            roots: vec![RuntimePersistenceRootV4 {
+                owner: RuntimePersistenceOwnerV4::CurrentUser,
                 directory: Some("/tmp/batcave".to_string()),
-                permission_state: RuntimePersistencePermissionStateV3::Verified,
+                permission_state: RuntimePersistencePermissionStateV4::Verified,
             }],
-            components: vec![RuntimePersistenceComponentV3 {
-                owner: RuntimePersistenceOwnerV3::CollectorService,
-                kind: RuntimePersistenceKindV3::Settings,
-                state: RuntimePersistenceStateV3::Healthy,
-                durability: RuntimePersistenceDurabilityV3::Durable,
+            components: vec![RuntimePersistenceComponentV4 {
+                owner: RuntimePersistenceOwnerV4::CollectorService,
+                kind: RuntimePersistenceKindV4::Settings,
+                state: RuntimePersistenceStateV4::Healthy,
+                durability: RuntimePersistenceDurabilityV4::Durable,
                 last_success_at_ms: None,
                 active_failure: None,
             }],

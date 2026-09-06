@@ -41,10 +41,12 @@
             <MiniChart values={resource.values} max={resource.max} stroke={resource.stroke} fill={resource.fill} />
           </span>
         </span>
-        <span class="resource-supporting">
-          <span>{resource.supportingLabel}</span>
-          <b>{resource.supportingValue}</b>
-        </span>
+        {#each resource.supportingMetrics as metric (metric.label)}
+          <span class="resource-supporting">
+            <span>{metric.label}</span>
+            <b>{metric.value}</b>
+          </span>
+        {/each}
       </button>
     {/each}
   </div>

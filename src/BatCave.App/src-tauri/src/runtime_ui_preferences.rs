@@ -1,7 +1,7 @@
 use crate::contracts::RuntimeUiPreferences;
-use crate::protocol::RuntimeUiPreferencesV3;
+use crate::protocol::RuntimeUiPreferencesV4;
 
-pub(crate) fn parse(preferences: RuntimeUiPreferencesV3) -> Result<RuntimeUiPreferences, String> {
+pub(crate) fn parse(preferences: RuntimeUiPreferencesV4) -> Result<RuntimeUiPreferences, String> {
     if !is_valid_theme_preference(&preferences.theme) {
         return Err("runtime_ui_theme_invalid".to_string());
     }
@@ -44,7 +44,7 @@ mod tests {
         for family in ["cave", "aurora", "ember", "canopy"] {
             for mode in ["system", "light", "dark"] {
                 let theme = format!("{family}:{mode}");
-                let parsed = parse(RuntimeUiPreferencesV3 {
+                let parsed = parse(RuntimeUiPreferencesV4 {
                     theme: theme.clone(),
                     history_point_limit: 180,
                 })
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn accepts_legacy_themes_without_normalizing_before_a_durable_write() {
         for theme in ["system", "cave", "aurora", "ember", "daylight"] {
-            let parsed = parse(RuntimeUiPreferencesV3 {
+            let parsed = parse(RuntimeUiPreferencesV4 {
                 theme: theme.to_string(),
                 history_point_limit: 72,
             })
@@ -80,7 +80,7 @@ mod tests {
             "cave:",
         ] {
             assert_eq!(
-                parse(RuntimeUiPreferencesV3 {
+                parse(RuntimeUiPreferencesV4 {
                     theme: theme.to_string(),
                     history_point_limit: 180,
                 }),
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn rejects_invalid_history_point_limits() {
         assert_eq!(
-            parse(RuntimeUiPreferencesV3 {
+            parse(RuntimeUiPreferencesV4 {
                 theme: "canopy:system".to_string(),
                 history_point_limit: 10_000,
             }),

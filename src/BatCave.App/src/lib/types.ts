@@ -1,7 +1,7 @@
 import type {
-  CollectorServiceStateV3,
-  CollectorServiceStatusV3,
-} from "./generated/runtime-protocol-v3.ts";
+  CollectorServiceStateV4,
+  CollectorServiceStatusV4,
+} from "./generated/runtime-protocol-v4.ts";
 
 export interface RuntimeSnapshot {
   event_kind: "runtime_snapshot";
@@ -20,6 +20,7 @@ export interface RuntimeSnapshot {
   process_contributors: ProcessContributorSummary;
   processes: ProcessSample[];
   process_view_rows: ProcessViewRow[];
+  overview_rows: ProcessViewRow[];
   total_process_count: number;
   warnings: RuntimeWarning[];
 }
@@ -92,8 +93,8 @@ export interface RuntimeAdminModeStatus {
   collector_service: RuntimeCollectorServiceStatus | null;
 }
 
-export type RuntimeCollectorServiceState = CollectorServiceStateV3;
-export type RuntimeCollectorServiceStatus = CollectorServiceStatusV3;
+export type RuntimeCollectorServiceState = CollectorServiceStateV4;
+export type RuntimeCollectorServiceStatus = CollectorServiceStatusV4;
 
 export type RuntimePrivilegedSource = "none" | "current_process" | "collector_service";
 
@@ -141,7 +142,24 @@ export interface MetricQualityInfo {
   message?: string;
 }
 
+export type RuntimeFreshness = "starting" | "live" | "paused" | "stale";
+export type RuntimeHealthReason =
+  | "collector_unavailable"
+  | "collector_limited"
+  | "collector_warning"
+  | "persistence_unavailable"
+  | "persistence_degraded"
+  | "cadence_missed"
+  | "runtime_cpu_budget"
+  | "runtime_memory_budget"
+  | "engine_fatal"
+  | "heartbeat_stale"
+  | "publication_stale"
+  | "sample_stale";
+
 export interface RuntimeHealth {
+  freshness: RuntimeFreshness;
+  reason_codes: RuntimeHealthReason[];
   engine_state: "starting" | "running" | "paused" | "fatal" | null;
   collector_state: "healthy" | "limited" | "unavailable" | null;
   degraded: boolean;

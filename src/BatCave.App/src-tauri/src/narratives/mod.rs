@@ -29,7 +29,6 @@ const MAX_DISPLAY_NAME_CHARS: usize = 120;
 const MAX_CATEGORY_CHARS: usize = 80;
 const MAX_FACT_PACKET_BYTES: usize = 4 * 1024;
 const MAX_SUBJECT_ID_CHARS: usize = 256;
-const MAX_RESULT_CHARS: usize = 180;
 const MAX_CACHE_ENTRIES: usize = 32;
 const MIN_GENERATION_INTERVAL: Duration = Duration::from_secs(12);
 
@@ -74,6 +73,7 @@ pub(crate) struct NarrativeProviderRequest {
     pub surface: NarrativeSurface,
     pub publication_seq: u64,
     pub fact_digest: String,
+    pub candidate_ids: Vec<NarrativeExplanationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +82,30 @@ pub(crate) struct NarrativeResult {
     pub provider: NarrativeProvider,
     pub publication_seq: u64,
     pub fact_digest: String,
-    pub text: String,
+    pub surface: NarrativeSurface,
+    pub subject_stable_id: Option<String>,
+    pub explanation_id: NarrativeExplanationId,
+}
+
+/// The model may select a measured resource; it cannot author a claim or its wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NarrativeExplanationId {
+    CpuUsage,
+    MemoryUsage,
+    DiskActivity,
+    NetworkActivity,
+}
+
+impl NarrativeExplanationId {
+    fn for_resource(resource: NarrativeResourceKind) -> Self {
+        match resource {
+            NarrativeResourceKind::Cpu => Self::CpuUsage,
+            NarrativeResourceKind::Memory => Self::MemoryUsage,
+            NarrativeResourceKind::Io => Self::DiskActivity,
+            NarrativeResourceKind::Network => Self::NetworkActivity,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -446,6 +469,13 @@ impl NarrativeState {
             .value
     }
 
+    pub(crate) fn preferences_path(&self) -> Option<&Path> {
+        self.coordinator
+            .preference_store
+            .as_ref()
+            .map(|store| store.path.as_path())
+    }
+
     pub(crate) fn set_enhanced_narratives(
         &self,
         enabled: bool,
@@ -519,6 +549,14 @@ impl NarrativeState {
             return Ok(unavailable(NarrativeAvailability::Unsupported));
         }
 
+        let mut candidate_ids = admitted_candidates(&facts);
+        if request.surface == NarrativeSurface::OverviewContributor {
+            candidate_ids.retain(|id| {
+                facts
+                    .leading_resource
+                    .is_some_and(|resource| *id == NarrativeExplanationId::for_resource(resource))
+            });
+        }
         let provider = self.coordinator.provider.provider();
         let subject = SubjectKey::from(&request);
         let cache_key = CacheKey {
@@ -547,10 +585,23 @@ impl NarrativeState {
                 subject.clone(),
                 (request.publication_seq, request.fact_digest.clone()),
             );
+            // Publish invalidation even when no choices remain, so older work cannot win.
+            if candidate_ids.len() < 2 {
+                if let Some(active) = &state.active {
+                    active.cancelled.store(true, Ordering::SeqCst);
+                }
+                return Ok(NarrativeGenerationResponse {
+                    availability: NarrativeAvailability::Available,
+                    result: None,
+                });
+            }
             if let Some(cached) = state.cache.get(&cache_key) {
                 return Ok(NarrativeGenerationResponse {
                     availability: NarrativeAvailability::Available,
-                    result: Some(cached.clone()),
+                    result: Some(NarrativeResult {
+                        publication_seq: request.publication_seq,
+                        ..cached.clone()
+                    }),
                 });
             }
             if let Some(active) = &state.active {
@@ -586,6 +637,7 @@ impl NarrativeState {
             surface: request.surface,
             publication_seq: request.publication_seq,
             fact_digest: request.fact_digest.clone(),
+            candidate_ids,
         };
         let generated = self
             .coordinator
@@ -612,18 +664,21 @@ impl NarrativeState {
         {
             return Err("narrative_result_stale".to_string());
         }
-        let text = match generated {
-            ProviderGeneration::Completed(text) => text,
+        let selected = match generated {
+            ProviderGeneration::Completed(selected) => selected,
             ProviderGeneration::Unavailable(availability) => {
                 return Ok(unavailable(availability));
             }
         };
-        validate_generated_text(&text, &facts)?;
+        let explanation_id =
+            validate_selected_explanation(&selected, &provider_request.candidate_ids)?;
         let result = NarrativeResult {
             provider,
             publication_seq: request.publication_seq,
             fact_digest,
-            text: text.trim().to_string(),
+            surface: request.surface,
+            subject_stable_id: request.subject_stable_id,
+            explanation_id,
         };
         if state.cache.len() >= MAX_CACHE_ENTRIES {
             state.cache.clear();
@@ -784,6 +839,15 @@ fn validate_fact_packet(facts: &NarrativeFactPacket) -> Result<(), String> {
         if !metric.rounded_value.is_finite()
             || metric.rounded_value < 0.0
             || metric.rounded_value > 1_000_000_000.0
+            || metric.unit
+                != match metric.kind {
+                    NarrativeResourceKind::Cpu => NarrativeMetricUnit::Percent,
+                    NarrativeResourceKind::Memory => NarrativeMetricUnit::Megabytes,
+                    NarrativeResourceKind::Io | NarrativeResourceKind::Network => {
+                        NarrativeMetricUnit::KilobytesPerSecond
+                    }
+                }
+            || !is_rounded_metric(metric)
             || !metric_kinds.insert(metric.kind)
         {
             return Err("narrative_metric_invalid".to_string());
@@ -797,7 +861,25 @@ fn validate_fact_packet(facts: &NarrativeFactPacket) -> Result<(), String> {
     {
         return Err("narrative_limitation_invalid".to_string());
     }
+    if facts
+        .leading_resource
+        .is_some_and(|kind| !metric_kinds.contains(&kind))
+        || limitation_kinds
+            .iter()
+            .any(|kind| !metric_kinds.contains(kind))
+    {
+        return Err("narrative_metric_missing".to_string());
+    }
     Ok(())
+}
+
+fn is_rounded_metric(metric: &NarrativeMetricFact) -> bool {
+    let scale = if metric.kind == NarrativeResourceKind::Cpu {
+        10.0
+    } else {
+        1.0
+    };
+    metric.rounded_value == (metric.rounded_value * scale).round() / scale
 }
 
 fn validate_plain_label(value: &str, max_chars: usize, code: &str) -> Result<(), String> {
@@ -812,209 +894,49 @@ fn validate_plain_label(value: &str, max_chars: usize, code: &str) -> Result<(),
     Ok(())
 }
 
-fn validate_generated_text(text: &str, facts: &NarrativeFactPacket) -> Result<(), String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty()
-        || trimmed != text
-        || trimmed.chars().count() > MAX_RESULT_CHARS
-        || trimmed.chars().any(char::is_control)
-    {
-        return Err("narrative_result_invalid".to_string());
-    }
-    if sentence_boundary_count(trimmed) > 1 {
-        return Err("narrative_result_not_one_sentence".to_string());
-    }
-    let without_exact_identity = trimmed.replace(&facts.display_name, "");
-    if !numeric_tokens(&without_exact_identity).is_empty() {
-        return Err("narrative_result_new_numeric_claim".to_string());
-    }
-    if !has_required_grounding(trimmed, facts) {
-        return Err("narrative_result_ungrounded".to_string());
-    }
-    Ok(())
-}
-
-fn sentence_boundary_count(value: &str) -> usize {
-    let characters = value.char_indices().collect::<Vec<_>>();
-    characters
-        .iter()
-        .enumerate()
-        .filter(|(index, (_, character))| {
-            if !matches!(character, '.' | '!' | '?') {
-                return false;
-            }
-            let previous_is_digit = index
-                .checked_sub(1)
-                .and_then(|previous| characters.get(previous))
-                .is_some_and(|(_, previous)| previous.is_ascii_digit());
-            let next_is_digit = characters
-                .get(index + 1)
-                .is_some_and(|(_, next)| next.is_ascii_digit());
-            if *character == '.' && previous_is_digit && next_is_digit {
-                return false;
-            }
-            characters
-                .get(index + 1)
-                .is_none_or(|(_, next)| next.is_whitespace())
-        })
-        .count()
-}
-
-fn has_required_grounding(text: &str, facts: &NarrativeFactPacket) -> bool {
-    const GENERIC_NAME_TOKENS: &[&str] = &[
-        "app",
-        "application",
-        "gpu",
-        "helper",
-        "process",
-        "renderer",
-        "service",
-        "utility",
-        "worker",
-    ];
-    if !text.contains(&facts.display_name) {
-        return false;
-    }
-    let text_tokens = normalized_words(text).into_iter().collect::<HashSet<_>>();
-    let has_name = normalized_words(&facts.display_name)
-        .into_iter()
-        .any(|token| {
-            token.chars().count() >= 3
-                && !token.chars().all(|character| character.is_ascii_digit())
-                && !GENERIC_NAME_TOKENS.contains(&token.as_str())
-                && text_tokens.contains(&token)
-        });
-    if !has_name {
-        return false;
-    }
-
-    let aliases: &[&str] = match facts.leading_resource {
-        Some(NarrativeResourceKind::Cpu) => &["cpu", "processor"],
-        Some(NarrativeResourceKind::Memory) => &["memory", "ram"],
-        Some(NarrativeResourceKind::Io) => &["disk", "storage", "io"],
-        Some(NarrativeResourceKind::Network) => &["network"],
-        None => &[],
-    };
-    if !aliases.is_empty() && !aliases.iter().any(|alias| text_tokens.contains(*alias)) {
-        return false;
-    }
-
-    let mut allowed = [
-        "a",
-        "active",
-        "activity",
-        "an",
-        "and",
-        "appears",
-        "as",
-        "at",
-        "attention",
-        "category",
-        "contributor",
-        "contributes",
-        "contributing",
-        "current",
-        "currently",
-        "dominant",
-        "driver",
-        "driving",
-        "elevated",
-        "for",
-        "from",
-        "has",
-        "heavy",
-        "highest",
-        "in",
-        "is",
-        "its",
-        "largest",
-        "leader",
-        "leading",
-        "load",
-        "main",
-        "monitoring",
-        "more",
-        "most",
-        "normal",
-        "notable",
-        "now",
-        "of",
-        "on",
-        "other",
-        "pressure",
-        "primary",
-        "remains",
-        "resource",
-        "resources",
-        "right",
-        "showing",
-        "shows",
-        "source",
-        "steady",
-        "surface",
-        "than",
-        "the",
-        "this",
-        "to",
-        "top",
-        "usage",
-        "use",
-        "uses",
-        "using",
-        "with",
-        "workload",
-        "cpu",
-        "processor",
-        "memory",
-        "ram",
-        "disk",
-        "storage",
-        "io",
-        "network",
-        "estimated",
-        "limited",
-        "stale",
-        "unavailable",
+/// Eligibility comes only from the validated measured value and its quality. A rank or
+/// display name can never manufacture a pressure, severity, causal, or advice claim.
+fn admitted_candidates(facts: &NarrativeFactPacket) -> Vec<NarrativeExplanationId> {
+    [
+        NarrativeResourceKind::Cpu,
+        NarrativeResourceKind::Memory,
+        NarrativeResourceKind::Io,
+        NarrativeResourceKind::Network,
     ]
     .into_iter()
-    .map(str::to_string)
-    .collect::<HashSet<_>>();
-    allowed.extend(normalized_words(&facts.display_name));
-    allowed.extend(normalized_words(&facts.category));
-    text_tokens.is_subset(&allowed)
+    .filter(|kind| {
+        facts
+            .metrics
+            .iter()
+            .any(|metric| metric.kind == *kind && metric.rounded_value > 0.0)
+            && !facts.measurement_limitations.iter().any(|limitation| {
+                limitation.kind == *kind
+                    && matches!(
+                        limitation.quality,
+                        NarrativeMeasurementQuality::Stale
+                            | NarrativeMeasurementQuality::Unavailable
+                    )
+            })
+    })
+    .map(NarrativeExplanationId::for_resource)
+    .collect()
 }
 
-fn normalized_words(value: &str) -> Vec<String> {
-    value
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
-fn numeric_tokens(value: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    for character in value.chars() {
-        if character.is_ascii_digit() || (character == '.' && !current.is_empty()) {
-            current.push(character);
-        } else if !current.is_empty() {
-            if current.ends_with('.') {
-                current.pop();
-            }
-            if !current.is_empty() {
-                tokens.push(current.clone());
-            }
-            current.clear();
-        }
+fn validate_selected_explanation(
+    selected: &str,
+    candidates: &[NarrativeExplanationId],
+) -> Result<NarrativeExplanationId, String> {
+    let id = match selected.trim() {
+        "cpu_usage" => NarrativeExplanationId::CpuUsage,
+        "memory_usage" => NarrativeExplanationId::MemoryUsage,
+        "disk_activity" => NarrativeExplanationId::DiskActivity,
+        "network_activity" => NarrativeExplanationId::NetworkActivity,
+        _ => return Err("narrative_selection_invalid".to_string()),
+    };
+    if !candidates.contains(&id) {
+        return Err("narrative_selection_not_offered".to_string());
     }
-    if current.ends_with('.') {
-        current.pop();
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -1077,11 +999,18 @@ mod tests {
         NarrativeFactPacket {
             display_name: "Safari".to_string(),
             category: "Web browsing".to_string(),
-            metrics: vec![NarrativeMetricFact {
-                kind: NarrativeResourceKind::Cpu,
-                rounded_value: 5.0,
-                unit: NarrativeMetricUnit::Percent,
-            }],
+            metrics: vec![
+                NarrativeMetricFact {
+                    kind: NarrativeResourceKind::Cpu,
+                    rounded_value: 5.0,
+                    unit: NarrativeMetricUnit::Percent,
+                },
+                NarrativeMetricFact {
+                    kind: NarrativeResourceKind::Memory,
+                    rounded_value: 522.0,
+                    unit: NarrativeMetricUnit::Megabytes,
+                },
+            ],
             leading_resource: Some(NarrativeResourceKind::Cpu),
             ranking_state: NarrativeRankingState::TopContributor,
             measurement_limitations: Vec::new(),
@@ -1090,7 +1019,7 @@ mod tests {
 
     fn request(facts: &NarrativeFactPacket, publication_seq: u64) -> NarrativeRequest {
         NarrativeRequest {
-            surface: NarrativeSurface::OverviewContributor,
+            surface: NarrativeSurface::WorkloadInsight,
             publication_seq,
             subject_stable_id: Some("workload:test".to_string()),
             fact_digest: canonical_fact_digest(facts).expect("digest"),
@@ -1207,7 +1136,7 @@ mod tests {
     fn generation_validates_digest_caches_and_rate_limits_provider_calls() {
         let directory = tempfile::tempdir().expect("tempdir");
         let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
-            "Safari is the main source of current CPU activity.".to_string(),
+            "cpu_usage".to_string(),
         )));
         let state = state(provider.clone(), directory.path());
         let facts = facts();
@@ -1238,7 +1167,7 @@ mod tests {
     fn stale_publications_and_digest_mismatches_are_rejected() {
         let directory = tempfile::tempdir().expect("tempdir");
         let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
-            "Safari is the main CPU contributor.".to_string(),
+            "cpu_usage".to_string(),
         )));
         let state = state(provider, directory.path());
         let facts = facts();
@@ -1296,65 +1225,185 @@ mod tests {
     }
 
     #[test]
-    fn generated_copy_is_one_short_sentence_without_metric_numbers() {
-        let facts = facts();
-        assert!(
-            validate_generated_text("Safari is the main source of CPU activity.", &facts).is_ok()
-        );
+    fn low_cpu_never_admits_heavy_pressure_from_vocabulary_overlap() {
+        let mut facts = facts();
+        facts.metrics[0].rounded_value = 0.1;
+        let candidates = admitted_candidates(&facts);
         assert_eq!(
-            validate_generated_text("Safari uses 5% CPU.", &facts),
-            Err("narrative_result_new_numeric_claim".to_string())
+            candidates,
+            vec![
+                NarrativeExplanationId::CpuUsage,
+                NarrativeExplanationId::MemoryUsage
+            ]
         );
+        for invented in [
+            "Safari is showing heavy CPU pressure right now.",
+            "cpu_heavy_pressure",
+            "cpu_usage. Restart Safari.",
+            "{\"explanation_id\":\"cpu_usage\",\"text\":\"heavy CPU pressure\"}",
+        ] {
+            assert!(validate_selected_explanation(invented, &candidates).is_err());
+        }
         assert_eq!(
-            validate_generated_text("Safari uses 7% CPU.", &facts),
-            Err("narrative_result_new_numeric_claim".to_string())
+            validate_selected_explanation("cpu_usage", &candidates),
+            Ok(NarrativeExplanationId::CpuUsage)
         );
-        let numeric_identity_facts = NarrativeFactPacket {
-            display_name: "SearchIndexer 211".to_string(),
-            ..facts.clone()
+    }
+
+    #[test]
+    fn candidates_exclude_zero_stale_unavailable_and_absent_measurements() {
+        let mut facts = facts();
+        facts.metrics[0].rounded_value = 0.0;
+        assert_eq!(
+            admitted_candidates(&facts),
+            vec![NarrativeExplanationId::MemoryUsage]
+        );
+        for quality in [
+            NarrativeMeasurementQuality::Stale,
+            NarrativeMeasurementQuality::Unavailable,
+        ] {
+            facts.measurement_limitations = vec![NarrativeMeasurementLimitation {
+                kind: NarrativeResourceKind::Memory,
+                quality,
+            }];
+            assert!(admitted_candidates(&facts).is_empty());
+        }
+        assert_eq!(
+            validate_selected_explanation("network_activity", &admitted_candidates(&facts)),
+            Err("narrative_selection_not_offered".to_string())
+        );
+    }
+
+    #[test]
+    fn evidence_rejects_wrong_units_unrounded_values_and_dangling_quality() {
+        let mut wrong = facts();
+        wrong.metrics[0].unit = NarrativeMetricUnit::Megabytes;
+        assert!(canonical_fact_digest(&wrong).is_err());
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.11, 0.100_000_000_01] {
+            let mut wrong = facts();
+            wrong.metrics[0].rounded_value = invalid;
+            assert!(canonical_fact_digest(&wrong).is_err());
+        }
+        let mut wrong = facts();
+        wrong.metrics[1].rounded_value = 1.5;
+        assert!(canonical_fact_digest(&wrong).is_err());
+        wrong = facts();
+        wrong
+            .measurement_limitations
+            .push(NarrativeMeasurementLimitation {
+                kind: NarrativeResourceKind::Network,
+                quality: NarrativeMeasurementQuality::Unavailable,
+            });
+        assert!(canonical_fact_digest(&wrong).is_err());
+    }
+
+    #[test]
+    fn no_meaningful_choice_never_calls_provider() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
+            "cpu_usage".to_string(),
+        )));
+        let state = state(provider.clone(), directory.path());
+        let mut facts = facts();
+        facts.metrics[1].rounded_value = 0.0;
+        assert!(state
+            .generate(request(&facts, 1), facts)
+            .unwrap()
+            .result
+            .is_none());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn provider_cannot_return_prose_or_an_unoffered_resource() {
+        for selection in [
+            "Safari is showing heavy CPU pressure right now.",
+            "network_activity",
+            "cpu_usage. Restart Safari.",
+        ] {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
+                selection.to_string(),
+            )));
+            let state = state(provider.clone(), directory.path());
+            let mut facts = facts();
+            facts.metrics[0].rounded_value = 0.1;
+            assert!(state.generate(request(&facts, 1), facts).is_err());
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn overview_skips_inference_and_no_choice_invalidates_in_flight_evidence() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
+            "cpu_usage".to_string(),
+        )));
+        let state = state(provider.clone(), directory.path());
+        let mut facts = facts();
+        facts.leading_resource = Some(NarrativeResourceKind::Memory);
+        let overview = NarrativeRequest {
+            surface: NarrativeSurface::OverviewContributor,
+            ..request(&facts, 1)
         };
-        assert!(validate_generated_text(
-            "SearchIndexer 211 is the main source of CPU activity.",
-            &numeric_identity_facts
-        )
-        .is_ok());
+        assert!(state
+            .generate(overview, facts.clone())
+            .unwrap()
+            .result
+            .is_none());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state.coordinator.generation.lock().unwrap().active = Some(ActiveGeneration {
+            id: 1,
+            subject: SubjectKey::from(&request(&facts, 1)),
+            publication_seq: 1,
+            fact_digest: canonical_fact_digest(&facts).unwrap(),
+            cancelled: Arc::clone(&cancelled),
+        });
+        facts.metrics[0].rounded_value = 0.0;
+        assert!(state
+            .generate(request(&facts, 2), facts)
+            .unwrap()
+            .result
+            .is_none());
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn result_binds_selection_to_subject_surface_evidence_and_current_publication() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let provider = Arc::new(FakeProvider::new(ProviderGeneration::Completed(
+            "cpu_usage".to_string(),
+        )));
+        let state = state(provider.clone(), directory.path());
+        let facts = facts();
+        let request = request(&facts, 1);
+        let result = state
+            .generate(request.clone(), facts.clone())
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result.subject_stable_id, request.subject_stable_id);
+        assert_eq!(result.surface, request.surface);
+        assert_eq!(result.fact_digest, request.fact_digest);
+        assert_eq!(result.explanation_id, NarrativeExplanationId::CpuUsage);
+        let next = NarrativeRequest {
+            publication_seq: 2,
+            ..request
+        };
         assert_eq!(
-            validate_generated_text(
-                "SearchIndexer 211 is the main CPU contributor with 211 CPU load.",
-                &numeric_identity_facts
-            ),
-            Err("narrative_result_new_numeric_claim".to_string())
+            state
+                .generate(next, facts)
+                .unwrap()
+                .result
+                .unwrap()
+                .publication_seq,
+            2
         );
-        assert_eq!(
-            validate_generated_text(
-                "The surface area of a large project depends on its components and resources.",
-                &facts
-            ),
-            Err("narrative_result_ungrounded".to_string())
-        );
-        assert_eq!(
-            validate_generated_text("Safari is the main source of memory activity.", &facts),
-            Err("narrative_result_ungrounded".to_string())
-        );
-        assert_eq!(
-            validate_generated_text(
-                "Safari uses a powerful CPU to perform browsing tasks efficiently.",
-                &facts
-            ),
-            Err("narrative_result_ungrounded".to_string())
-        );
-        assert_eq!(
-            validate_generated_text("safari is the main CPU contributor right now.", &facts),
-            Err("narrative_result_ungrounded".to_string())
-        );
-        assert_eq!(
-            validate_generated_text("Safari is active. No action is needed.", &facts),
-            Err("narrative_result_not_one_sentence".to_string())
-        );
-        assert_eq!(
-            validate_generated_text(&"x".repeat(MAX_RESULT_CHARS + 1), &facts),
-            Err("narrative_result_invalid".to_string())
-        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert!(!serde_json::to_string(&result).unwrap().contains("text"));
     }
 
     #[test]

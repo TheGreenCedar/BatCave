@@ -252,8 +252,8 @@
                   aria-label={`Service detail: ${collectorService.detail ?? "None"}`}
                 ><dt>Service detail</dt><dd>{collectorService.detail ?? "None"}</dd></div>
               {/if}
-              <div><dt>App CPU</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
-              <div><dt>App memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
+              <div><dt>Runtime CPU · one core</dt><dd>{snapshot.health.app_cpu_percent.toFixed(1)}%</dd></div>
+              <div><dt>Runtime memory</dt><dd>{formatBytes(snapshot.health.app_rss_bytes)}</dd></div>
               <div><dt>Collector p95</dt><dd>{snapshot.health.collection_p95_ms === null ? "Unavailable" : `${snapshot.health.collection_p95_ms.toFixed(1)} ms`}</dd></div>
               <div><dt>Local persistence</dt><dd>{snapshot.persistence?.state ?? "Not reported"}</dd></div>
               <div><dt>Current-user permissions</dt><dd>{snapshot.persistence?.roots.find((root) => root.owner === "current_user")?.permission_state ?? "Not reported"}</dd></div>

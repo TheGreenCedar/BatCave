@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -61,7 +64,7 @@ jobs:
           name: batcave-windows-nsis-${{ github.run_id }}
           path: src/BatCave.App/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
   linux:
     name: Linux deb and AppImage bundles
@@ -108,7 +111,7 @@ jobs:
             src/BatCave.App/src-tauri/target/release/bundle/deb/*.deb
             src/BatCave.App/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
       - name: Capture Linux current-user persistence candidates
         id: persistence
@@ -137,7 +140,7 @@ jobs:
           name: batcave-linux-persistence-${{ github.run_id }}
           path: ${{ steps.persistence.outputs.path }}/*.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
   macos:
     name: macOS Apple Silicon ad-hoc bundle
@@ -191,4 +194,4 @@ jobs:
             src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90

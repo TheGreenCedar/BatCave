@@ -507,8 +507,7 @@
 }
 
 .resource-supporting b {
-  min-width: 0;
-  overflow: hidden;
+  flex-shrink: 0;
   color: var(--text-soft);
   font-family: var(--font-mono);
   font-weight: 620;
@@ -1152,10 +1151,6 @@
   min-height: 88px;
   color: var(--text-muted);
   text-align: center;
-}
-
-.mobile-process-list {
-  display: none;
 }
 
 .detail-pane {
@@ -2646,10 +2641,6 @@ button:disabled {
     margin-left: auto;
   }
 
-  .attention-table-wrap {
-    display: none;
-  }
-
   .mobile-process-list {
     display: grid;
     gap: 8px;
@@ -3214,6 +3205,7 @@ button:disabled {
 }
 
 .overview-resources {
+  container: overview-resources / inline-size;
   min-width: 0;
   display: grid;
   grid-template-rows: repeat(4, minmax(82px, auto));
@@ -3222,7 +3214,7 @@ button:disabled {
 .overview-resource-card {
   min-width: 0;
   display: grid;
-  grid-template-columns: 52px minmax(110px, 0.72fr) minmax(130px, 1fr) minmax(108px, auto);
+  grid-template-columns: 52px minmax(150px, 1fr) minmax(0, 1fr) minmax(108px, auto);
   align-items: center;
   gap: 18px;
   border-bottom: 1px solid var(--border-soft);
@@ -3244,8 +3236,9 @@ button:disabled {
   background: var(--accent-muted);
 }
 
-.overview-resource-card.pressured {
-  background: var(--warning-soft);
+.overview-resource-card.active {
+  background: var(--accent-muted);
+  box-shadow: inset 3px 0 var(--accent);
 }
 
 .resource-icon {
@@ -3291,6 +3284,24 @@ button:disabled {
   font-size: var(--text-xs);
 }
 
+.resource-card-supporting {
+  display: grid;
+  align-content: start;
+  min-block-size: 2.8em;
+  line-height: 1.4;
+}
+
+.resource-card-reading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  column-gap: 8px;
+}
+
+.resource-card-reading-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .resource-card-chart {
   min-width: 0;
   height: 48px;
@@ -3306,6 +3317,8 @@ button:disabled {
 }
 
 .resource-card-value strong {
+  min-inline-size: 9ch;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 1.45rem;
   font-weight: 620;
@@ -3752,6 +3765,23 @@ button:disabled {
   margin-top: 12px;
 }
 
+@container overview-resources (max-width: 32em) {
+  .overview-resource-card {
+    grid-template-columns: 52px minmax(0, 1fr);
+    grid-template-rows: auto auto 52px;
+  }
+
+  .resource-card-value {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .resource-card-chart {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+}
+
 @media (max-width: 1279px) {
   .app-header {
     grid-template-columns: minmax(210px, 1fr) auto minmax(210px, 1fr);
@@ -3781,8 +3811,8 @@ button:disabled {
 
   .overview-resource-card,
   .overview-resource-card:first-child {
-    grid-template-columns: 52px minmax(0, 1fr) auto;
-    grid-template-rows: auto 52px;
+    grid-template-columns: 52px minmax(0, 1fr);
+    grid-template-rows: auto auto 52px;
     gap: 12px;
     border: 1px solid var(--border-soft);
     border-radius: 16px;
@@ -3791,6 +3821,11 @@ button:disabled {
   }
 
   .resource-card-chart {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .resource-card-value {
     grid-column: 1 / -1;
     grid-row: 2;
   }
@@ -3879,7 +3914,7 @@ button:disabled {
   .overview-resource-card,
   .overview-resource-card:first-child {
     min-height: 142px;
-    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-columns: 44px minmax(0, 1fr);
     padding: 14px;
   }
 
@@ -3947,4 +3982,64 @@ button:disabled {
   .overview-workload-list button > span:nth-of-type(3) {
     display: none;
   }
+}
+
+/* Keep workload names readable when metric quality needs more room. */
+.overview-contributor strong,
+.overview-contributor small,
+.overview-workload-name strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.overview-primary-heading strong.text-readout {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.overview-primary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.overview-primary-actions .overview-metric-state {
+  margin-top: 0;
+}
+
+.overview-primary-actions button {
+  padding: 8px 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: var(--text-xs);
+}
+
+.overview-workload-list
+  > button
+  > span:not(.overview-workload-name):not(.overview-workload-link)
+  > strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.process-name-stack > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.detail-freshness {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  color: var(--warning-text);
+  background: var(--warning-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
 }

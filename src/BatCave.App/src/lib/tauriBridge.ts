@@ -1,8 +1,9 @@
-import type { RuntimeQueryInputV3, RuntimeUiPreferencesV3 } from "./generated/runtime-protocol-v3";
+import type { RuntimeQueryInputV4, RuntimeUiPreferencesV4 } from "./generated/runtime-protocol-v4";
 import type { RuntimeSnapshot } from "./types";
 import type { ResolvedThemeName } from "./themes";
 import {
   defaultNarrativeCapability,
+  isNarrativeExplanationId,
   type NarrativeAvailability,
   type NarrativeCapability,
   type NarrativeFactPacket,
@@ -45,6 +46,10 @@ export class RuntimeMutationQueue {
 }
 
 const runtimeMutationQueues = new WeakMap<RuntimeInvoke, RuntimeMutationQueue>();
+const runtimePublicationTimings = new WeakMap<
+  RuntimeSnapshot,
+  { startedAtMs: number; transportElapsedMs: number }
+>();
 
 export interface NativeSnapshotRead {
   snapshot: RuntimeSnapshot;
@@ -64,8 +69,10 @@ export async function readNativeSnapshot(
   fallback: NativeSnapshotFallback,
 ): Promise<NativeSnapshotRead> {
   try {
+    const started = performance.now();
+    const value = await invoke<unknown>("get_snapshot");
     return {
-      snapshot: decodeRuntimeSnapshot(await invoke<unknown>("get_snapshot")),
+      snapshot: decodeRuntimeSnapshot(value, performance.now() - started),
       error: "",
       mismatch: null,
       ok: true,
@@ -102,7 +109,7 @@ export function refreshRuntime(invoke: RuntimeInvoke): Promise<RuntimeSnapshot> 
 
 export function setRuntimeProcessQuery(
   invoke: RuntimeInvoke,
-  query: RuntimeQueryInputV3,
+  query: RuntimeQueryInputV4,
   intent: RuntimeQueryWriteIntent = "user_mutation",
 ): Promise<RuntimeSnapshot> {
   return invokeRuntimeMutationSnapshot(invoke, "set_process_query", {
@@ -120,7 +127,7 @@ export function setRuntimeSampleInterval(
 
 export function setRuntimeUiPreferences(
   invoke: RuntimeInvoke,
-  preferences: RuntimeUiPreferencesV3,
+  preferences: RuntimeUiPreferencesV4,
 ): Promise<RuntimeSnapshot> {
   return invokeRuntimeMutationSnapshot(invoke, "set_ui_preferences", { preferences });
 }
@@ -139,10 +146,25 @@ export function runtimeMutationAllowed(mismatch: ProtocolMismatchView | null): m
   return mismatch === null;
 }
 
-export function decodeRuntimeSnapshot(value: unknown): RuntimeSnapshot {
+export function decodeRuntimeSnapshot(value: unknown, transportElapsedMs = 0): RuntimeSnapshot {
+  const started = performance.now();
   const decoded = decodeProtocolEnvelope(value);
   if (decoded.kind === "protocol_mismatch") throw new ProtocolMismatchError(decoded.mismatch);
-  return adaptRuntimePayload(decoded.payload);
+  const snapshot = adaptRuntimePayload(decoded.payload);
+  runtimePublicationTimings.set(snapshot, { startedAtMs: started, transportElapsedMs });
+  return snapshot;
+}
+
+export function observeAcceptedRuntimePublication(
+  previous: Pick<RuntimeSnapshot, "publication_seq">,
+  snapshot: RuntimeSnapshot,
+  observe: (snapshot: RuntimeSnapshot, transportElapsedMs: number) => void,
+): void {
+  const timing = runtimePublicationTimings.get(snapshot);
+  runtimePublicationTimings.delete(snapshot);
+  // Equal publications may refresh displayed ages, but are not a new paint observation.
+  if (!timing || snapshot.publication_seq <= previous.publication_seq) return;
+  observe(snapshot, timing.transportElapsedMs + performance.now() - timing.startedAtMs);
 }
 
 async function invokeRuntimeSnapshot(
@@ -150,7 +172,9 @@ async function invokeRuntimeSnapshot(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<RuntimeSnapshot> {
-  return decodeRuntimeSnapshot(await invoke<unknown>(command, args));
+  const started = performance.now();
+  const value = await invoke<unknown>(command, args);
+  return decodeRuntimeSnapshot(value, performance.now() - started);
 }
 
 function invokeRuntimeMutationSnapshot(
@@ -310,7 +334,10 @@ function decodeNarrativeResult(value: unknown): NarrativeResult | null {
     (value.provider !== "apple_foundation" && value.provider !== "foundry_local") ||
     typeof value.publication_seq !== "number" ||
     typeof value.fact_digest !== "string" ||
-    typeof value.text !== "string"
+    (value.surface !== "overview_contributor" && value.surface !== "workload_insight") ||
+    (value.subject_stable_id != null && typeof value.subject_stable_id !== "string") ||
+    !isNarrativeExplanationId(value.explanation_id) ||
+    "text" in value
   ) {
     return null;
   }
@@ -318,7 +345,11 @@ function decodeNarrativeResult(value: unknown): NarrativeResult | null {
     provider: value.provider,
     publication_seq: value.publication_seq,
     fact_digest: value.fact_digest,
-    text: value.text,
+    surface: value.surface,
+    ...(typeof value.subject_stable_id === "string"
+      ? { subject_stable_id: value.subject_stable_id }
+      : {}),
+    explanation_id: value.explanation_id,
   };
 }
 

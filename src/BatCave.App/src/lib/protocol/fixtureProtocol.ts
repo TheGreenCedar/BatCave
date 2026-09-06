@@ -1,21 +1,21 @@
 import {
   RUNTIME_PROTOCOL_POLICY,
   RUNTIME_PROTOCOL_VERSION,
-  type GroupMetricCoverageV3,
+  type GroupMetricCoverageV4,
   type LimitationEntry,
   type MeasurementDescriptor,
   type MetricObservation,
-  type MetricQualityV3,
+  type MetricQualityV4,
   type MetricScope,
   type MetricSemantic,
-  type MetricSourceV3,
+  type MetricSourceV4,
   type MetricUnit,
   type ProtocolEnvelope,
-  type WorkloadDetailV3,
-} from "../generated/runtime-protocol-v3.ts";
+  type WorkloadDetailV4,
+} from "../generated/runtime-protocol-v4.ts";
 import type { MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "../types.ts";
 
-const qualityCodes: MetricQualityV3[] = [...RUNTIME_PROTOCOL_POLICY.quality_codes];
+const qualityCodes: MetricQualityV4[] = [...RUNTIME_PROTOCOL_POLICY.quality_codes];
 const semanticPolicies = new Map(
   RUNTIME_PROTOCOL_POLICY.semantic_definitions.map((definition) => [
     `${definition.scope}:${definition.semantic}`,
@@ -191,115 +191,125 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
     process.start_time_ms
       ? `process:${process.pid}:${process.start_time_ms}`
       : `process:${process.pid}:publication:${snapshot.sample_seq}`;
-  const memberIds = new Map<string, string[]>();
-  for (const row of snapshot.process_view_rows) {
-    if (row.kind === "process" && row.is_grouped) {
-      memberIds.set(row.group_key, [
-        ...(memberIds.get(row.group_key) ?? []),
-        processId(row.detail.process),
-      ]);
+  const encodeRows = (rows: RuntimeSnapshot["process_view_rows"]): WorkloadDetailV4[] => {
+    const memberIds = new Map<string, string[]>();
+    for (const row of rows) {
+      if (row.kind === "process" && row.is_grouped) {
+        memberIds.set(row.group_key, [
+          ...(memberIds.get(row.group_key) ?? []),
+          processId(row.detail.process),
+        ]);
+      }
     }
-  }
-  const parentIds = new Map(snapshot.processes.map((process) => [process.pid, processId(process)]));
-  const workloads: WorkloadDetailV3[] = snapshot.process_view_rows.map((row) => {
-    if (row.kind === "process") {
-      const process = row.detail.process;
-      return {
-        kind: "process",
-        detail: {
-          stable_id: processId(process),
-          identity_stability: process.start_time_ms ? "stable" : "publication",
-          pid: process.pid,
-          parent_pid: process.parent_pid,
-          parent_process_id: process.parent_pid
-            ? (parentIds.get(process.parent_pid) ?? null)
-            : null,
-          start_time_ms: process.start_time_ms || null,
-          display_name: process.name,
-          executable: process.exe,
-          status: process.status,
-          access_state: process.access_state,
-          presentation: {
-            group_id: row.is_grouped ? `group:${row.group_key}` : null,
-            group_key: row.group_key,
-            group_label: row.group_label,
-            group_category: row.group_category,
-            group_count: row.group_count,
-            icon_kind: row.icon_kind,
-            is_child: row.is_child,
-            is_grouped: row.is_grouped,
+    const parentIds = new Map(
+      rows.flatMap((row) =>
+        row.kind === "process"
+          ? [[row.detail.process.pid, processId(row.detail.process)] as const]
+          : [],
+      ),
+    );
+    return rows.map((row) => {
+      if (row.kind === "process") {
+        const process = row.detail.process;
+        return {
+          kind: "process",
+          detail: {
+            stable_id: processId(process),
+            identity_stability: process.start_time_ms ? "stable" : "publication",
+            pid: process.pid,
+            parent_pid: process.parent_pid,
+            parent_process_id: process.parent_pid
+              ? (parentIds.get(process.parent_pid) ?? null)
+              : null,
+            start_time_ms: process.start_time_ms || null,
+            display_name: process.name,
+            executable: process.exe,
+            status: process.status,
+            access_state: process.access_state,
+            presentation: {
+              group_id: row.is_grouped ? `group:${row.group_key}` : null,
+              group_key: row.group_key,
+              group_label: row.group_label,
+              group_category: row.group_category,
+              group_count: row.group_count,
+              icon_kind: row.icon_kind,
+              is_child: row.is_child,
+              is_grouped: row.is_grouped,
+            },
+            metrics: processMetrics(catalog, process, sampled),
           },
-          metrics: processMetrics(catalog, process, sampled),
+        };
+      }
+      const detail = row.detail;
+      const specs = [
+        [
+          "cpu_usage",
+          "percent_one_core",
+          detail.cpu_percent,
+          detail.quality.cpu,
+          detail.coverage.cpu,
+        ],
+        [
+          "resident_memory",
+          "bytes",
+          detail.memory_bytes,
+          detail.quality.memory,
+          detail.coverage.memory,
+        ],
+        [
+          "read_write_io_rate",
+          "bytes_per_second",
+          detail.io_bps,
+          detail.quality.io,
+          detail.coverage.io,
+        ],
+        [
+          "other_io_rate",
+          "bytes_per_second",
+          detail.other_io_bps,
+          detail.quality.other_io,
+          detail.coverage.other_io,
+        ],
+        [
+          "network_rate",
+          "bytes_per_second",
+          detail.network_bps,
+          detail.quality.network,
+          detail.coverage.network,
+        ],
+        ["thread_count", "count", detail.threads, detail.quality.threads, detail.coverage.threads],
+      ] as const;
+      const metrics: MetricObservation[] = [];
+      const coverage: GroupMetricCoverageV4[] = [];
+      for (const [semantic, unit, value, quality, currentCoverage] of specs) {
+        const metric = catalog.metric(semantic, "group", unit, value, quality, sampled);
+        metrics.push(metric);
+        coverage.push({
+          descriptor_index: metric[0],
+          available_contributors: currentCoverage.available,
+          total_contributors: currentCoverage.total,
+          limitation_index: metric[4],
+        });
+      }
+      return {
+        kind: "group",
+        detail: {
+          stable_id: detail.workload_id,
+          group_key: detail.group_key,
+          label: detail.label,
+          category: detail.category,
+          member_ids: memberIds.get(detail.group_key) ?? [],
+          icon_kind: row.icon_kind,
+          icon_source: row.icon_source ?? null,
+          example_label: row.example_label ?? null,
+          metrics,
+          coverage,
         },
       };
-    }
-    const detail = row.detail;
-    const specs = [
-      [
-        "cpu_usage",
-        "percent_one_core",
-        detail.cpu_percent,
-        detail.quality.cpu,
-        detail.coverage.cpu,
-      ],
-      [
-        "resident_memory",
-        "bytes",
-        detail.memory_bytes,
-        detail.quality.memory,
-        detail.coverage.memory,
-      ],
-      [
-        "read_write_io_rate",
-        "bytes_per_second",
-        detail.io_bps,
-        detail.quality.io,
-        detail.coverage.io,
-      ],
-      [
-        "other_io_rate",
-        "bytes_per_second",
-        detail.other_io_bps,
-        detail.quality.other_io,
-        detail.coverage.other_io,
-      ],
-      [
-        "network_rate",
-        "bytes_per_second",
-        detail.network_bps,
-        detail.quality.network,
-        detail.coverage.network,
-      ],
-      ["thread_count", "count", detail.threads, detail.quality.threads, detail.coverage.threads],
-    ] as const;
-    const metrics: MetricObservation[] = [];
-    const coverage: GroupMetricCoverageV3[] = [];
-    for (const [semantic, unit, value, quality, currentCoverage] of specs) {
-      const metric = catalog.metric(semantic, "group", unit, value, quality, sampled);
-      metrics.push(metric);
-      coverage.push({
-        descriptor_index: metric[0],
-        available_contributors: currentCoverage.available,
-        total_contributors: currentCoverage.total,
-        limitation_index: metric[4],
-      });
-    }
-    return {
-      kind: "group",
-      detail: {
-        stable_id: detail.workload_id,
-        group_key: detail.group_key,
-        label: detail.label,
-        category: detail.category,
-        member_ids: memberIds.get(detail.group_key) ?? [],
-        icon_kind: row.icon_kind,
-        icon_source: row.icon_source ?? null,
-        example_label: row.example_label ?? null,
-        metrics,
-        coverage,
-      },
-    };
-  });
+    });
+  };
+  const workloads = encodeRows(snapshot.process_view_rows);
+  const overview_workloads = encodeRows(snapshot.overview_rows);
   const contributor = (metric: "cpu" | "memory" | "io" | "network") => {
     const name = snapshot.process_contributors[metric];
     const quality = snapshot.process_contributors[`${metric}_quality`];
@@ -380,7 +390,13 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
       collection_paused: snapshot.settings.paused,
       ui_preferences: null,
     },
-    health: fixtureHealth(snapshot),
+    health: deriveFixtureHealth({
+      health: snapshot.health,
+      published_at_ms: snapshot.published_at_ms,
+      sampled_at_ms: snapshot.sampled_at_ms,
+      sample_interval_ms: snapshot.settings.sample_interval_ms,
+      paused: snapshot.settings.paused,
+    }),
     persistence: null,
     descriptors: catalog.descriptors,
     quality_codes: qualityCodes,
@@ -437,6 +453,7 @@ export function encodeFixtureSnapshot(snapshot: RuntimeSnapshot): ProtocolEnvelo
       })),
     },
     workloads,
+    overview_workloads,
     contributors: [
       contributor("cpu"),
       contributor("memory"),
@@ -469,17 +486,64 @@ function fixturePrivilegedSource(
   return snapshot.admin_mode.source === "collector_service" ? "collector_service" : "local_process";
 }
 
-function fixtureHealth(snapshot: RuntimeSnapshot): RuntimeSnapshot["health"] {
-  const evaluatedAt = Math.max(
-    snapshot.health.evaluated_at_ms,
-    snapshot.published_at_ms,
-    snapshot.sampled_at_ms ?? 0,
-  );
+export function deriveFixtureHealth(input: {
+  health: RuntimeSnapshot["health"];
+  published_at_ms: number;
+  sampled_at_ms: number | null;
+  sample_interval_ms: number;
+  paused: boolean;
+}): RuntimeSnapshot["health"] {
+  const { health, published_at_ms, sampled_at_ms } = input;
+  const evaluatedAt = Math.max(health.evaluated_at_ms, published_at_ms, sampled_at_ms ?? 0);
+  const publicationAge = evaluatedAt - published_at_ms;
+  const sampleAge = sampled_at_ms === null ? null : evaluatedAt - sampled_at_ms;
+  const heartbeatAge =
+    health.last_heartbeat_at_ms === null ? null : evaluatedAt - health.last_heartbeat_at_ms;
+  const fatal = health.engine_state === "fatal";
+  const paused = input.paused || health.engine_state === "paused";
+  const starting = sampled_at_ms === null || health.engine_state === "starting";
+  const active = !fatal && !paused && !starting;
+  const budget = Math.max(500, Math.min(5_000, input.sample_interval_ms)) * 2;
+  const reasons = new Set(health.reason_codes);
+  const required: Array<[RuntimeSnapshot["health"]["reason_codes"][number], boolean]> = [
+    ["engine_fatal", fatal],
+    ["collector_unavailable", health.collector_state === "unavailable"],
+    ["collector_limited", health.collector_state === "limited"],
+    [
+      "heartbeat_stale",
+      active &&
+        health.engine_state === "running" &&
+        (heartbeatAge === null || heartbeatAge > budget),
+    ],
+    ["publication_stale", active && health.engine_state === "running" && publicationAge > budget],
+    ["sample_stale", active && (sampleAge === null || sampleAge > budget)],
+  ];
+  for (const [reason, present] of required) {
+    if (present) reasons.add(reason);
+    else reasons.delete(reason);
+  }
+  const stale =
+    health.collector_state === "unavailable" ||
+    reasons.has("heartbeat_stale") ||
+    reasons.has("publication_stale") ||
+    reasons.has("sample_stale");
   return {
-    ...snapshot.health,
+    ...health,
+    freshness: fatal
+      ? "stale"
+      : paused
+        ? "paused"
+        : starting
+          ? "starting"
+          : stale
+            ? "stale"
+            : "live",
+    reason_codes: [...reasons],
+    degraded: reasons.size > 0,
     evaluated_at_ms: evaluatedAt,
-    publication_age_ms: evaluatedAt - snapshot.published_at_ms,
-    sample_age_ms: snapshot.sampled_at_ms === null ? null : evaluatedAt - snapshot.sampled_at_ms,
+    publication_age_ms: publicationAge,
+    sample_age_ms: sampleAge,
+    heartbeat_age_ms: heartbeatAge,
   };
 }
 
@@ -699,7 +763,7 @@ class FixtureCatalog {
     semantic: MetricSemantic,
     scope: MetricScope,
     unit: MetricUnit,
-    source: MetricSourceV3,
+    source: MetricSourceV4,
   ): MeasurementDescriptor {
     const policy = semanticPolicies.get(`${scope}:${semantic}`);
     if (!policy || policy.unit !== unit) {

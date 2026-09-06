@@ -18,7 +18,7 @@ There is no temporary-file fallback. If `memfd_create`, sealing, read-only reope
 3. Rust reopens the memory object through its private `/proc/self/fd/N` view as `O_RDONLY`, confirms identity, access mode, and seals, then drops the writable descriptor.
 4. A fixed child receives the object at a fixed inherited descriptor. No caller provides a descriptor, path, executable, arguments, environment, callback, status, or completion.
 5. Rust owns the process group, deadline, descendant settlement, output bounds, and cleanup. An unresolved operation retains the descriptor and process authority for bounded retry.
-6. The sanitized outcome contains no descriptor, private path, generic command surface, native receipt, or evidence packet.
+6. The sanitized outcome contains no descriptor, private path, caller-defined command, native receipt, or evidence packet.
 
 The production private verifier uses this authority for selected Linux bytes and currently returns `skipped` after revalidation. The hosted [`linux_package_owned_transport.rs`](../../src/BatCave.App/src-tauri/tests/linux_package_owned_transport.rs) gate exercises fixed deb extraction and AppImage payload launch against locally built bundles without claiming public native installation.
 

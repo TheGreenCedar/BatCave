@@ -469,20 +469,34 @@ export function workloadSelectionHighlightsRow(
   );
 }
 
-export function shouldStabilizeProcessOrder(sortKey: SortKey): boolean {
-  return sortKey === "attention";
+export class ProcessInteraction {
+  private pointer = false;
+  private focus = false;
+
+  set(source: "pointer" | "focus", active: boolean): boolean {
+    this[source] = active;
+    return this.pointer || this.focus;
+  }
 }
 
-export function shouldHoldProcessOrder(
-  sortKey: SortKey,
-  interacting: boolean,
-  expandedGroupCount: number,
-  selectedWorkloadVisible: boolean,
-): boolean {
-  return (
-    interacting ||
-    (shouldStabilizeProcessOrder(sortKey) && (expandedGroupCount > 0 || selectedWorkloadVisible))
-  );
+export function shouldHoldProcessOrder(interaction: {
+  view: "overview" | "explore";
+  interacting: boolean;
+}): boolean {
+  return interaction.view === "explore" && interaction.interacting;
+}
+
+export function advanceProcessRanking(
+  current: ProcessViewRow[],
+  incoming: ProcessViewRow[],
+  held: boolean,
+): { rows: ProcessViewRow[]; updateAvailable: boolean } {
+  return held
+    ? {
+        rows: stabilizeProcessRows(current, incoming),
+        updateAvailable: !hasSameProcessOrder(current, incoming),
+      }
+    : { rows: incoming, updateAvailable: false };
 }
 
 export function reconcileWorkloadSelection(rows: ProcessViewRow[], selection: string): string {

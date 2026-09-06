@@ -8,6 +8,6 @@ The 2026-07-10 review upgraded Tauri from 2.10 to 2.11 and reduced the inherited
 
 - GTK3 and GLib warnings reachable only in the Linux Tauri/WebKitGTK runtime. Tauri 2 still uses GTK3, so removal requires an upstream-supported GTK4 runtime migration. BatCave does not directly call the affected `glib::VariantStrIter` API.
 - `proc-macro-error`, used at Linux build time by the inherited GTK3 macros.
-- `unic-*` warnings inherited through `tauri-utils` and `urlpattern`; BatCave has no direct dependency or supported replacement seam.
+- `unic-*` warnings inherited through `tauri-utils` and `urlpattern`; BatCave has no direct dependency on them or supported replacement.
 
 Re-review on every Tauri upgrade and no later than the expiry date. Keep Linux validation plus deb/AppImage packaging green after dependency changes.

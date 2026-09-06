@@ -15,7 +15,7 @@ At the time of this decision the repository had no Rust-owned entry that indepen
 
 The feature-gated [`batcave-install-smoke`](../../src/BatCave.App/src-tauri/src/bin/batcave-install-smoke.rs) binary supersedes that gap without a JavaScript bridge. Caller input is limited to a release tag and one closed profile. Rust independently verifies the immutable release, complete inventory, checksums, source-bound attestations, protected source identity, and selected bytes before private dispatch.
 
-The verifier is not linked into the desktop library, registered as a Tauri command, or exposed as a generic path-taking helper. Linux currently returns `skipped` after descriptor revalidation, and the macOS updater profile emits only a staging observation. Neither path can mint native proof or a release-evidence packet.
+The verifier is not linked into the desktop library, registered as a Tauri command, or exposed as a generic path-taking helper. Linux currently returns `skipped` after descriptor revalidation, and the macOS updater profile emits only a staging observation. Neither path can produce native proof or a release-evidence packet.
 
 ## Verification
 

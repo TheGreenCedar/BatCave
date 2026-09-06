@@ -28,10 +28,10 @@ Capture fresh Windows application pixels from the exact signed candidate. Do not
 - Settings showing theme family/mode and local-data controls
 - One compact-width view demonstrating the responsive drawer
 
-Use the Partner Center dimensions and file formats shown at submission time. Keep Windows chrome only when it helps prove the native surface; do not include unrelated desktop content or personal process data.
+Use the Partner Center dimensions and file formats shown at submission time. Keep Windows chrome only when it helps identify the native app; do not include unrelated desktop content or personal process data.
 
 ## Publication boundary
 
-- Upload no package to Partner Center in this source lane.
+- Upload no package to Partner Center as part of source preparation.
 - Publish no tag or GitHub Release solely to exercise this checklist.
 - Resume only with the protected production release context, exact signed stable candidate, anonymous URL readback, and explicit submission authorization.

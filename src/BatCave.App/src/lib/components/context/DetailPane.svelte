@@ -1,8 +1,10 @@
 <script lang="ts">
+  import InspectionChart from "../../InspectionChart.svelte";
+  import type { WorkloadInspection } from "../../workloadInspection";
   import X from "phosphor-svelte/lib/X";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
+  import type { TelemetryPresentation } from "../../telemetryPresentation";
   import type { DetailMode } from "../metrics/types";
-  import type { ProcessRates } from "../../process";
   import type { ProcessIconKind } from "../../process";
   import type { PlatformPresentation } from "../../platformPresentation";
   import type { ResolvedProcessIconCatalog } from "../../processIcons";
@@ -21,21 +23,18 @@
   import SystemDetail from "./SystemDetail.svelte";
 
   export let subject: "process" | "system";
+  export let telemetryStatus: TelemetryPresentation;
   export let compact = false;
   export let onClose: () => void = () => {};
   export let onShowSystem: () => void;
   export let selectedWorkload: WorkloadDetail | null;
+  export let inspection: WorkloadInspection | null = null;
+  export let inspectionLoading = false;
+  export let inspectionError = "";
+  export let inspectionCurrent = false;
   export let selectedWorkloadIconKind: ProcessIconKind = "process";
   export let selectedWorkloadIconSrc: string | undefined = undefined;
   export let selectedWorkloadIconMatched = false;
-  export let processHistory: {
-    cpu: number[];
-    memory: number[];
-    readRate: number[];
-    writeRate: number[];
-    networkRate: number[];
-  };
-  export let processRates: Record<string, ProcessRates>;
   export let processReadRate = 0;
   export let processWriteRate = 0;
   export let processIcons: ResolvedProcessIconCatalog = {};
@@ -133,14 +132,11 @@
 >
   <header class="detail-pane-heading">
     <div>
-      <span>{subject === "process" ? "Selected workload" : "System resource"}</span>
-      <h2>{subject === "process" ? selectedWorkload?.kind === "group" ? selectedWorkload.label : selectedWorkload?.process.name ?? "Workload unavailable" : detailTitle}</h2>
+      <h2>{subject === "process" ? "Workload details" : detailTitle}</h2>
     </div>
     <div class="detail-pane-actions">
       {#if subject === "process"}
         <button class="system-overview-action" type="button" onclick={onShowSystem}>System overview</button>
-      {:else}
-        <strong>{detailReadout}</strong>
       {/if}
       {#if compact}
         <button
@@ -157,17 +153,22 @@
   </header>
 
   <div class="detail-pane-scroll">
+    {#if telemetryStatus.state !== "live"}
+      <p class="detail-freshness" role="status">{telemetryStatus.label}. {telemetryStatus.detail}</p>
+    {/if}
     {#if subject === "process"}
+      {#if inspectionError}<p class="detail-freshness" role="alert">{inspectionError}</p>
+      {:else if inspectionLoading}<p class="detail-freshness" role="status">Loading the selected workload…</p>
+      {:else if inspection?.status === "exited"}<p class="detail-freshness" role="status">This identity is no longer in the latest sample. Showing its last recorded activity.</p>
+      {:else if inspection && !inspectionCurrent && inspection.status === "current"}<p class="detail-freshness" role="status">Showing the last recorded sample.</p>{/if}
       {#if selectedWorkload?.kind === "process"}
         <ProcessInspector
           detail={selectedWorkload}
-          {processHistory}
-          {processRates}
           {processReadRate}
           {processWriteRate}
           {processIcons}
           {copyStatus}
-          {activeTheme}
+          current={inspectionCurrent}
           {presentation}
           platform={snapshot.environment.platform}
           {processNetworkLabel}
@@ -178,9 +179,8 @@
       {:else if selectedWorkload?.kind === "group"}
         <GroupInspector
           detail={selectedWorkload}
-          {processHistory}
           {copyStatus}
-          {activeTheme}
+          current={inspectionCurrent}
           iconKind={selectedWorkloadIconKind}
           iconSrc={selectedWorkloadIconSrc}
           iconMatched={selectedWorkloadIconMatched}
@@ -188,10 +188,11 @@
         />
       {:else}
         <div class="empty-panel">
-          <strong>The selected workload is no longer available</strong>
-          <span>Return to the system overview or choose another row from the workload queue.</span>
+          <strong>{inspectionLoading ? "Loading workload" : inspection?.status === "evicted" ? "History was evicted" : "Identity not recorded"}</strong>
+          <span>{inspection?.status === "evicted" ? "The bounded history store released this identity to make room for newer samples." : "No retained detail is available for this exact identity."}</span>
         </div>
       {/if}
+      {#if selectedWorkload && inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
     {:else}
       <SystemDetail
         {detailMode}

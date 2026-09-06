@@ -21,6 +21,8 @@ pub struct RuntimeSnapshot {
     pub process_contributors: ProcessContributorSummary,
     pub processes: Vec<ProcessSample>,
     pub process_view_rows: Vec<ProcessViewRow>,
+    #[serde(default)]
+    pub overview_rows: Vec<ProcessViewRow>,
     pub total_process_count: usize,
     pub warnings: Vec<RuntimeWarning>,
 }
@@ -184,6 +186,10 @@ pub struct RuntimeHealth {
     pub tick_count: u64,
     pub snapshot_latency_ms: u64,
     pub degraded: bool,
+    #[serde(default)]
+    pub freshness: RuntimeFreshness,
+    #[serde(default)]
+    pub reason_codes: Vec<RuntimeHealthReason>,
     pub collector_warnings: usize,
     pub runtime_loop_enabled: bool,
     pub runtime_loop_running: bool,
@@ -216,6 +222,35 @@ pub struct RuntimeHealth {
     pub publication_p95_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fatal_error: Option<RuntimeFatalError>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeFreshness {
+    #[default]
+    Starting,
+    Live,
+    Paused,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeHealthReason {
+    CollectorUnavailable,
+    CollectorLimited,
+    CollectorWarning,
+    PersistenceUnavailable,
+    PersistenceDegraded,
+    CadenceMissed,
+    RuntimeCpuBudget,
+    RuntimeMemoryBudget,
+    EngineFatal,
+    HeartbeatStale,
+    PublicationStale,
+    SampleStale,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -809,6 +844,8 @@ impl Default for RuntimeHealth {
             tick_count: 0,
             snapshot_latency_ms: 0,
             degraded: false,
+            freshness: RuntimeFreshness::Starting,
+            reason_codes: Vec::new(),
             collector_warnings: 0,
             runtime_loop_enabled: true,
             runtime_loop_running: false,
@@ -905,10 +942,13 @@ mod tests {
                 paused: true,
                 ui_preferences: None,
             },
+            overview_rows: Vec::new(),
             health: RuntimeHealth {
                 tick_count: 7,
                 snapshot_latency_ms: 11,
                 degraded: true,
+                freshness: RuntimeFreshness::Paused,
+                reason_codes: vec![RuntimeHealthReason::CollectorWarning],
                 collector_warnings: 2,
                 runtime_loop_enabled: true,
                 runtime_loop_running: true,
@@ -1076,6 +1116,8 @@ mod tests {
                     "paused": true
                 },
                 "health": {
+                    "freshness": "paused",
+                    "reason_codes": ["collector_warning"],
                     "tick_count": 7,
                     "snapshot_latency_ms": 11,
                     "degraded": true,
@@ -1168,6 +1210,7 @@ mod tests {
         .expect("expected JSON parses");
         expected["processes"] = json!([sample_process_json()]);
         expected["process_view_rows"] = json!([sample_process_view_row_json()]);
+        expected["overview_rows"] = json!([]);
 
         assert_eq!(actual, expected);
         assert!(actual.get("seq").is_none());
@@ -1193,12 +1236,17 @@ mod tests {
 
     #[test]
     fn shared_runtime_snapshot_fixture_round_trips_through_rust() {
-        let expected: serde_json::Value = serde_json::from_str(include_str!(
+        let mut expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../scripts/fixtures/runtime-snapshot.v2.json"
         ))
         .expect("shared fixture parses");
         let snapshot: RuntimeSnapshot =
             serde_json::from_value(expected.clone()).expect("shared fixture matches Rust contract");
+
+        // Legacy v2 payloads acquire the new runtime-owned fields on migration.
+        expected["overview_rows"] = json!([]);
+        expected["health"]["freshness"] = json!("starting");
+        expected["health"]["reason_codes"] = json!([]);
 
         assert_eq!(
             serde_json::to_value(snapshot).expect("snapshot serializes"),

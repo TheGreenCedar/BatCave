@@ -28,9 +28,9 @@ The feature-gated `batcave-install-smoke` binary independently verifies the immu
 
 - The macOS updater profile owns and validates the compressed stream, stages only validated app entries, cleans the private root, and emits a bounded staging observation.
 - The Linux profiles seal verified deb or AppImage bytes in a private immutable descriptor. The current production handler revalidates that descriptor and returns `skipped`; hosted package-transport tests exercise locally built payloads separately.
-- Windows installer, macOS DMG, and complete Linux install/remove lifecycles remain open native-proof work.
+- Windows installer, macOS DMG, and complete Linux install/remove lifecycles remain open native verification work.
 
-No current profile mints a native execution receipt or release-evidence packet.
+No current profile produces a native execution receipt or release-evidence packet.
 
 ## Threat boundary
 
@@ -50,7 +50,7 @@ Trusted are the reviewed Rust binary, Rust standard library, operating system, a
 1. Rust independently establishes release identity and selected bytes before dispatch.
 2. Owned bytes, descriptors, paths, process handles, staging roots, and cleanup state remain private Rust fields and are not serialized.
 3. Dispatch is a closed `match`; callers cannot provide an executable, arguments, environment, callback, or command runner.
-4. Consumption is one-shot and operation-bound. Replay, early close, identity drift, or cross-operation substitution fails before proof derivation.
+4. Consumption is one-shot and operation-bound. Replay, early close, identity drift, or cross-operation substitution fails before deriving a result.
 5. Settlement and cleanup retain every resource required for bounded recovery. Cleanup never discards primary failure information.
 6. Only the composition root derives a sanitized observation. Native proof remains impossible until every platform gate passes.
 

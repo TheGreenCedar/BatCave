@@ -6,7 +6,7 @@ Published releases get separate fresh, protected `ubuntu-22.04` deb and AppImage
 
 The finalize job retains its exact pre-publication candidate JSON as a one-day workflow artifact. The post-public job downloads that fixed artifact name and invokes `scripts/linux-deb-post-public-smoke.mjs` with only the workflow-owned release tag and source SHA. Its shared driver reads the candidate from one fixed repository-relative location. Neither entrypoint accepts a caller-selected profile, artifact path, command, environment, status, callback, or evidence payload.
 
-The new job then:
+Before installation, the job:
 
 1. anonymously reads the public release API;
 2. compares the release tag, source SHA, channel, immutable state, complete asset set, sizes, digests, and public URLs to the independent candidate inventory;

@@ -3,9 +3,9 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   type MetricScope,
   type MetricSemantic,
-  type NetworkScopeV3,
-  type RuntimeSnapshotPayloadV3,
-} from "../generated/runtime-protocol-v3.ts";
+  type NetworkScopeV4,
+  type RuntimeSnapshotPayloadV4,
+} from "../generated/runtime-protocol-v4.ts";
 
 export interface ProtocolMismatchView {
   writerVersion: number | null;
@@ -15,7 +15,7 @@ export interface ProtocolMismatchView {
 }
 
 export type ProtocolDecodeResult =
-  | { kind: "snapshot"; payload: RuntimeSnapshotPayloadV3 }
+  | { kind: "snapshot"; payload: RuntimeSnapshotPayloadV4 }
   | { kind: "protocol_mismatch"; mismatch: ProtocolMismatchView };
 
 // Shape checks stay local to this reader; shared catalog policy comes from the Rust writer.
@@ -210,7 +210,7 @@ export function decodeProtocolEnvelope(input: unknown): ProtocolDecodeResult {
   const error = validatePayload(rawPayload);
   return error
     ? mismatch(writerVersion, minimumReaderVersion, "malformed_payload", error)
-    : { kind: "snapshot", payload: rawPayload as unknown as RuntimeSnapshotPayloadV3 };
+    : { kind: "snapshot", payload: rawPayload as unknown as RuntimeSnapshotPayloadV4 };
 }
 
 function validatePayload(input: unknown): string | null {
@@ -396,6 +396,61 @@ function validatePayload(input: unknown): string | null {
     return "Runtime pause state is inconsistent with settings.";
   if (health.fatal_error !== null && health.fatal_error.occurred_at_ms > health.evaluated_at_ms)
     return "Runtime fatal error occurs after health evaluation.";
+  const knownReasons = new Set([
+    "collector_unavailable",
+    "collector_limited",
+    "collector_warning",
+    "persistence_unavailable",
+    "persistence_degraded",
+    "cadence_missed",
+    "runtime_cpu_budget",
+    "runtime_memory_budget",
+    "engine_fatal",
+    "heartbeat_stale",
+    "publication_stale",
+    "sample_stale",
+  ]);
+  if (
+    !Array.isArray(health.reason_codes) ||
+    health.reason_codes.some(
+      (reason: unknown) => typeof reason !== "string" || !knownReasons.has(reason),
+    ) ||
+    new Set(health.reason_codes).size !== health.reason_codes.length ||
+    health.degraded !== health.reason_codes.length > 0
+  )
+    return "Runtime health reasons are malformed.";
+  const fatal = health.engine_state === "fatal";
+  const paused = payload.settings.collection_paused || health.engine_state === "paused";
+  const starting = payload.sampled_at_ms === null || health.engine_state === "starting";
+  const active = !fatal && !paused && !starting;
+  const budget = Math.min(5000, Math.max(500, payload.settings.effective_sample_interval_ms)) * 2;
+  const running = health.engine_state === "running";
+  const heartbeatStale =
+    active && running && (health.heartbeat_age_ms === null || health.heartbeat_age_ms > budget);
+  const publicationStale = active && running && health.publication_age_ms > budget;
+  const sampleStale = active && (health.sample_age_ms === null || health.sample_age_ms > budget);
+  const unavailable = health.collector_state === "unavailable";
+  for (const [reason, required] of [
+    ["engine_fatal", fatal],
+    ["collector_unavailable", unavailable],
+    ["collector_limited", health.collector_state === "limited"],
+    ["heartbeat_stale", heartbeatStale],
+    ["publication_stale", publicationStale],
+    ["sample_stale", sampleStale],
+  ] as const) {
+    if (health.reason_codes.includes(reason) !== required)
+      return "Runtime health reason contradicts its facts.";
+  }
+  const expectedFreshness = fatal
+    ? "stale"
+    : paused
+      ? "paused"
+      : starting
+        ? "starting"
+        : unavailable || heartbeatStale || publicationStale || sampleStale
+          ? "stale"
+          : "live";
+  if (health.freshness !== expectedFreshness) return "Runtime freshness contradicts its facts.";
   const persistenceError = validatePersistence(payload.persistence, health.evaluated_at_ms);
   if (persistenceError) return persistenceError;
   if (
@@ -404,52 +459,24 @@ function validatePayload(input: unknown): string | null {
     !Array.isArray(payload.limitations) ||
     !isRecord(payload.system) ||
     !Array.isArray(payload.workloads) ||
+    !Array.isArray(payload.overview_workloads) ||
     !Array.isArray(payload.contributors) ||
     !Array.isArray(payload.warnings)
   )
     return "Runtime collections are malformed.";
-  if (
-    payload.quality_codes.length !== qualityCodes.length ||
-    payload.quality_codes.some((quality, index) => quality !== qualityCodes[index])
-  ) {
-    return "Quality catalog is unknown or reordered.";
-  }
-  for (let index = 0; index < payload.descriptors.length; index += 1) {
-    const descriptor = payload.descriptors[index];
-    const definition = isRecord(descriptor)
-      ? semanticDefinitions.get(`${descriptor.scope}:${descriptor.semantic}`)
-      : undefined;
-    const requiresInterval = definition?.sampled_over_interval ?? false;
-    if (
-      !isRecord(descriptor) ||
-      descriptor.id !== index ||
-      !sources.has(descriptor.source) ||
-      !definition ||
-      descriptor.unit !== definition.unit ||
-      descriptor.network_scope !==
-        networkScopeDefinition(descriptor.semantic, descriptor.scope, descriptor.source) ||
-      (requiresInterval
-        ? !safeInteger(descriptor.interval_ms) || descriptor.interval_ms === 0
-        : descriptor.interval_ms !== null)
-    ) {
-      return `Descriptor ${index} is invalid.`;
-    }
-  }
-  if (
-    payload.limitations.some(
-      (entry) =>
-        !isRecord(entry) ||
-        !limitationCodes.has(entry.code) ||
-        typeof entry.message !== "string" ||
-        entry.message.trim().length === 0,
-    )
-  ) {
-    return "Limitation catalog is malformed.";
-  }
+  const catalogError = validateMeasurementCatalog(payload);
+  if (catalogError) return catalogError;
   const systemError = validateSystem(payload.system, payload);
   if (systemError) return systemError;
   const workloadError = validateWorkloads(payload.workloads, payload);
   if (workloadError) return workloadError;
+  const overviewError = validateWorkloads(payload.overview_workloads, {
+    ...payload,
+    visible_process_count: payload.overview_workloads.filter(
+      (row: unknown) => isRecord(row) && row.kind === "process",
+    ).length,
+  });
+  if (overviewError) return overviewError;
   const warningKeys = new Set<string>();
   for (const warning of payload.warnings) {
     if (
@@ -587,10 +614,7 @@ function validatePersistence(input: unknown, evaluatedAtMs: number): string | nu
     const requiresFailure = component.state === "degraded" || component.state === "unavailable";
     if (requiresFailure !== (failure !== null))
       return "Runtime persistence component failure state is inconsistent.";
-    if (
-      component.state === "healthy" &&
-      (component.durability === "session_only" || component.durability === "not_written")
-    )
+    if (component.state === "healthy" && component.durability === "not_written")
       return "Runtime persistence component durability is inconsistent.";
     if (
       component.durability === "not_applicable" &&
@@ -698,7 +722,11 @@ function validReleaseIdentity(value: unknown): boolean {
   );
 }
 
-function validateWorkloads(input: unknown, payload: Record<string, any>): string | null {
+function validateWorkloads(
+  input: unknown,
+  payload: Record<string, any>,
+  includeContributors = true,
+): string | null {
   if (!Array.isArray(input)) return "Workload catalog is not an array.";
   const workloads = input;
   const processIds = new Set<string>();
@@ -755,8 +783,28 @@ function validateWorkloads(input: unknown, payload: Record<string, any>): string
   for (const process of processes.values()) {
     if (process.parent_process_id !== null) {
       const parent = processes.get(process.parent_process_id);
-      if (!parent || process.parent_pid === null || parent.pid !== process.parent_pid)
+      if (
+        !parent ||
+        process.parent_pid === null ||
+        parent.pid !== process.parent_pid ||
+        parent.stable_id === process.stable_id ||
+        !safeInteger(parent.start_time_ms) ||
+        !safeInteger(process.start_time_ms) ||
+        parent.start_time_ms === 0 ||
+        process.start_time_ms === 0 ||
+        parent.start_time_ms >= process.start_time_ms
+      )
         return "Parent process identity is inconsistent.";
+      const visited = new Set<string>([process.stable_id]);
+      let ancestor: Record<string, any> | undefined = parent;
+      while (ancestor) {
+        if (visited.has(ancestor.stable_id)) return "Parent process identity contains a cycle.";
+        visited.add(ancestor.stable_id);
+        ancestor =
+          ancestor.parent_process_id === null
+            ? undefined
+            : processes.get(ancestor.parent_process_id);
+      }
     }
   }
   for (const workload of workloads) {
@@ -854,6 +902,7 @@ function validateWorkloads(input: unknown, payload: Record<string, any>): string
     payload.total_process_count < visible
   )
     return "Process counts are inconsistent.";
+  if (!includeContributors) return null;
   const seenContributorMetrics = new Set<string>();
   for (const contributor of payload.contributors) {
     if (
@@ -1026,7 +1075,7 @@ function networkScopeDefinition(
   semantic: MetricSemantic,
   scope: MetricScope,
   source: string,
-): NetworkScopeV3 | null {
+): NetworkScopeV4 | null {
   if (source === "unknown") return null;
   const definition = semanticDefinitions.get(`${scope}:${semantic}`);
   return definition?.network_scope[source === "sysinfo" ? "sysinfo" : "default"] ?? null;
@@ -1058,4 +1107,84 @@ function validIndex(index: unknown, length: number): index is number | null {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export type WorkloadCatalog = Pick<
+  RuntimeSnapshotPayloadV4,
+  | "sample_seq"
+  | "sampled_at_ms"
+  | "published_at_ms"
+  | "descriptors"
+  | "quality_codes"
+  | "limitations"
+  | "workloads"
+>;
+
+export function decodeWorkloadCatalog(input: unknown): WorkloadCatalog {
+  if (
+    !isRecord(input) ||
+    !safeInteger(input.sample_seq) ||
+    !safeInteger(input.sampled_at_ms) ||
+    !safeInteger(input.published_at_ms) ||
+    input.sampled_at_ms > input.published_at_ms ||
+    !Array.isArray(input.descriptors) ||
+    !Array.isArray(input.quality_codes) ||
+    !Array.isArray(input.limitations) ||
+    !Array.isArray(input.workloads)
+  )
+    throw new Error("Inspection catalog is malformed.");
+  const catalogError = validateMeasurementCatalog(input);
+  if (catalogError) throw new Error(catalogError);
+  const count = input.workloads.filter(
+    (row: unknown) => isRecord(row) && row.kind === "process",
+  ).length;
+  const workloadError = validateWorkloads(
+    input.workloads,
+    { ...input, total_process_count: count, visible_process_count: count },
+    false,
+  );
+  if (workloadError) throw new Error(workloadError);
+  return input as unknown as WorkloadCatalog;
+}
+
+function validateMeasurementCatalog(payload: Record<string, any>): string | null {
+  if (
+    payload.quality_codes.length !== qualityCodes.length ||
+    payload.quality_codes.some((quality: unknown, index: number) => quality !== qualityCodes[index])
+  ) {
+    return "Quality catalog is unknown or reordered.";
+  }
+  for (let index = 0; index < payload.descriptors.length; index += 1) {
+    const descriptor = payload.descriptors[index];
+    const definition = isRecord(descriptor)
+      ? semanticDefinitions.get(`${descriptor.scope}:${descriptor.semantic}`)
+      : undefined;
+    const requiresInterval = definition?.sampled_over_interval ?? false;
+    if (
+      !isRecord(descriptor) ||
+      descriptor.id !== index ||
+      !sources.has(descriptor.source) ||
+      !definition ||
+      descriptor.unit !== definition.unit ||
+      descriptor.network_scope !==
+        networkScopeDefinition(descriptor.semantic, descriptor.scope, descriptor.source) ||
+      (requiresInterval
+        ? !safeInteger(descriptor.interval_ms) || descriptor.interval_ms === 0
+        : descriptor.interval_ms !== null)
+    ) {
+      return `Descriptor ${index} is invalid.`;
+    }
+  }
+  if (
+    payload.limitations.some(
+      (entry: unknown) =>
+        !isRecord(entry) ||
+        !limitationCodes.has(entry.code) ||
+        typeof entry.message !== "string" ||
+        entry.message.trim().length === 0,
+    )
+  ) {
+    return "Limitation catalog is malformed.";
+  }
+  return null;
 }

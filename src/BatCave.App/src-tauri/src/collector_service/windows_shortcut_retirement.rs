@@ -641,6 +641,95 @@ fn read_shortcut_contract(bytes: &[u8]) -> Result<ShortcutContract, String> {
     })
 }
 
+/// Builds bytes only. The GUI owns exclusive creation in its current user's Programs
+/// folder; this helper never opens a shortcut path or changes retirement policy.
+pub(crate) fn user_launch_shortcut_bytes(monitor: &Path) -> Result<Vec<u8>, String> {
+    fn check(result: i32) -> Result<(), String> {
+        if result < 0 {
+            Err(format!("user_launch_shell_link_failed:{result:#010x}"))
+        } else {
+            Ok(())
+        }
+    }
+    #[repr(C)]
+    struct StreamVtable {
+        unknown: UnknownVtable,
+        read: unsafe extern "system" fn(*mut c_void, *mut c_void, u32, *mut u32) -> i32,
+        write: unsafe extern "system" fn(*mut c_void, *const c_void, u32, *mut u32) -> i32,
+        seek: unsafe extern "system" fn(*mut c_void, i64, u32, *mut u64) -> i32,
+    }
+    let _apartment = ComApartment::initialize()?;
+    let mut raw = ptr::null_mut();
+    check(unsafe {
+        CoCreateInstance(
+            &CLSID_SHELL_LINK,
+            ptr::null_mut(),
+            CLSCTX_INPROC_SERVER,
+            &IID_SHELL_LINK_W,
+            &mut raw,
+        )
+    })?;
+    if raw.is_null() {
+        return Err("user_launch_shell_link_missing".to_string());
+    }
+    let shell = ComPtr(raw);
+    let target = wide_path(monitor);
+    let directory = wide_path(
+        monitor
+            .parent()
+            .ok_or("user_launch_monitor_parent_missing")?,
+    );
+    let description = "BatCave Monitor current-user launch entry"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    check(unsafe { (shell.shell_link().set_path)(shell.0, target.as_ptr()) })?;
+    check(unsafe { (shell.shell_link().set_arguments)(shell.0, [0u16].as_ptr()) })?;
+    check(unsafe { (shell.shell_link().set_hotkey)(shell.0, 0) })?;
+    check(unsafe { (shell.shell_link().set_working_directory)(shell.0, directory.as_ptr()) })?;
+    check(unsafe { (shell.shell_link().set_description)(shell.0, description.as_ptr()) })?;
+    check(unsafe { (shell.shell_link().set_icon_location)(shell.0, target.as_ptr(), 0) })?;
+    check(unsafe { (shell.shell_link().set_show_command)(shell.0, 1) })?;
+    let store = shell.query(&IID_PROPERTY_STORE, "user_launch_property_store_failed")?;
+    let mut app_id = APP_USER_MODEL_ID
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut value = PROPVARIANT::default();
+    value.Anonymous.Anonymous.vt = VT_LPWSTR;
+    value.Anonymous.Anonymous.Anonymous.pwszVal = app_id.as_mut_ptr();
+    // SetValue copies this borrowed string; PropVariantClear must not free its Vec storage.
+    check(unsafe { (store.property_store().set_value)(store.0, &PKEY_APP_USER_MODEL_ID, &value) })?;
+    check(unsafe { (store.property_store().commit)(store.0) })?;
+    let stream = ComPtr(unsafe { SHCreateMemStream(ptr::null(), 0) });
+    if stream.0.is_null() {
+        return Err("user_launch_stream_missing".to_string());
+    }
+    let persist = shell.query(&IID_PERSIST_STREAM, "user_launch_persist_stream_failed")?;
+    check(unsafe { (persist.persist_stream().save)(persist.0, stream.0, 1) })?;
+    let vtable = unsafe { &**stream.0.cast::<*const StreamVtable>() };
+    let mut length = 0;
+    check(unsafe { (vtable.seek)(stream.0, 0, 2, &mut length) })?;
+    if !(1..=SHORTCUT_MAX_BYTES).contains(&length) {
+        return Err("user_launch_stream_size_invalid".to_string());
+    }
+    check(unsafe { (vtable.seek)(stream.0, 0, 0, ptr::null_mut()) })?;
+    let mut bytes = vec![0; length as usize];
+    let mut read = 0;
+    check(unsafe {
+        (vtable.read)(
+            stream.0,
+            bytes.as_mut_ptr().cast(),
+            bytes.len() as u32,
+            &mut read,
+        )
+    })?;
+    if read as usize != bytes.len() {
+        return Err("user_launch_stream_truncated".to_string());
+    }
+    Ok(bytes)
+}
+
 fn shell_link_text(read: impl FnOnce(*mut u16, i32) -> i32) -> Result<String, String> {
     let mut buffer = vec![u16::MAX; COM_TEXT_CAPACITY];
     let result = read(buffer.as_mut_ptr(), buffer.len() as i32);
@@ -822,6 +911,32 @@ fn last_error(context: &str) -> String {
 mod tests {
     use super::*;
     use std::{fs, os::windows::fs::symlink_file};
+
+    #[test]
+    fn user_launch_stream_contains_exact_no_argument_monitor_contract() {
+        let monitor = Path::new(r"D:\Apps\BatCave Monitor\batcave-monitor.exe");
+        let bytes = user_launch_shortcut_bytes(monitor).expect("serialize native shell link");
+        let contract = read_shortcut_contract(&bytes).expect("read native shell link from memory");
+        assert!(fixed_path_eq(Path::new(&contract.target), monitor));
+        assert!(contract.arguments.is_empty());
+        assert!(fixed_path_eq(Path::new(&contract.icon_path), monitor));
+        assert_eq!(contract.icon_index, 0);
+        assert!(fixed_path_eq(
+            Path::new(&contract.working_directory),
+            monitor.parent().unwrap()
+        ));
+        assert_eq!(contract.show_command, 1);
+        assert_eq!(contract.hotkey, 0);
+        assert_eq!(
+            contract.description,
+            "BatCave Monitor current-user launch entry"
+        );
+        assert_eq!(contract.app_user_model_id, APP_USER_MODEL_ID);
+        assert!(
+            validate_shortcut_contract(&contract, monitor).is_err(),
+            "user state is not a historical shared shortcut"
+        );
+    }
 
     fn require_hresult(result: i32, context: &str) -> Result<(), String> {
         if result < 0 {

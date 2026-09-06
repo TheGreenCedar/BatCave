@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     NarrativeAvailability, NarrativeFactPacket, NarrativeModelDownloadState, NarrativeModelStatus,
-    NarrativeProvider, NarrativeProviderBackend, NarrativeProviderRequest, NarrativeResult,
-    ProviderGeneration,
+    NarrativeProvider, NarrativeProviderBackend, NarrativeProviderRequest, ProviderGeneration,
 };
 
 const SIDECAR_NAME: &str = "batcave-foundation-models";
@@ -265,7 +264,18 @@ struct SidecarResponse {
     version: u8,
     availability: NarrativeAvailability,
     #[serde(default)]
-    result: Option<NarrativeResult>,
+    result: Option<SidecarSelection>,
+}
+
+/// Provider envelope retains its original field names. `text` is an untrusted ID,
+/// never frontend copy; the coordinator admits it against the offered candidates.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct SidecarSelection {
+    provider: NarrativeProvider,
+    publication_seq: u64,
+    fact_digest: String,
+    text: String,
 }
 
 impl SidecarResponse {
@@ -368,6 +378,10 @@ mod tests {
             surface: NarrativeSurface::WorkloadInsight,
             publication_seq: 9,
             fact_digest: "a".repeat(64),
+            candidate_ids: vec![
+                super::super::NarrativeExplanationId::CpuUsage,
+                super::super::NarrativeExplanationId::MemoryUsage,
+            ],
         };
         let facts = fact_packet();
         let json = serde_json::to_string(&SidecarRequest::generate(&request, &facts))
@@ -385,6 +399,10 @@ mod tests {
             surface: NarrativeSurface::OverviewContributor,
             publication_seq: 7,
             fact_digest: "b".repeat(64),
+            candidate_ids: vec![
+                super::super::NarrativeExplanationId::CpuUsage,
+                super::super::NarrativeExplanationId::MemoryUsage,
+            ],
         };
         let facts = fact_packet();
         let provider = AppleFoundationProvider::new(PathBuf::from("missing"), Duration::ZERO);
@@ -397,7 +415,7 @@ mod tests {
         let mismatched = SidecarResponse {
             version: SIDECAR_PROTOCOL_VERSION,
             availability: NarrativeAvailability::Available,
-            result: Some(NarrativeResult {
+            result: Some(SidecarSelection {
                 provider: NarrativeProvider::AppleFoundation,
                 publication_seq: 8,
                 fact_digest: request.fact_digest.clone(),

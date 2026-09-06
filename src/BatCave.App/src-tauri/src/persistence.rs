@@ -1450,7 +1450,10 @@ impl RuntimePersistenceCoordinator {
     }
 }
 
-fn runtime_failure(failure: &PersistenceFailure, now_ms: u64) -> RuntimePersistenceFailure {
+pub(crate) fn runtime_failure(
+    failure: &PersistenceFailure,
+    now_ms: u64,
+) -> RuntimePersistenceFailure {
     RuntimePersistenceFailure {
         code: failure_code(failure.code).to_string(),
         operation: runtime_operation(failure.operation),

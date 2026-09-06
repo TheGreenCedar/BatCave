@@ -8,7 +8,8 @@ import {
   reconcileWorkloadSelection,
   selectedWorkloadDetail,
   shouldHoldProcessOrder,
-  shouldStabilizeProcessOrder,
+  advanceProcessRanking,
+  ProcessInteraction,
   stabilizeProcessRows,
   windowProcessViewRows,
   workloadSelectionHighlightsRow,
@@ -83,20 +84,43 @@ test("stabilizeProcessRows updates values without moving rows under the user", (
   );
 });
 
-test("only the default attention ranking holds live row order", () => {
-  assert.equal(shouldStabilizeProcessOrder("attention"), true);
-  assert.equal(shouldStabilizeProcessOrder("cpu"), false);
-  assert.equal(shouldStabilizeProcessOrder("memory"), false);
-  assert.equal(shouldStabilizeProcessOrder("io"), false);
-  assert.equal(shouldStabilizeProcessOrder("network"), false);
-  assert.equal(shouldStabilizeProcessOrder("name"), false);
+test("only active Explore interaction holds ranking, passive selection does not", () => {
+  assert.equal(shouldHoldProcessOrder({ view: "explore", interacting: true }), true);
+  assert.equal(shouldHoldProcessOrder({ view: "explore", interacting: false }), false);
+  assert.equal(shouldHoldProcessOrder({ view: "overview", interacting: true }), false);
 });
 
-test("pointer or keyboard interaction holds any active sort target", () => {
-  assert.equal(shouldHoldProcessOrder("cpu", true, 0, false), true);
-  assert.equal(shouldHoldProcessOrder("name", true, 0, false), true);
-  assert.equal(shouldHoldProcessOrder("cpu", false, 0, true), false);
-  assert.equal(shouldHoldProcessOrder("attention", false, 0, true), true);
+test("pointer exit retains a keyboard interaction until focus also leaves", () => {
+  const interaction = new ProcessInteraction();
+  assert.equal(interaction.set("pointer", true), true);
+  assert.equal(interaction.set("focus", true), true);
+  assert.equal(interaction.set("pointer", false), true);
+  assert.equal(interaction.set("focus", false), false);
+  assert.equal(interaction.set("pointer", true), true);
+  assert.equal(interaction.set("focus", false), true);
+  assert.equal(interaction.set("pointer", false), false);
+});
+
+test("ranking releases on pointer exit and navigation while retaining fresh values and identities", () => {
+  const initial = [row("1", 20), row("2", 10)];
+  const next = [row("2", 90), row("1", 40)];
+  const held = advanceProcessRanking(initial, next, true);
+  assert.equal(held.updateAvailable, true);
+  assert.deepEqual(held.rows.map(processViewRowKey), initial.map(processViewRowKey));
+  assert.deepEqual(
+    held.rows.map((row) => processViewRowMetrics(row).cpuPercent),
+    [40, 90],
+  );
+  const released = advanceProcessRanking(held.rows, next, false);
+  assert.deepEqual(released.rows, next);
+  assert.equal(released.updateAvailable, false);
+  const overview = advanceProcessRanking(
+    held.rows,
+    [],
+    shouldHoldProcessOrder({ view: "overview", interacting: true }),
+  );
+  assert.deepEqual(overview.rows, []);
+  assert.equal(overview.updateAvailable, false);
 });
 
 test("selection follows identity through reorder and clears on disappearance or PID reuse", () => {

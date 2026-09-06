@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { displayProcessName } from "../../cockpit";
+  import { ProcessInteraction } from "../../process";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import {
     processRowSecondaryLabel,
@@ -76,10 +78,16 @@
     return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
   }
 
+  const interaction = new ProcessInteraction();
+
+  function setInteraction(source: "pointer" | "focus", active: boolean): void {
+    onInteractionChange(interaction.set(source, active));
+  }
+
   function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
     const next = event.relatedTarget;
     if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
-      onInteractionChange(false);
+      setInteraction("focus", false);
     }
   }
 
@@ -118,9 +126,9 @@
   class="mobile-process-list"
   role="region"
   aria-label="Attention queue cards"
-  onpointerenter={() => onInteractionChange(true)}
-  onpointerleave={() => onInteractionChange(false)}
-  onfocusin={() => onInteractionChange(true)}
+  onpointerenter={() => setInteraction("pointer", true)}
+  onpointerleave={() => setInteraction("pointer", false)}
+  onfocusin={() => setInteraction("focus", true)}
   onfocusout={handleFocusOut}
 >
   {#each cardRows as row (processViewRowKey(row))}
@@ -153,7 +161,7 @@
               matched={resolvedIcon.origin === "name_match"}
             />
             <span>
-              <strong>{row.kind === "group" ? row.detail.label : process?.name}</strong>
+              <strong title={row.kind === "group" ? row.detail.label : process?.exe || process?.name}>{displayProcessName(row.kind === "group" ? row.detail.label : process?.name ?? "")}</strong>
               {#if secondaryLabel}<small>{secondaryLabel}</small>{/if}
             </span>
           </span>
@@ -187,6 +195,7 @@
           class="mobile-group-expand"
           type="button"
           aria-expanded={expanded}
+          data-workload-group-key={row.detail.group_key}
           onclick={() => onToggleGroup(row.detail.group_key)}
         >
           <CaretRight class={expanded ? "expanded" : ""} size={15} weight="bold" aria-hidden="true" />

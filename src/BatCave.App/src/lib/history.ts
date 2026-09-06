@@ -1,3 +1,4 @@
+import { metricPresentation } from "./telemetryPresentation.ts";
 import type { MetricQualityInfo } from "./types";
 
 export function nextMetricHistory(
@@ -6,7 +7,7 @@ export function nextMetricHistory(
   quality: MetricQualityInfo | undefined,
   maxPoints: number,
 ): number[] {
-  if (quality?.quality === "unavailable" || quality?.quality === "held") {
+  if (!metricPresentation(quality, "live", true).canDisplay) {
     return [];
   }
 
@@ -20,7 +21,7 @@ export function resourceHistoryWindowLabel(
   quality: MetricQualityInfo | undefined,
   hasSample: boolean,
 ): string {
-  if (!hasSample || quality?.quality === "unavailable" || quality?.quality === "held") {
+  if (!metricPresentation(quality, "live", hasSample).canDisplay) {
     return "No trusted history";
   }
   if (pointCount === 0) return "No history";

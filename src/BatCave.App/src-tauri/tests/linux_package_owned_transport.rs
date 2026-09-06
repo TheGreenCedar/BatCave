@@ -275,7 +275,7 @@ fn parse_packaged_benchmark(
     exact_string(
         summary,
         "serialization_scope",
-        "runtime_protocol_v3_encode_and_json",
+        "runtime_protocol_v4_encode_and_json",
     )?;
     exact_string(summary, "latency_gate_metric", "median_live_command_p95_ms")?;
     exact_string(summary, "platform", "linux")?;
@@ -375,7 +375,7 @@ fn packaged_benchmark_fixture() -> Value {
         "whole_app_measured": false,
         "live_command": "refresh_now",
         "command_transport": "in_process_bounded_channel",
-        "serialization_scope": "runtime_protocol_v3_encode_and_json",
+        "serialization_scope": "runtime_protocol_v4_encode_and_json",
         "latency_gate_metric": "median_live_command_p95_ms",
         "platform": "linux",
         "architecture": expected_architecture(),

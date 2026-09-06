@@ -54,3 +54,16 @@ test("rejects expired reviews and vulnerabilities", () => {
     /vulnerabilities.*review expired/s,
   );
 });
+
+test("reports advisory-free yanked packages without crashing or accepting them", () => {
+  const yanked = {
+    vulnerabilities: { found: false, count: 0 },
+    warnings: {
+      yanked: [{ advisory: null, package: { name: "chacha20", version: "0.10.1" } }],
+    },
+  };
+  assert.throws(
+    () => validateAudit(yanked, { warnings: [] }, "2026-09-05"),
+    /unreviewed cargo-audit warning: no-advisory\|yanked\|chacha20\|0\.10\.1/,
+  );
+});

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, tick } from "svelte";
   import { windowProcessViewRows, type ProcessColumn, type SortKey } from "../../process";
   import type { ResolvedProcessIconCatalog } from "../../processIcons";
   import type { ProcessFocusMode, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
@@ -18,11 +19,49 @@
   export let platform: RuntimePlatform = "fixture";
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
+  // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
   export let onInteractionChange: (active: boolean) => void;
   export let onExpandedChange: (count: number) => void = () => {};
 
   const resultWindow = 180;
   let expandedGroups: Record<string, boolean> = {};
+  let mobileLayout = false;
+  // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this element binding before onMount.
+  let queue: HTMLElement;
+
+  onMount(() => {
+    // Keep this boundary aligned with the cards layout in redesign.css.
+    const media = window.matchMedia("(max-width: 899px)");
+    let revision = 0;
+    mobileLayout = media.matches;
+
+    const changeLayout = async (event: MediaQueryListEvent) => {
+      if (mobileLayout === event.matches) return;
+      const active = document.activeElement;
+      const restoreFocus = active instanceof HTMLElement && queue.contains(active);
+      const attribute = active?.hasAttribute("data-workload-group-key")
+        ? "data-workload-group-key"
+        : "data-workload-id";
+      const identity = active?.getAttribute(attribute);
+      const current = ++revision;
+      // Replacing a focused or hovered list must release its ranking hold.
+      onInteractionChange(false);
+      mobileLayout = event.matches;
+      await tick();
+      if (current !== revision || !restoreFocus) return;
+      const replacement = identity
+        ? queue.querySelector<HTMLElement>(`[${attribute}="${CSS.escape(identity)}"]`)
+        : null;
+      (replacement ?? queue).focus();
+    };
+
+    media.addEventListener("change", changeLayout);
+    return () => {
+      revision += 1;
+      media.removeEventListener("change", changeLayout);
+      onInteractionChange(false);
+    };
+  });
 
   $: visibleRows = windowProcessViewRows(processRows, resultWindow);
   $: visibleGroupKeys = new Set(
@@ -33,7 +72,6 @@
   $: visibleRankedCount = visibleRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: countLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
   $: queueTitle = focusMode === "attention" ? "Attention queue" : focusMode === "io" ? "I/O active" : "All apps";
-  $: queueEyebrow = sortKey === "attention" ? "Live values, stable order while you inspect" : "Live values, sorted as samples update";
 
   function processCountLabel(
     visibleCount: number,
@@ -41,10 +79,8 @@
     mode: ProcessFocusMode,
     filterText: string,
   ): string {
-    const scope = filterText.trim() ? "matching" : mode === "attention" ? "needing attention" : mode === "io" ? "I/O active" : "ranked";
-    return totalCount > 0 && visibleCount !== totalCount
-      ? `${visibleCount} ${scope} of ${totalCount}`
-      : `${visibleCount} ${scope}`;
+    const scope = filterText.trim() ? "matching workloads" : mode === "attention" ? "active workloads" : mode === "io" ? "I/O workloads" : "workloads";
+    return `${visibleCount} ${scope}${totalCount > 0 ? ` · ${totalCount} processes sampled` : ""}`;
   }
 
   function toggleGroup(key: string): void {
@@ -65,41 +101,45 @@
 </script>
 
 <section
+  bind:this={queue}
   class="attention-queue"
   aria-labelledby="attention-queue-title"
+  tabindex="-1"
   data-order-held={rankingUpdateAvailable || undefined}
 >
   <header class="queue-heading">
     <div>
-      <span>{queueEyebrow}</span>
       <h2 id="attention-queue-title">{queueTitle} <small>{countLabel}</small></h2>
     </div>
   </header>
 
-  <ProcessTable
-    processRows={visibleRows}
-    {columns}
-    {selectedWorkloadId}
-    {sortKey}
-    {sortDirection}
-    {processIcons}
-    {expandedGroups}
-    {onSelect}
-    {onToggleSort}
-    onToggleGroup={toggleGroup}
-    {onInteractionChange}
-    {platform}
-  />
-  <MobileProcessList
-    processRows={visibleRows}
-    {selectedWorkloadId}
-    {processIcons}
-    {expandedGroups}
-    {onSelect}
-    onToggleGroup={toggleGroup}
-    {onInteractionChange}
-    {platform}
-  />
+  {#if mobileLayout}
+    <MobileProcessList
+      processRows={visibleRows}
+      {selectedWorkloadId}
+      {processIcons}
+      {expandedGroups}
+      {onSelect}
+      onToggleGroup={toggleGroup}
+      {onInteractionChange}
+      {platform}
+    />
+  {:else}
+    <ProcessTable
+      processRows={visibleRows}
+      {columns}
+      {selectedWorkloadId}
+      {sortKey}
+      {sortDirection}
+      {processIcons}
+      {expandedGroups}
+      {onSelect}
+      {onToggleSort}
+      onToggleGroup={toggleGroup}
+      {onInteractionChange}
+      {platform}
+    />
+  {/if}
 
   {#if rankedCount > visibleRankedCount}
     <p class="result-window-note">Showing the first {visibleRankedCount} of {rankedCount} apps and processes. Search to narrow the list.</p>

@@ -15,7 +15,7 @@ export function validateAudit(audit, baseline, today = new Date().toISOString().
 
   const current = Object.entries(audit.warnings ?? {}).flatMap(([kind, warnings]) =>
     warnings.map((warning) => ({
-      id: warning.advisory.id,
+      id: warning.advisory?.id ?? "no-advisory",
       kind,
       package: warning.package.name,
       version: warning.package.version,

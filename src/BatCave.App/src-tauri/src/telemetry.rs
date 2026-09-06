@@ -167,6 +167,7 @@ impl TelemetryCollector {
         let started = Instant::now();
         let mut warnings = Vec::new();
 
+        let process_sample_started_ms = now_ms();
         self.system.refresh_specifics(sysinfo_refresh_kind());
         self.networks.refresh(true);
 
@@ -185,6 +186,7 @@ impl TelemetryCollector {
             &sysinfo_cpu_by_generation,
             &mut warnings,
             self,
+            process_sample_started_ms,
         )?;
         let mut system_snapshot = collect_system_snapshot(
             sysinfo_snapshot,
@@ -411,6 +413,7 @@ fn collect_processes(
     sysinfo_cpu_by_generation: &HashMap<SysinfoProcessJoinKey, f64>,
     warnings: &mut Vec<String>,
     collector: &mut TelemetryCollector,
+    process_sample_started_ms: u64,
 ) -> Result<Vec<ProcessSample>, String> {
     #[cfg(windows)]
     let _ = collector;
@@ -427,6 +430,10 @@ fn collect_processes(
                     .collect::<HashMap<_, _>>();
                 Ok(native_processes
                     .into_iter()
+                    .filter(|process| {
+                        process.start_time_ms == 0
+                            || process.start_time_ms < process_sample_started_ms
+                    })
                     .map(|process| {
                         enrich_native_process(
                             process,
@@ -450,7 +457,9 @@ fn collect_processes(
         let _ = sysinfo_cpu_by_generation;
         let mut processes = sysinfo_processes.to_vec();
         let process_count = processes.len();
-        let collection = collector.macos_processes.enrich(&mut processes);
+        let collection = collector
+            .macos_processes
+            .enrich(&mut processes, process_sample_started_ms);
         if process_count > 0
             && collection
                 .denied_count
@@ -467,7 +476,12 @@ fn collect_processes(
 
     #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
-        let _ = (sysinfo_cpu_by_generation, warnings, collector);
+        let _ = (
+            sysinfo_cpu_by_generation,
+            warnings,
+            collector,
+            process_sample_started_ms,
+        );
         Ok(sysinfo_processes.to_vec())
     }
 }

@@ -194,11 +194,11 @@
       <section class="settings-section narrative-settings">
         <div class="settings-section-heading">
           <h3>Enhanced explanations</h3>
-          <p>Optionally rewrites two short explanations with a model running on this machine.</p>
+          <p>Let a local model choose which measured activity to explain. BatCave supplies the facts and wording.</p>
         </div>
         <label class="setting-row narrative-toggle">
           <span>
-            <strong>Use locally generated explanations</strong>
+            <strong>Use local AI to choose explanations</strong>
             <small>Off by default. Deterministic explanations always remain available.</small>
           </span>
           <input

@@ -5,8 +5,7 @@ export interface ResourceSummaryOption {
   ariaLabel: string;
   label: string;
   value: string;
-  supportingLabel: string;
-  supportingValue: string;
+  supportingMetrics: { label: string; value: string }[];
   statusLabel: string;
   shortStatusLabel: string;
   values: number[];
