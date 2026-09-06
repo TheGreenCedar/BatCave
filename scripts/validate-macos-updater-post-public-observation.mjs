@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { validateSanitizedReleaseEvidenceValue } from "./validate-release-evidence-packet.mjs";
-import { verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
+import { parseReleaseTag } from "./verify-release-version.mjs";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
@@ -45,7 +45,7 @@ function exactKeys(value, expected, field) {
 }
 
 export function validateMacosUpdaterPostPublicObservation(value, tag, sourceSha) {
-  const { version } = verifyWorkspaceReleaseVersion(tag);
+  const { version } = parseReleaseTag(tag);
   if (!COMMIT_SHA.test(sourceSha)) {
     fail("source SHA must be an exact lowercase 40-character commit SHA");
   }

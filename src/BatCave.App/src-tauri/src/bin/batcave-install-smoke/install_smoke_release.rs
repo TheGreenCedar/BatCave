@@ -1208,19 +1208,18 @@ impl PublicSource for GitHubSource {
         validate_attestation_count(response.attestations.len())?;
         let mut bundles = Vec::new();
         for attestation in response.attestations {
-            if let (Some(bundle), None) = (attestation.bundle.as_ref(), &attestation.bundle_url) {
-                bundles.push(serialize_inline_bundle(bundle)?);
-            } else if let (None, Some(url)) = (attestation.bundle, attestation.bundle_url) {
-                let response = self.get(&url, true)?;
-                let compressed = self.read_response(
-                    response,
-                    MAX_ATTESTATION_BYTES,
-                    Failure::AttestationRejected,
-                )?;
-                bundles.push(decode_release_bundle_blob(&compressed)?);
-            } else {
-                return Err(Failure::AttestationRejected);
-            }
+            bundles.push(read_attestation_bundle(
+                attestation.bundle.as_ref(),
+                attestation.bundle_url.as_deref(),
+                |url| {
+                    let response = self.get(url, true)?;
+                    self.read_response(
+                        response,
+                        MAX_ATTESTATION_BYTES,
+                        Failure::AttestationRejected,
+                    )
+                },
+            )?);
         }
         validate_attestation_count(bundles.len())?;
         Ok(bundles)
@@ -1254,6 +1253,19 @@ impl PublicSource for GitHubSource {
         self.deadline.remaining()?;
         Ok(total)
     }
+}
+
+fn read_attestation_bundle(
+    inline: Option<&serde_json::Value>,
+    url: Option<&str>,
+    download: impl FnOnce(&str) -> Result<Vec<u8>, Failure>,
+) -> Result<Vec<u8>, Failure> {
+    // GitHub may return both representations. Never fall back after an invalid inline bundle.
+    if let Some(bundle) = inline {
+        return serialize_inline_bundle(bundle);
+    }
+    let url = url.ok_or(Failure::AttestationRejected)?;
+    decode_release_bundle_blob(&download(url)?)
 }
 
 fn decode_release_bundle_blob(compressed: &[u8]) -> Result<Vec<u8>, Failure> {
@@ -1543,10 +1555,6 @@ fn validate_release_statement(
     if statement.get("_type").and_then(serde_json::Value::as_str)
         != Some("https://in-toto.io/Statement/v1")
         || statement
-            .get("predicateType")
-            .and_then(serde_json::Value::as_str)
-            != Some("https://in-toto.io/attestation/release/v0.1")
-        || statement
             .pointer("/predicate/repository")
             .and_then(serde_json::Value::as_str)
             != Some(REPOSITORY)
@@ -1562,10 +1570,34 @@ fn validate_release_statement(
             .pointer("/predicate/tag")
             .and_then(serde_json::Value::as_str)
             != Some(tag)
-        || statement
-            .pointer("/predicate/releaseId")
-            .and_then(serde_json::Value::as_str)
-            != Some(&release.id.to_string())
+    {
+        return Err(Failure::AttestationRejected);
+    }
+    let release_id_field = match statement
+        .get("predicateType")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("https://in-toto.io/attestation/release/v0.1") => "/predicate/releaseId",
+        Some("https://in-toto.io/attestation/release/v0.2") => {
+            if statement
+                .pointer("/predicate/packageId")
+                .and_then(serde_json::Value::as_str)
+                != Some(REPOSITORY_ID)
+                || statement
+                    .pointer("/predicate/purl")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(&format!("pkg:github/{REPOSITORY}@{tag}"))
+            {
+                return Err(Failure::AttestationRejected);
+            }
+            "/predicate/databaseId"
+        }
+        _ => return Err(Failure::AttestationRejected),
+    };
+    if statement
+        .pointer(release_id_field)
+        .and_then(serde_json::Value::as_str)
+        != Some(&release.id.to_string())
     {
         return Err(Failure::AttestationRejected);
     }
@@ -1992,6 +2024,70 @@ mod tests {
     }
 
     #[test]
+    fn release_attestation_versions_bind_their_release_identity() {
+        let (source, _) = fixture();
+        let release = source.releases.borrow()[0].clone();
+        let legacy = release_statement(&release);
+        let mut current = legacy.clone();
+        current["predicateType"] = serde_json::json!("https://in-toto.io/attestation/release/v0.2");
+        current["predicate"]
+            .as_object_mut()
+            .unwrap()
+            .remove("releaseId");
+        current["predicate"]["databaseId"] = serde_json::json!(release.id.to_string());
+        current["predicate"]["packageId"] = serde_json::json!(REPOSITORY_ID);
+        current["predicate"]["purl"] = serde_json::json!(format!("pkg:github/{REPOSITORY}@{TAG}"));
+        for valid in [legacy, current] {
+            assert!(validate_release_statement(&valid, TAG, SHA, &release).is_ok());
+            let release_field = if valid["predicate"]["databaseId"].is_string() {
+                "databaseId"
+            } else {
+                "releaseId"
+            };
+            let mut fields = vec![
+                release_field,
+                "repository",
+                "repositoryId",
+                "ownerId",
+                "tag",
+            ];
+            if release_field == "databaseId" {
+                fields.extend(["packageId", "purl"]);
+            }
+            for field in fields {
+                for replacement in [serde_json::Value::Null, serde_json::json!("wrong")] {
+                    let mut invalid = valid.clone();
+                    invalid["predicate"][field] = replacement;
+                    assert_eq!(
+                        validate_release_statement(&invalid, TAG, SHA, &release),
+                        Err(Failure::AttestationRejected),
+                        "{field}"
+                    );
+                }
+            }
+            let mut invalid = valid.clone();
+            invalid["predicateType"] =
+                serde_json::json!("https://in-toto.io/attestation/release/v0.3");
+            assert_eq!(
+                validate_release_statement(&invalid, TAG, SHA, &release),
+                Err(Failure::AttestationRejected)
+            );
+            let mut invalid = valid.clone();
+            invalid["subject"][0]["digest"]["sha1"] = serde_json::json!("0".repeat(40));
+            assert_eq!(
+                validate_release_statement(&invalid, TAG, SHA, &release),
+                Err(Failure::AttestationRejected)
+            );
+            let mut invalid = valid;
+            invalid["subject"].as_array_mut().unwrap().pop();
+            assert_eq!(
+                validate_release_statement(&invalid, TAG, SHA, &release),
+                Err(Failure::AttestationRejected)
+            );
+        }
+    }
+
+    #[test]
     fn release_attestation_rejects_extra_or_multi_algorithm_subjects() {
         let (source, _) = fixture();
         let release = source.releases.borrow()[0].clone();
@@ -2017,6 +2113,52 @@ mod tests {
             validate_release_statement(&multi, TAG, SHA, &release),
             Err(Failure::AttestationRejected)
         );
+    }
+
+    #[test]
+    fn inline_attestation_takes_precedence_without_url_fallback() {
+        let inline = serde_json::json!({ "mediaType": "fixture" });
+        let bytes = serde_json::to_vec(&inline).unwrap();
+        for url in [None, Some("https://example.invalid/bundle")] {
+            assert_eq!(
+                read_attestation_bundle(Some(&inline), url, |_| panic!(
+                    "inline must not fetch URL"
+                )),
+                Ok(bytes.clone())
+            );
+        }
+        let compressed = snap::raw::Encoder::new().compress_vec(&bytes).unwrap();
+        assert_eq!(
+            read_attestation_bundle(None, Some("https://example.invalid/bundle"), |_| Ok(
+                compressed
+            )),
+            Ok(bytes)
+        );
+        assert_eq!(
+            read_attestation_bundle(None, None, |_| panic!("no URL")),
+            Err(Failure::AttestationRejected)
+        );
+        let oversized =
+            serde_json::json!({ "bundle": "x".repeat(MAX_ATTESTATION_BYTES as usize + 1) });
+        assert_eq!(
+            read_attestation_bundle(
+                Some(&oversized),
+                Some("https://example.invalid/bundle"),
+                |_| panic!("oversized inline must not fall back")
+            ),
+            Err(Failure::AttestationRejected)
+        );
+        let malformed = serde_json::json!("invalid bundle");
+        let bytes = read_attestation_bundle(
+            Some(&malformed),
+            Some("https://example.invalid/bundle"),
+            |_| panic!("malformed inline must not fall back"),
+        )
+        .unwrap();
+        assert!(matches!(
+            parse_bundle(&bytes),
+            Err(Failure::AttestationRejected)
+        ));
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { linuxPersistenceCaptureInternals } from "./capture-linux-current-user-persistence.mjs";
 import { validateSanitizedReleaseEvidenceValue } from "./validate-release-evidence-packet.mjs";
 import { RELEASE_REPOSITORY, verifyPublicRelease } from "./verify-public-release.mjs";
-import { parseReleaseTag, verifyWorkspaceReleaseVersion } from "./verify-release-version.mjs";
+import { parseReleaseTag } from "./verify-release-version.mjs";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
 const MAX_RELEASE_READBACK_BYTES = 1024 * 1024;
@@ -247,7 +247,7 @@ async function run(profile, selectors) {
   if (process.arch !== "x64") {
     fail(`post-public ${profile.displayName} smoke requires the amd64 release host`);
   }
-  verifyWorkspaceReleaseVersion(selectors.tag);
+  parseReleaseTag(selectors.tag);
 
   const workspace = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), profile.workspacePrefix)),

@@ -52,6 +52,15 @@ test("accepts the exact staging-only non-evidence observation", () => {
   );
 });
 
+test("rechecks a historical release independently of the current Cargo version", () => {
+  const value = observation();
+  value.observation.release.tag = "v0.1.0";
+  value.observation.release.app_version = "0.1.0";
+  assert.equal(validateMacosUpdaterPostPublicObservation(value, "v0.1.0", SOURCE_SHA), value);
+  value.observation.release.app_version = APP_VERSION;
+  assert.throws(() => validateMacosUpdaterPostPublicObservation(value, "v0.1.0", SOURCE_SHA));
+});
+
 test("rejects promotion, failed gates, selector drift, and extra authority fields", () => {
   const cases = [
     (value) => (value.observation.release_evidence_eligible = true),

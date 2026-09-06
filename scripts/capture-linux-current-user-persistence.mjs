@@ -214,6 +214,20 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function raceWithTimeout(promises, milliseconds, timeoutValue) {
+  let timer;
+  try {
+    return await Promise.race([
+      ...promises,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(timeoutValue), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function groupAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -243,7 +257,7 @@ function signalGroup(pid, signal) {
 async function terminateAndSettle(child, closed) {
   const pid = child.pid;
   if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return Promise.race([closed.then(() => true), delay(TERMINATION_TIMEOUT_MS).then(() => false)]);
+    return raceWithTimeout([closed.then(() => true)], TERMINATION_TIMEOUT_MS, false);
   }
   signalGroup(pid, "SIGTERM");
   const softDeadline = Date.now() + Math.floor(TERMINATION_TIMEOUT_MS / 2);
@@ -253,7 +267,7 @@ async function terminateAndSettle(child, closed) {
   }
   const hardDeadline = Date.now() + Math.ceil(TERMINATION_TIMEOUT_MS / 2);
   const [closeObserved, groupSettled] = await Promise.all([
-    Promise.race([closed.then(() => true), delay(TERMINATION_TIMEOUT_MS).then(() => false)]),
+    raceWithTimeout([closed.then(() => true)], TERMINATION_TIMEOUT_MS, false),
     waitForGroupSettlement(pid, hardDeadline),
   ]);
   return closeObserved && groupSettled;
@@ -262,7 +276,7 @@ async function terminateAndSettle(child, closed) {
 async function runBoundedProcess(
   executable,
   args,
-  { cwd, env, interruptPromise = null, timeoutMs = PROCESS_TIMEOUT_MS },
+  { cwd, env, operation = "fixed process", interruptPromise = null, timeoutMs = PROCESS_TIMEOUT_MS },
 ) {
   const child = spawn(executable, args, {
     cwd,
@@ -300,12 +314,11 @@ async function runBoundedProcess(
   const races = [
     closed.then((result) => ({ trigger: "close", result })),
     exceeded,
-    delay(timeoutMs).then(() => ({ trigger: "timeout" })),
   ];
   if (interruptPromise) {
     races.push(interruptPromise.then((signal) => ({ signal, trigger: "interrupt" })));
   }
-  const winner = await Promise.race(races);
+  const winner = await raceWithTimeout(races, timeoutMs, { trigger: "timeout" });
 
   if (winner.trigger !== "close") {
     const settled = await terminateAndSettle(child, closed);
@@ -326,7 +339,14 @@ async function runBoundedProcess(
     fail("fixed process left descendants after parent exit");
   }
   if (winner.result.code !== 0 || winner.result.signal !== null) {
-    fail(`fixed process exited unsuccessfully (${winner.result.code ?? winner.result.signal})`);
+    const stderr = Buffer.concat(stderrChunks)
+      .toString("utf8")
+      .slice(-2048)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
+      .trim();
+    fail(
+      `${operation} exited unsuccessfully (${winner.result.code ?? winner.result.signal})${stderr ? `: ${stderr}` : ""}`,
+    );
   }
   return {
     stderr: Buffer.concat(stderrChunks),
@@ -349,7 +369,7 @@ async function runProof(executable, phase, environment, cwd) {
   const output = await runBoundedProcess(
     executable,
     ["--current-user-persistence-proof", "--phase", phase],
-    { cwd, env: environment },
+    { cwd, env: environment, operation: `persistence ${phase}` },
   );
   const text = output.stdout.toString("utf8").trim();
   if (!text.startsWith("{") || !text.endsWith("}") || text.includes("\n")) {
@@ -400,6 +420,7 @@ async function runInstalledTelemetryProof(
       "10000",
     ],
     {
+      operation: "installed telemetry",
       cwd: runtimeDirectory,
       env: proofEnvironment(home, temporaryDirectory, { appimage }),
       timeoutMs: COMMAND_TIMEOUT_MS,
@@ -604,6 +625,7 @@ async function runFixedRootUnit(operation, value = null) {
     ],
     {
       env: FIXED_COMMAND_ENV,
+      operation: `package ${operation}`,
       interruptPromise: signalReceived,
       timeoutMs: ROOT_UNIT_CLIENT_TIMEOUT_MS,
     },

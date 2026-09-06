@@ -11,8 +11,10 @@ import {
 const releaseWorkflow = fs.readFileSync(
   new URL("../.github/workflows/release.yml", import.meta.url), "utf8",
 );
+const publishedWorkflow = fs.readFileSync(new URL("../.github/workflows/verify-published-release.yml", import.meta.url), "utf8");
 function workflowJob(name) {
-  const match = releaseWorkflow.match(
+  const workflow = name.endsWith("_post_public_smoke") ? publishedWorkflow : releaseWorkflow;
+  const match = workflow.match(
     new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][a-z0-9_-]*:\\n|(?![\\s\\S]))`, "m"),
   );
   assert.ok(match, `release workflow job ${name} must exist`);
@@ -129,31 +131,29 @@ test("workflow checks green main before builds and again before publication with
 
 test("runs the deb smoke on a fresh pinned Ubuntu host after public release publication", () => {
   const job = workflowJob("linux_deb_post_public_smoke");
-  assert.match(job, /^    needs: \[prepare, finalize\]$/m);
-  assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
+  assert.match(job, /^    needs: verify_origin$/m);
   assert.match(job, /^    runs-on: ubuntu-22\.04$/m);
-  assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
+  assert.match(job, /ref: \$\{\{ github\.sha \}\}/u);
   assert.match(
     job,
     /node scripts\/linux-deb-post-public-smoke\.mjs "\$\{RELEASE_TAG\}" "\$\{RELEASE_SOURCE_SHA\}"/u,
   );
   assert.match(
     job,
-    /name: batcave-release-candidate-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-input/u,
+    /name: batcave-release-candidate-\$\{\{ inputs\.tag \}\}[\s\S]*path: post-public-input/u,
   );
   assert.match(
     job,
-    /name: Retain sanitized Linux deb post-public observation[\s\S]*name: batcave-linux-deb-post-public-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-output\/linux-deb-observation\.json/u,
+    /name: Retain sanitized Linux deb post-public observation[\s\S]*name: batcave-linux-deb-post-public-\$\{\{ inputs\.tag \}\}[\s\S]*path: post-public-output\/linux-deb-observation\.json/u,
   );
   assert.doesNotMatch(job, /(?:--deb|--output-dir|RUNNER_TEMP|github\.event|workflow_dispatch)/u);
 });
 
 test("runs the AppImage smoke from the same independent public candidate inventory", () => {
   const job = workflowJob("linux_appimage_post_public_smoke");
-  assert.match(job, /^    needs: \[prepare, finalize\]$/m);
-  assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
+  assert.match(job, /^    needs: verify_origin$/m);
   assert.match(job, /^    runs-on: ubuntu-22\.04$/m);
-  assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
+  assert.match(job, /ref: \$\{\{ github\.sha \}\}/u);
   assert.match(
     job,
     /dtolnay\/rust-toolchain@[0-9a-f]{40}[\s\S]*bash scripts\/install-linux-deps\.sh[\s\S]*cargo build --quiet --locked[\s\S]*--bin batcave-verify-updater-signature/u,
@@ -164,7 +164,7 @@ test("runs the AppImage smoke from the same independent public candidate invento
   );
   assert.match(
     job,
-    /name: batcave-release-candidate-\$\{\{ needs\.prepare\.outputs\.tag \}\}[\s\S]*path: post-public-input/u,
+    /name: batcave-release-candidate-\$\{\{ inputs\.tag \}\}[\s\S]*path: post-public-input/u,
   );
   assert.match(
     job,
@@ -178,10 +178,9 @@ test("runs the AppImage smoke from the same independent public candidate invento
 
 test("runs the macOS updater observer through the closed Rust-owned staging profile", () => {
   const job = workflowJob("macos_updater_post_public_smoke");
-  assert.match(job, /^    needs: \[prepare, finalize\]$/m);
-  assert.match(job, /^    if: needs\.prepare\.outputs\.publish == 'true'$/m);
+  assert.match(job, /^    needs: verify_origin$/m);
   assert.match(job, /^    runs-on: macos-15$/m);
-  assert.match(job, /ref: \$\{\{ needs\.prepare\.outputs\.source_sha \}\}/u);
+  assert.match(job, /ref: \$\{\{ github\.sha \}\}/u);
   assert.match(
     job,
     /cargo run --quiet --locked[\s\S]*--bin batcave-install-smoke --features private-release-verifier -- "\$\{RELEASE_TAG\}" macos-updater/u,
