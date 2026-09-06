@@ -52,7 +52,7 @@ tauri-build = { version = "2.6.3", features = [] }
 foundry-local-sdk = "=1.2.0"
 
 [dependencies]
-base64 = "0.22.1"
+base64 = "0.23.1"
 flate2 = { version = "1.1.9", optional = true }
 minisign-verify = "0.2.5"
 serde = { version = "1.0.228", features = ["derive"] }
