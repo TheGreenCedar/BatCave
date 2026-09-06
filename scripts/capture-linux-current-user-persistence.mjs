@@ -618,7 +618,8 @@ async function runFixedRootUnit(operation, value = null) {
       "--property=Delegate=no",
       "--setenv=LANG=C",
       "--setenv=LC_ALL=C",
-      "--setenv=PATH=/usr/bin:/bin",
+      // dpkg resolves ldconfig and start-stop-daemon from the system administration directories.
+      "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin",
       "--setenv=DEBIAN_FRONTEND=noninteractive",
       "--",
       ...payload,
