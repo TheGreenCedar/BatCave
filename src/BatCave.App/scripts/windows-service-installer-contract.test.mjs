@@ -351,10 +351,8 @@ test("Windows validation and release verify the generated NSIS contract", async 
   );
   const validation = await repoText("scripts/validate-tauri.ps1");
   const release = (await repoText(".github/workflows/release.yml")).replaceAll("\r\n", "\n");
-  const signedBuilder = await repoText("scripts/build-signed-windows-release.ps1");
   const releaseInstaller = "src-tauri/target/release/nsis/x64/installer.nsi";
-  const releaseBuild =
-    './scripts/build-signed-windows-release.ps1 -EvidenceDirectory "${{ runner.temp }}\\windows-signing-evidence"';
+  const releaseBuild = "npm run tauri -- build --config src-tauri/tauri.updater.conf.json --ci";
   const releaseVerification =
     'npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"';
 
@@ -368,14 +366,9 @@ test("Windows validation and release verify the generated NSIS contract", async 
   );
   const windowsReleaseJob = between(release, "\n  windows:\n", "\n  linux:\n");
   assert.equal(
-    signedBuilder.match(/"run", "tauri", "--", "bundle"/gmu)?.length,
+    windowsReleaseJob.split(releaseBuild).length - 1,
     1,
-    "the signed Windows release builder must contain exactly one Tauri bundle build",
-  );
-  assert.equal(
-    windowsReleaseJob.split("./scripts/build-signed-windows-release.ps1").length - 1,
-    1,
-    "the Windows release job must invoke the signed builder exactly once",
+    "the Windows release job must bundle the updater-signed installer exactly once",
   );
   assert.equal(
     windowsReleaseJob.split(releaseVerification).length - 1,
@@ -384,11 +377,11 @@ test("Windows validation and release verify the generated NSIS contract", async 
   );
   assertOrdered(
     windowsReleaseJob,
-    "name: Build, Authenticode-sign, and updater-sign Windows",
+    "name: Bundle Windows with updater signing",
     releaseBuild,
     "name: Verify generated release NSIS shortcut contract",
     releaseVerification,
-    "name: Prepare Microsoft Store source preflight",
+    "name: Verify finalized Windows updater signature",
     "name: Collect Windows distributables",
   );
   const verificationEnd =
@@ -398,7 +391,7 @@ test("Windows validation and release verify the generated NSIS contract", async 
   assert.doesNotMatch(
     afterVerification,
     /(?:tauri\s+(?:build|bundle)|sign-artifact\.ps1|signtool\s+sign)/iu,
-    "Store preflight may inspect the verified installer but cannot rebuild or mutate it",
+    "updater verification may inspect the installer but cannot rebuild or mutate it",
   );
 });
 
