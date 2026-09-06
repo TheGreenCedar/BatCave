@@ -17,6 +17,14 @@ on:
           - prerelease
           - stable
         default: prerelease
+      macos_signing:
+        description: macOS signing (ad hoc is available for prereleases only)
+        required: true
+        type: choice
+        options:
+          - notarized
+          - adhoc
+        default: notarized
       publish:
         description: Create the GitHub Release after successful builds
         required: true
@@ -33,6 +41,9 @@ jobs:
   prepare:
     name: Validate release identity
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       prerelease: ${{ steps.release.outputs.prerelease }}
@@ -57,12 +68,21 @@ jobs:
           INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
           INPUT_CHANNEL: ${{ inputs.channel }}
           INPUT_PUBLISH: ${{ inputs.publish }}
+          MACOS_SIGNING: ${{ inputs.macos_signing }}
         run: |
           set -euo pipefail
           [[ "${GITHUB_REF}" == "refs/heads/main" ]] || {
             echo "Releases must be dispatched from main." >&2
             exit 1
           }
+          case "${MACOS_SIGNING}" in
+            notarized|adhoc) ;;
+            *) echo "Unknown macOS signing mode." >&2; exit 1 ;;
+          esac
+          if [[ "${MACOS_SIGNING}" == "adhoc" && "${INPUT_CHANNEL}" != "prerelease" ]]; then
+            echo "Ad-hoc macOS packages are restricted to prereleases." >&2
+            exit 1
+          fi
           tag="${INPUT_TAG}"
           approved_source_sha="${INPUT_SOURCE_SHA}"
           channel="${INPUT_CHANNEL}"
@@ -73,6 +93,8 @@ jobs:
           source_sha="${GITHUB_SHA}"
           main_sha="$(git rev-parse refs/remotes/origin/main^0)"
           node scripts/verify-release-candidate.mjs identity "${tag}" "${channel}" "${source_sha}" "${main_sha}" "${approved_source_sha}"
+
+          node scripts/verify-release-controls.mjs "${GITHUB_REPOSITORY}" "${source_sha}"
 
           prerelease="false"
           [[ "${tag#v}" == *-* ]] && prerelease="true"
@@ -86,11 +108,11 @@ jobs:
           fi
 
           release_error="${RUNNER_TEMP}/release-read-error.txt"
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>"${release_error}"; then
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json databaseId >/dev/null 2>"${release_error}"; then
             echo "GitHub Release ${tag} already exists." >&2
             exit 1
           fi
-          grep -q "HTTP 404" "${release_error}" || { cat "${release_error}" >&2; exit 1; }
+          grep -q "release not found" "${release_error}" || { cat "${release_error}" >&2; exit 1; }
 
           {
             echo "tag=${tag}"
@@ -106,19 +128,10 @@ jobs:
     name: Build Windows release
     needs: prepare
     runs-on: windows-latest
-    environment: release
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Preserve repository line endings
         run: git config --global core.autocrlf false
@@ -146,58 +159,27 @@ jobs:
 
       - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
 
-      - name: Validate Windows app
-        shell: pwsh
-        run: ./scripts/validate-tauri.ps1 -SkipBundle
+      - name: Build Windows CLI and collector service
+        run: cargo build --locked --release --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-collector-service --bin batcave-monitor-cli
 
-      - name: Authenticate to Azure Artifact Signing with GitHub OIDC
-        uses: Azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Prepare digest-pinned Artifact Signing tools
-        shell: pwsh
-        run: ./scripts/install-artifact-signing-tools.ps1 -Destination "${{ runner.temp }}\artifact-signing-tools"
-
-      - name: Bind the release certificate profile
-        shell: pwsh
+      - name: Bundle Windows with updater signing
+        working-directory: src/BatCave.App
         env:
-          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
-        run: |
-          ./scripts/prepare-artifact-signing-metadata.ps1 `
-            -OutputPath "${{ runner.temp }}\artifact-signing-metadata.json" `
-            -Endpoint $env:ARTIFACT_SIGNING_ENDPOINT `
-            -AccountName $env:ARTIFACT_SIGNING_ACCOUNT `
-            -CertificateProfileName $env:ARTIFACT_SIGNING_CERTIFICATE_PROFILE `
-            -CorrelationId "${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}"
-
-      - name: Build, Authenticode-sign, and updater-sign Windows
-        shell: pwsh
-        env:
-          BATCAVE_WINDOWS_SIGNING_PROFILE: production
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: ./scripts/build-signed-windows-release.ps1 -EvidenceDirectory "${{ runner.temp }}\windows-signing-evidence"
+        run: npm run tauri -- build --config src-tauri/tauri.updater.conf.json --ci
 
       - name: Verify generated release NSIS shortcut contract
         working-directory: src/BatCave.App
         run: npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"
 
-      - name: Prepare Microsoft Store source preflight
+      - name: Verify finalized Windows updater signature
         shell: pwsh
         run: |
           $installer = @(Get-ChildItem -LiteralPath src/BatCave.App/src-tauri/target/release/bundle/nsis -Filter *.exe)
           if ($installer.Count -ne 1) { throw "Expected exactly one NSIS installer." }
-          node scripts/validate-windows-store-preflight.mjs `
-            docs/store/windows-listing.v1.json `
-            "${{ needs.prepare.outputs.tag }}" `
-            $installer[0].FullName `
-            "${{ runner.temp }}\windows-signing-evidence\windows-signatures-final.json" `
-            "${{ runner.temp }}\windows-signing-evidence\windows-store-preflight.json"
+          cargo run --quiet --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-verify-updater-signature -- $installer[0].FullName "$($installer[0].FullName).sig" src/BatCave.App/src-tauri/tauri.conf.json "${{ runner.temp }}/verified-installer.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect Windows distributables
         shell: pwsh
@@ -215,28 +197,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Retain Windows signing and Store preflight evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: batcave-windows-signing-evidence-${{ needs.prepare.outputs.tag }}
-          path: ${{ runner.temp }}/windows-signing-evidence/*.json
-          if-no-files-found: error
-          retention-days: 30
-
   linux:
     name: Build Linux release
     needs: prepare
     runs-on: ubuntu-22.04
-    environment: release
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -261,9 +229,6 @@ jobs:
         working-directory: src/BatCave.App
 
       - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
-
-      - name: Validate Linux app
-        run: bash scripts/validate-tauri.sh --skip-bundle
 
       - name: Build Linux release CLI
         run: bash scripts/build-linux-cli.sh
@@ -293,19 +258,13 @@ jobs:
           retention-days: 30
 
   macos:
-    name: Build notarized Apple Silicon macOS release
+    name: Build Apple Silicon macOS release
     needs: prepare
     runs-on: macos-15
-    environment: release
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - name: Preserve repository line endings
         run: git config --global core.autocrlf false
@@ -334,10 +293,12 @@ jobs:
 
       - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
 
-      - name: Validate macOS app
-        run: bash scripts/validate-tauri.sh --skip-bundle
+      - name: Build macOS frontend
+        working-directory: src/BatCave.App
+        run: npm run build
 
       - name: Prepare Apple signing credentials
+        if: inputs.macos_signing == 'notarized'
         shell: bash
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -392,18 +353,19 @@ jobs:
       - name: Verify Apple Silicon macOS CLI
         run: bash scripts/build-macos-arm64-cli.sh --verify-only
 
-      - name: Bundle signed and notarized Apple Silicon macOS updater
+      - name: Bundle Apple Silicon macOS updater
         working-directory: src/BatCave.App
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.macos_signing == 'adhoc' && '-' || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ inputs.macos_signing == 'notarized' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ inputs.macos_signing == 'notarized' && secrets.APPLE_API_ISSUER || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: "true"
         run: npm run tauri -- build --target aarch64-apple-darwin --config src-tauri/tauri.macos.updater.ci.conf.json --ci
 
       - name: Sign, notarize, and staple the DMG
+        if: inputs.macos_signing == 'notarized'
         shell: bash
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -420,7 +382,22 @@ jobs:
           xcrun stapler staple "${dmgs[0]}"
 
       - name: Verify signing, notarization, Apple Silicon binary, and DMG
+        if: inputs.macos_signing == 'notarized'
         run: bash scripts/verify-macos-bundle.sh --mode release
+
+      - name: Verify ad-hoc preview and signed updater archive
+        if: inputs.macos_signing == 'adhoc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          archives=(src/BatCave.App/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz)
+          [[ "${#dmgs[@]}" -eq 1 && "${#archives[@]}" -eq 1 ]] || { echo "Expected one DMG and updater archive." >&2; exit 1; }
+          bash scripts/remove-macos-dmg-volume-icon.sh "${dmgs[0]}"
+          verified="${RUNNER_TEMP}/verified.app.tar.gz"
+          cargo run --quiet --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-verify-updater-signature -- "${archives[0]}" "${archives[0]}.sig" src/BatCave.App/src-tauri/tauri.conf.json "${verified}"
+          bash scripts/verify-macos-bundle.sh --mode adhoc --updater-archive "${verified}"
 
       - name: Collect macOS distributables
         run: |
@@ -453,9 +430,9 @@ jobs:
     name: Checksums, provenance, and release
     needs: [prepare, windows, linux, macos]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
+      actions: read
       id-token: write
       attestations: write
       artifact-metadata: write
@@ -463,11 +440,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -479,12 +451,6 @@ jobs:
           pattern: batcave-release-*-${{ needs.prepare.outputs.tag }}
           path: release-input
           merge-multiple: false
-
-      - name: Retrieve Windows signing evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: batcave-windows-signing-evidence-${{ needs.prepare.outputs.tag }}
-          path: windows-signing-evidence
 
       - name: Stage release assets without silent collisions
         run: node scripts/verify-release-candidate.mjs stage release-input dist
@@ -513,7 +479,7 @@ jobs:
         run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/BatCave-${{ needs.prepare.outputs.tag }}-provenance.json"
 
       - name: Verify complete release inventory
-        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json" windows-signing-evidence/windows-signatures-final.json windows-signing-evidence/windows-store-preflight.json
+        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -530,6 +496,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Verify main validation before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-controls.mjs "${{ github.repository }}" "${{ needs.prepare.outputs.source_sha }}"
+
       - name: Create and verify draft GitHub Release
         if: needs.prepare.outputs.publish == 'true'
         env:
@@ -537,6 +508,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          MACOS_SIGNING: ${{ inputs.macos_signing }}
         run: |
           set -euo pipefail
           candidate="${RUNNER_TEMP}/release-candidate.json"
@@ -550,17 +522,34 @@ jobs:
             printf '%s' "${tag_sha}"
           }
 
-          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}" windows-signing-evidence/windows-signatures-final.json windows-signing-evidence/windows-store-preflight.json
+          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
           tag_sha="$(remote_tag_source)"
           [[ -z "${tag_sha}" ]] || { echo "Release tag ${RELEASE_TAG} appeared during the build." >&2; exit 1; }
 
-          args=(release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft --target "${RELEASE_SOURCE_SHA}" --title "BatCave ${RELEASE_TAG}" --generate-notes)
+          notes="${RUNNER_TEMP}/release-notes.md"
+          if [[ -f "docs/release-notes/${RELEASE_TAG}.md" ]]; then
+            cp "docs/release-notes/${RELEASE_TAG}.md" "${notes}"
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f "tag_name=${RELEASE_TAG}" -f "target_commitish=${RELEASE_SOURCE_SHA}" --jq .body > "${notes}"
+          fi
+          printf '\nWindows downloads are not Authenticode-signed. Tauri updater signatures authenticate the updater packages.\n' >> "${notes}"
+          if [[ "${MACOS_SIGNING}" == "adhoc" ]]; then
+            printf '\nThe macOS preview is ad-hoc signed and is not notarized. Gatekeeper may block its first launch.\n' >> "${notes}"
+          else
+            printf '\nThe macOS packages are Developer ID signed and notarized.\n' >> "${notes}"
+          fi
+          args=(release create "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft --target "${RELEASE_SOURCE_SHA}" --title "BatCave ${RELEASE_TAG}" --notes-file "${notes}")
           [[ "${PRERELEASE}" == "true" ]] && args+=(--prerelease)
           while IFS= read -r -d '' file; do args+=("${file}"); done < <(find dist -maxdepth 1 -type f -print0 | sort -z)
           gh "${args[@]}"
 
-          [[ "$(remote_tag_source)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag does not target ${RELEASE_SOURCE_SHA}." >&2; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${readback}"
+          # GitHub keeps a new draft's tag pending until publication.
+          tag_sha="$(remote_tag_source)"
+          [[ -z "${tag_sha}" || "${tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag targets another commit." >&2; exit 1; }
+          release_id="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json databaseId --jq .databaseId)"
+          [[ "${release_id}" =~ ^[0-9]+$ ]] || { echo "Missing draft release ID." >&2; exit 1; }
+          echo "BATCAVE_RELEASE_ID=${release_id}" >> "${GITHUB_ENV}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > "${readback}"
           node scripts/verify-release-candidate.mjs verify-readback "${candidate}" "${readback}" true
 
       - name: Publish verified GitHub Release
@@ -577,14 +566,14 @@ jobs:
           readback="${RUNNER_TEMP}/release-published-readback.json"
           latest_readback="${RUNNER_TEMP}/release-latest-readback.json"
           latest_error="${RUNNER_TEMP}/release-latest-error.txt"
-          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}" windows-signing-evidence/windows-signatures-final.json windows-signing-evidence/windows-store-preflight.json
+          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
 
           remote_tag_sha="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
           if [[ -z "${remote_tag_sha}" ]]; then
             remote_tag_sha="$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
           fi
-          [[ "${remote_tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag does not target ${RELEASE_SOURCE_SHA}." >&2; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${draft_readback}"
+          [[ -z "${remote_tag_sha}" || "${remote_tag_sha}" == "${RELEASE_SOURCE_SHA}" ]] || { echo "Draft release tag targets another commit." >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${BATCAVE_RELEASE_ID}" > "${draft_readback}"
           node scripts/verify-release-candidate.mjs verify-readback "${candidate}" "${draft_readback}" true
 
           publish_args=(release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false)
@@ -624,7 +613,6 @@ jobs:
     needs: [prepare, finalize]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-22.04
-    environment: release
     permissions:
       contents: read
       attestations: read
@@ -632,11 +620,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -668,7 +651,6 @@ jobs:
     needs: [prepare, finalize]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-22.04
-    environment: release
     permissions:
       contents: read
       attestations: read
@@ -676,11 +658,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -726,7 +703,6 @@ jobs:
     needs: [prepare, finalize]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: macos-15
-    environment: release
     permissions:
       contents: read
       attestations: read
@@ -734,11 +710,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
-
-      - name: Verify protected release controls before sensitive work
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_READ_TOKEN }}
-        run: node scripts/verify-release-controls.mjs "${{ github.repository }}"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

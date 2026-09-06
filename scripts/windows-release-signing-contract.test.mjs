@@ -66,7 +66,7 @@ test("keeps the local signing test profile isolated from production evidence", (
   assert.match(candidateVerifier, /inventory\.profile !== "production"/u);
 });
 
-test("keeps Artifact Signing release-only and preserves the required byte order", () => {
+test("keeps optional Artifact Signing isolated and preserves its byte order", () => {
   const workflow = read(".github/workflows/release.yml");
   const releaseConfig = json("src/BatCave.App/src-tauri/tauri.windows.release.conf.json");
   const normalConfig = json("src/BatCave.App/src-tauri/tauri.windows.conf.json");
@@ -80,10 +80,11 @@ test("keeps Artifact Signing release-only and preserves the required byte order"
   assert.equal(normalConfig.bundle.windows.signCommand, undefined);
   assert.equal(releaseConfig.bundle.createUpdaterArtifacts, false);
   assert.match(releaseConfig.bundle.windows.signCommand, /windows\/sign-artifact\.ps1/u);
-  assert.match(workflow, /permissions:\n\s+contents: read\n\s+id-token: write/u);
-  assert.match(workflow, /uses: Azure\/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3\.0\.0/u);
-  assert.match(workflow, /environment: release/u);
-  assert.doesNotMatch(workflow, /AZURE_CLIENT_SECRET/u);
+  assert.doesNotMatch(workflow, /Azure\/login|AZURE_|BATCAVE_WINDOWS_SIGNING_PROFILE|windows-signing-evidence/u);
+  assert.match(workflow, /Bundle Windows with updater signing/u);
+  assert.match(workflow, /tauri -- build --config src-tauri\/tauri.updater.conf.json --ci/u);
+  assert.match(workflow, /Verify finalized Windows updater signature[\s\S]*--bin batcave-verify-updater-signature/u);
+  assert.match(workflow, /Windows downloads are not Authenticode-signed/u);
   assert.match(metadata, /AzureCliCredential-only authentication/u);
   assert.doesNotMatch(metadata, /^\s*"AzureCliCredential"\s*$/mu);
   assert.doesNotMatch(metadata, /ClientSecretCredential|AZURE_CLIENT_SECRET/u);

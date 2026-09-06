@@ -1,20 +1,16 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import {
-  GITHUB_ACTIONS_APP_ID,
-  GITHUB_API_VERSION,
   REQUIRED_STATUS_CHECK_CONTEXTS,
-  githubApiArguments,
   verifyLiveReleaseControls,
   verifyReleaseControls,
 } from "./verify-release-controls.mjs";
 
 const releaseWorkflow = fs.readFileSync(
-  new URL("../.github/workflows/release.yml", import.meta.url),
-  "utf8",
+  new URL("../.github/workflows/release.yml", import.meta.url), "utf8",
 );
-
 function workflowJob(name) {
   const match = releaseWorkflow.match(
     new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][a-z0-9_-]*:\\n|(?![\\s\\S]))`, "m"),
@@ -22,421 +18,113 @@ function workflowJob(name) {
   assert.ok(match, `release workflow job ${name} must exist`);
   return match[0];
 }
-
 function workflowSteps(job) {
   const steps = job.split("\n    steps:\n")[1];
   assert.ok(steps, "workflow job must define steps");
   return steps.split(/^      - /m).slice(1);
 }
-
+const repository = "TheGreenCedar/BatCave";
+const sourceSha = "a".repeat(40);
 function validControls() {
+  const run = {
+    id: 123, run_attempt: 2, path: ".github/workflows/validation.yml",
+    head_sha: sourceSha, head_branch: "main", event: "push",
+    repository: { full_name: repository }, head_repository: { full_name: repository },
+    status: "completed", conclusion: "success",
+  };
   return {
-    repositoryOwnerType: "Organization",
-    immutableReleases: { enabled: true, enforced_by_owner: false },
-    branchProtection: {
-      required_pull_request_reviews: {
-        required_approving_review_count: 1,
-        dismiss_stale_reviews: true,
-        require_last_push_approval: true,
-        bypass_pull_request_allowances: { users: [], teams: [], apps: [] },
-      },
-      required_status_checks: {
-        strict: true,
-        checks: REQUIRED_STATUS_CHECK_CONTEXTS.map((context) => ({
-          context,
-          app_id: GITHUB_ACTIONS_APP_ID,
-        })),
-      },
-      enforce_admins: { enabled: true },
-      allow_force_pushes: { enabled: false },
-      allow_deletions: { enabled: false },
-      required_conversation_resolution: { enabled: true },
-    },
-    environment: {
-      name: "release",
-      protection_rules: [
-        {
-          type: "required_reviewers",
-          prevent_self_review: true,
-          reviewers: [{ type: "User", reviewer: { login: "release-reviewer" } }],
-        },
-      ],
-      can_admins_bypass: false,
-      deployment_branch_policy: {
-        protected_branches: false,
-        custom_branch_policies: true,
-      },
-    },
-    deploymentBranchPolicies: {
-      total_count: 1,
-      branch_policies: [{ name: "main", type: "branch" }],
+    repository, sourceSha, mainSha: sourceSha, run,
+    jobs: {
+      total_count: REQUIRED_STATUS_CHECK_CONTEXTS.length,
+      jobs: REQUIRED_STATUS_CHECK_CONTEXTS.map(name => ({
+        name, run_id: run.id, run_attempt: run.run_attempt, head_sha: sourceSha,
+        status: "completed", conclusion: name === "Dependency review" ? "skipped" : "success",
+      })),
     },
   };
 }
 
-test("accepts immutable releases, reviewed main, and a protected release environment", () => {
-  assert.equal(GITHUB_ACTIONS_APP_ID, 15_368);
-  assert.equal(GITHUB_API_VERSION, "2022-11-28");
-  assert.deepEqual(githubApiArguments("repos/owner/repository"), [
-    "api",
-    "-H",
-    "X-GitHub-Api-Version: 2022-11-28",
-    "repos/owner/repository",
-  ]);
-  assert.deepEqual(REQUIRED_STATUS_CHECK_CONTEXTS, [
-    "Repository policy",
-    "Dependency review",
-    "Windows validation",
-    "Linux validation",
-    "Linux package transport",
-    "macOS Apple Silicon validation",
-  ]);
+test("accepts completed validation for exact main without another account or admin credential", () => {
   assert.equal(verifyReleaseControls(validControls()), true);
 });
 
-test("rejects mutable repository releases", () => {
-  const controls = validControls();
-  controls.immutableReleases.enabled = false;
-  assert.throws(() => verifyReleaseControls(controls), /immutable releases must be enabled/);
-});
-
-test("accepts the omitted bypass field returned for personal repositories", () => {
-  const controls = validControls();
-  controls.repositoryOwnerType = "User";
-  delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
-  assert.equal(verifyReleaseControls(controls), true);
-});
-
-test("requires a recognized repository owner before interpreting absent bypass settings", () => {
-  for (const owner of [undefined, null, "", "user", "Bot"]) {
-    const controls = validControls();
-    controls.repositoryOwnerType = owner;
-    assert.throws(() => verifyReleaseControls(controls), /repository owner type/);
-    delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
-    assert.throws(() => verifyReleaseControls(controls), /repository owner type/);
-  }
-});
-
-test("personal repositories still reject explicit malformed or populated bypass settings", () => {
-  for (const allowances of [
-    undefined,
-    null,
-    {},
-    { users: [], teams: [] },
-    { users: "", teams: [], apps: [] },
-    ...["users", "teams", "apps"].map((kind) => ({
-      users: [],
-      teams: [],
-      apps: [],
-      [kind]: [{ id: 1 }],
-    })),
+test("rejects wrong source, workflow, repository, event, or incomplete validation", () => {
+  for (const mutate of [
+    c => c.mainSha = "b".repeat(40),
+    c => c.run.head_sha = "b".repeat(40),
+    c => c.run.head_branch = "other",
+    c => c.run.event = "pull_request",
+    c => c.run.path = ".github/workflows/bundles.yml",
+    c => c.run.repository.full_name = "other/repo",
+    c => c.run.head_repository.full_name = "other/repo",
+    c => c.run.status = "in_progress",
+    c => c.run.conclusion = "failure",
+    c => c.run.conclusion = "cancelled",
+    c => c.run = null,
   ]) {
-    const controls = validControls();
-    controls.repositoryOwnerType = "User";
-    controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances =
-      allowances;
-    assert.throws(
-      () => verifyReleaseControls(controls),
-      /prohibit all user, team, and app review bypass allowances/,
-    );
+    const c = validControls();
+    mutate(c);
+    assert.throws(() => verifyReleaseControls(c));
   }
 });
 
-test("personal repositories retain the independent approval and validation requirements", () => {
-  for (const weaken of [
-    (controls) => {
-      controls.branchProtection.enforce_admins.enabled = false;
-    },
-    (controls) => {
-      controls.branchProtection.required_pull_request_reviews.required_approving_review_count = 0;
-    },
-    (controls) => {
-      controls.branchProtection.required_pull_request_reviews.require_last_push_approval = false;
-    },
-    (controls) => {
-      controls.branchProtection.required_status_checks.strict = false;
-    },
-    (controls) => {
-      controls.environment.protection_rules[0].prevent_self_review = false;
-    },
+test("requires all platform checks from the same completed run attempt", () => {
+  for (const mutate of [
+    c => c.jobs.jobs.pop(),
+    c => c.jobs.total_count++,
+    c => c.jobs.jobs[0].name = c.jobs.jobs[1].name,
+    c => c.jobs.jobs[0].conclusion = "skipped",
+    c => c.jobs.jobs[0].conclusion = "failure",
+    c => c.jobs.jobs[0].status = "in_progress",
+    c => c.jobs.jobs[0].run_id++,
+    c => c.jobs.jobs[0].run_attempt--,
+    c => c.jobs.jobs[0].head_sha = "b".repeat(40),
+    c => c.jobs.jobs.find(j => j.name === "Dependency review").conclusion = "failure",
   ]) {
-    const controls = validControls();
-    controls.repositoryOwnerType = "User";
-    delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
-    weaken(controls);
-    assert.throws(() => verifyReleaseControls(controls));
+    const c = validControls();
+    mutate(c);
+    assert.throws(() => verifyReleaseControls(c));
   }
 });
 
-test("live ownership comes from metadata for the requested repository", () => {
-  const originalToken = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-only-no-network";
-  try {
-    const controls = validControls();
-    delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
-    const responses = new Map([
-      ["repos/owner/repository", { full_name: "Owner/Repository", owner: { type: "User" } }],
-      ["repos/owner/repository/immutable-releases", controls.immutableReleases],
-      ["repos/owner/repository/branches/main/protection", controls.branchProtection],
-      ["repos/owner/repository/environments/release", controls.environment],
-      [
-        "repos/owner/repository/environments/release/deployment-branch-policies",
-        controls.deploymentBranchPolicies,
-      ],
-    ]);
-    const requested = [];
-    const request = (endpoint) => {
-      requested.push(endpoint);
-      assert.ok(responses.has(endpoint), `unexpected endpoint: ${endpoint}`);
-      return responses.get(endpoint);
-    };
-    assert.equal(verifyLiveReleaseControls("owner/repository", request), true);
-    assert.deepEqual(requested, [...responses.keys()]);
-
-    for (const metadata of [null, {}, { full_name: "owner/different", owner: { type: "User" } }]) {
-      requested.length = 0;
-      responses.set("repos/owner/repository", metadata);
-      assert.throws(
-        () => verifyLiveReleaseControls("owner/repository", request),
-        /repository metadata does not match/,
-      );
-      assert.deepEqual(requested, ["repos/owner/repository"]);
-    }
-  } finally {
-    if (originalToken === undefined) delete process.env.GH_TOKEN;
-    else process.env.GH_TOKEN = originalToken;
-  }
-});
-
-test("rejects incomplete main branch protection", () => {
-  const noReviews = validControls();
-  noReviews.branchProtection.required_pull_request_reviews = null;
-  assert.throws(() => verifyReleaseControls(noReviews), /approving review/);
-
-  const forcePushes = validControls();
-  forcePushes.branchProtection.allow_force_pushes.enabled = true;
-  assert.throws(() => verifyReleaseControls(forcePushes), /reject force pushes/);
-
-  const deletions = validControls();
-  deletions.branchProtection.allow_deletions.enabled = true;
-  assert.throws(() => verifyReleaseControls(deletions), /reject deletion/);
-
-  const noStatusChecks = validControls();
-  noStatusChecks.branchProtection.required_status_checks = null;
-  assert.throws(() => verifyReleaseControls(noStatusChecks), /strict status checks/);
-
-  const nonStrictStatusChecks = validControls();
-  nonStrictStatusChecks.branchProtection.required_status_checks.strict = false;
-  assert.throws(() => verifyReleaseControls(nonStrictStatusChecks), /strict status checks/);
-
-  const adminBypass = validControls();
-  adminBypass.branchProtection.enforce_admins.enabled = false;
-  assert.throws(() => verifyReleaseControls(adminBypass), /include administrators/);
-});
-
-test("rejects review settings that allow stale or unreviewed changes", () => {
-  const staleReviews = validControls();
-  staleReviews.branchProtection.required_pull_request_reviews.dismiss_stale_reviews = false;
-  assert.throws(() => verifyReleaseControls(staleReviews), /dismiss stale approving reviews/);
-
-  const unreviewedLastPush = validControls();
-  unreviewedLastPush.branchProtection.required_pull_request_reviews.require_last_push_approval = false;
-  assert.throws(() => verifyReleaseControls(unreviewedLastPush), /approval of the last push/);
-
-  const unresolvedConversations = validControls();
-  unresolvedConversations.branchProtection.required_conversation_resolution.enabled = false;
-  assert.throws(() => verifyReleaseControls(unresolvedConversations), /conversation resolution/);
-});
-
-test("rejects every pull request review bypass allowance", () => {
-  for (const kind of ["users", "teams", "apps"]) {
-    const controls = validControls();
-    controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances[
-      kind
-    ].push({ id: 1 });
-    assert.throws(
-      () => verifyReleaseControls(controls),
-      /prohibit all user, team, and app review bypass allowances/,
-      `${kind} bypasses must fail closed`,
-    );
-  }
-
-  const missingAllowances = validControls();
-  delete missingAllowances.branchProtection.required_pull_request_reviews
-    .bypass_pull_request_allowances;
-  assert.throws(
-    () => verifyReleaseControls(missingAllowances),
-    /prohibit all user, team, and app review bypass allowances/,
-  );
-});
-
-test("requires the exact GitHub Actions validation status check bindings", () => {
-  const missing = validControls();
-  missing.branchProtection.required_status_checks.checks.pop();
-  assert.throws(() => verifyReleaseControls(missing), /bind exactly these status checks/);
-
-  const extra = validControls();
-  extra.branchProtection.required_status_checks.checks.push({
-    context: "Unapproved check",
-    app_id: GITHUB_ACTIONS_APP_ID,
-  });
-  assert.throws(() => verifyReleaseControls(extra), /bind exactly these status checks/);
-
-  const arbitrary = validControls();
-  arbitrary.branchProtection.required_status_checks.checks = [
-    { context: "Validation", app_id: GITHUB_ACTIONS_APP_ID },
-  ];
-  assert.throws(() => verifyReleaseControls(arbitrary), /bind exactly these status checks/);
-
-  const duplicate = validControls();
-  duplicate.branchProtection.required_status_checks.checks[1].context =
-    REQUIRED_STATUS_CHECK_CONTEXTS[0];
-  assert.throws(() => verifyReleaseControls(duplicate), /bind exactly these status checks/);
-
-  const ambiguousLegacyShape = validControls();
-  ambiguousLegacyShape.branchProtection.required_status_checks = {
-    strict: true,
-    contexts: [...REQUIRED_STATUS_CHECK_CONTEXTS],
+test("live verification uses only contents and Actions reads and rejects newer failed runs", () => {
+  const c = validControls();
+  const runs = { workflow_runs: [c.run] };
+  const responses = new Map([
+    [`repos/${repository}/git/ref/heads/main`, { object: { sha: sourceSha } }],
+    [`repos/${repository}/actions/workflows/validation.yml/runs?event=push&branch=main&head_sha=${sourceSha}&per_page=100`, runs],
+    [`repos/${repository}/actions/runs/123/jobs?filter=latest&per_page=100`, c.jobs],
+  ]);
+  const requested = [];
+  const request = endpoint => {
+    requested.push(endpoint);
+    assert.ok(responses.has(endpoint), `unexpected endpoint: ${endpoint}`);
+    return responses.get(endpoint);
   };
-  assert.throws(
-    () => verifyReleaseControls(ambiguousLegacyShape),
-    /bind exactly these status checks/,
-  );
-
-  const missingApp = validControls();
-  delete missingApp.branchProtection.required_status_checks.checks[0].app_id;
-  assert.throws(
-    () => verifyReleaseControls(missingApp),
-    /bind exactly these status checks to GitHub Actions app 15368/,
-  );
-
-  for (const appId of [null, -1, 99_999, "15368"]) {
-    const wrongApp = validControls();
-    wrongApp.branchProtection.required_status_checks.checks[0].app_id = appId;
-    assert.throws(
-      () => verifyReleaseControls(wrongApp),
-      /bind exactly these status checks to GitHub Actions app 15368/,
-      `app_id ${String(appId)} must fail closed`,
-    );
-  }
-
-  const duplicateBinding = validControls();
-  duplicateBinding.branchProtection.required_status_checks.checks.push({
-    ...duplicateBinding.branchProtection.required_status_checks.checks[0],
-  });
-  assert.throws(
-    () => verifyReleaseControls(duplicateBinding),
-    /bind exactly these status checks to GitHub Actions app 15368/,
-  );
+  assert.equal(verifyLiveReleaseControls(repository, sourceSha, request), true);
+  assert.deepEqual(requested, [...responses.keys()]);
+  runs.workflow_runs.push({ ...c.run, id: 124, conclusion: "failure" });
+  assert.throws(() => verifyLiveReleaseControls(repository, sourceSha, request), /completed successfully/);
+  runs.workflow_runs = [];
+  assert.throws(() => verifyLiveReleaseControls(repository, sourceSha, request), /Validation run/);
+  assert.throws(() => verifyLiveReleaseControls(repository, "main", request), /40-character/);
+  assert.throws(() => verifyLiveReleaseControls("bad repo", sourceSha, request), /repository/);
 });
 
-test("rejects an environment that can bypass review or deploy unprotected refs", () => {
-  const noReviewers = validControls();
-  noReviewers.environment.protection_rules[0].reviewers = [];
-  assert.throws(() => verifyReleaseControls(noReviewers), /at least one reviewer/);
-
-  const selfReview = validControls();
-  selfReview.environment.protection_rules[0].prevent_self_review = false;
-  assert.throws(() => verifyReleaseControls(selfReview), /prevent self-review/);
-
-  const adminBypass = validControls();
-  adminBypass.environment.can_admins_bypass = true;
-  assert.throws(() => verifyReleaseControls(adminBypass), /administrator bypass/);
-
-  const unprotectedRefs = validControls();
-  unprotectedRefs.environment.deployment_branch_policy = {
-    protected_branches: true,
-    custom_branch_policies: false,
-  };
-  assert.throws(() => verifyReleaseControls(unprotectedRefs), /custom deployment branch policy/);
-
-  const broadPolicy = validControls();
-  broadPolicy.deploymentBranchPolicies = {
-    total_count: 2,
-    branch_policies: [
-      { name: "main", type: "branch" },
-      { name: "release/*", type: "branch" },
-    ],
-  };
-  assert.throws(() => verifyReleaseControls(broadPolicy), /allow only the main branch/);
-
-  const missingType = validControls();
-  delete missingType.deploymentBranchPolicies.branch_policies[0].type;
-  assert.throws(() => verifyReleaseControls(missingType), /allow only the main branch/);
-
-  const tagPolicy = validControls();
-  tagPolicy.deploymentBranchPolicies.branch_policies[0].type = "tag";
-  assert.throws(() => verifyReleaseControls(tagPolicy), /allow only the main branch/);
-
-  const wrongBranch = validControls();
-  wrongBranch.deploymentBranchPolicies.branch_policies[0].name = "release";
-  assert.throws(() => verifyReleaseControls(wrongBranch), /allow only the main branch/);
-});
-
-test("fails before invoking GitHub when the admin-read credential is missing", () => {
-  const originalToken = process.env.GH_TOKEN;
-  delete process.env.GH_TOKEN;
-  try {
-    assert.throws(
-      () => verifyLiveReleaseControls("TheGreenCedar/BatCave"),
-      /admin-read credential is missing/,
-    );
-  } finally {
-    if (originalToken === undefined) delete process.env.GH_TOKEN;
-    else process.env.GH_TOKEN = originalToken;
-  }
-});
-
-test("runs release controls first with only the protected environment credential", () => {
+test("workflow checks green main before builds and again before publication with built-in token", () => {
+  assert.doesNotMatch(releaseWorkflow, /RELEASE_ADMIN_READ_TOKEN|environment: release/);
   const prepare = workflowJob("prepare");
-  assert.doesNotMatch(prepare, /verify-release-controls\.mjs/);
-
-  const sensitiveJobs = [
-    "windows",
-    "linux",
-    "macos",
-    "finalize",
-    "linux_deb_post_public_smoke",
-    "linux_appimage_post_public_smoke",
-    "macos_updater_post_public_smoke",
-  ];
-  for (const name of sensitiveJobs) {
-    const job = workflowJob(name);
-    assert.match(job, /^    environment: release$/m, `${name} must use the release environment`);
-
-    const steps = workflowSteps(job);
-    const controlSteps = steps.filter((step) => step.includes("verify-release-controls.mjs"));
-    assert.equal(controlSteps.length, 1, `${name} must run one release control check`);
-    assert.match(
-      controlSteps[0],
-      /GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/,
-      `${name} must use the protected environment credential`,
-    );
-    assert.equal(
-      controlSteps[0].match(/\$\{\{ secrets\./g)?.length,
-      1,
-      `${name} control check must receive no other secret`,
-    );
-    assert.doesNotMatch(controlSteps[0], /github\.token/);
-
-    const controlIndex = steps.indexOf(controlSteps[0]);
-    assert.ok(
-      steps.slice(0, controlIndex).every((step) => !step.includes("${{ secrets.")),
-      `${name} must not read a signing secret before control verification`,
-    );
-    const firstRunStep = steps.find((step) => /(?:^|\n)        run:/.test(step));
-    assert.equal(
-      firstRunStep,
-      controlSteps[0],
-      `${name} must verify controls before any other command`,
-    );
+  const finalize = workflowJob("finalize");
+  for (const job of [prepare, finalize]) {
+    assert.match(job, /actions: read/);
+    assert.match(job, /GH_TOKEN: \$\{\{ github.token \}\}/);
+    assert.match(job, /node scripts\/verify-release-controls\.mjs/);
   }
-
-  assert.equal(releaseWorkflow.match(/verify-release-controls\.mjs/g)?.length, 7);
-  assert.equal(
-    releaseWorkflow.match(/GH_TOKEN: \$\{\{ secrets\.RELEASE_ADMIN_READ_TOKEN \}\}/g)?.length,
-    7,
-  );
+  assert.ok(finalize.indexOf("verify-release-controls.mjs") < finalize.indexOf("gh \"${args[@]}\""));
+  for (const name of ["windows", "linux", "macos"]) {
+    assert.match(workflowJob(name), /needs: prepare/);
+    assert.match(workflowJob(name), /ref: \$\{\{ needs.prepare.outputs.source_sha \}\}/);
+  }
 });
 
 test("runs the deb smoke on a fresh pinned Ubuntu host after public release publication", () => {
@@ -560,4 +248,47 @@ test("gates pre-attestation and complete release inventories before unconditiona
   );
   assert.match(steps[candidateUpload], /path: \$\{\{ runner\.temp \}\}\/release-candidate\.json/u);
   assert.doesNotMatch(steps[candidateUpload], /^\s*if:/mu);
+});
+
+
+test("ad-hoc macOS publication is explicit and restricted to previews", () => {
+  const guard = releaseWorkflow.match(/          case "\$\{MACOS_SIGNING\}"[\s\S]*?          fi/)[0];
+  for (const [mode, channel, expected] of [
+    ["adhoc", "prerelease", 0], ["adhoc", "stable", 1],
+    ["notarized", "prerelease", 0], ["notarized", "stable", 0],
+    ["", "prerelease", 1], ["unsigned", "prerelease", 1], ["Notarized", "stable", 1],
+  ]) {
+    const result = spawnSync("bash", ["-c", guard], {
+      env: { ...process.env, MACOS_SIGNING: mode, INPUT_CHANNEL: channel },
+    });
+    assert.equal(result.status, expected, `${mode} ${channel}`);
+  }
+  const steps = workflowSteps(workflowJob("macos"));
+  const preview = steps.find(s => s.includes("Verify ad-hoc preview"));
+  assert.match(preview, /--bin batcave-verify-updater-signature/);
+  assert.match(preview, /--mode adhoc --updater-archive "\$\{verified\}"/);
+  assert.ok(preview.indexOf("batcave-verify-updater-signature") < preview.indexOf("--mode adhoc"));
+  const credentials = steps.find(s => s.includes("Prepare Apple signing credentials"));
+  assert.match(credentials, /if: inputs.macos_signing == 'notarized'/);
+  assert.match(credentials, /Required release secret .* is missing/);
+  assert.match(releaseWorkflow, /macOS preview is ad-hoc signed and is not notarized/);
+});
+
+
+test("reads pending drafts by release ID and requires the public tag after publication", () => {
+  const steps = workflowSteps(workflowJob("finalize"));
+  const create = steps.find(s => s.includes("Create and verify draft GitHub Release"));
+  const publish = steps.find(s => s.includes("Publish verified GitHub Release"));
+  assert.match(create, /gh release view .* --json databaseId --jq .databaseId/);
+  assert.match(create, /releases\/\$\{release_id\}/);
+  assert.match(publish, /releases\/\$\{BATCAVE_RELEASE_ID\}/);
+  assert.match(publish, /Published release tag does not target/);
+  for (const step of [create, publish]) {
+    const guard = step.match(/          \[\[ -z "\$\{(?:tag_sha|remote_tag_sha)\}"[^\n]+Draft release tag targets another commit[^\n]+/)[0];
+    for (const [tagSha, status] of [["", 0], [sourceSha, 0], ["b".repeat(40), 1]]) {
+      assert.equal(spawnSync("bash", ["-c", guard], { env: {
+        ...process.env, tag_sha: tagSha, remote_tag_sha: tagSha, RELEASE_SOURCE_SHA: sourceSha,
+      } }).status, status);
+    }
+  }
 });

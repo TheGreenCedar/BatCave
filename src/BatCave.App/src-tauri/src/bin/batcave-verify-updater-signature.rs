@@ -9,9 +9,9 @@ use std::{
     process::ExitCode,
 };
 
-// This is intentionally far above BatCave's normal updater size while bounding
-// the exact-byte buffer used by the release verifier.
-const MAX_COMPRESSED_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+// Windows NSIS includes the offline WebView2 runtime and exceeds 256 MiB.
+// Match the public release verifier's 1 GiB ceiling while bounding this buffer.
+const MAX_UPDATER_BYTES: u64 = 1024 * 1024 * 1024;
 
 fn decode_wrapped(value: &str, label: &str) -> Result<String, String> {
     let decoded = STANDARD
@@ -27,9 +27,9 @@ fn read_archive_bounded(archive_path: &Path) -> Result<Vec<u8>, String> {
         .metadata()
         .map_err(|error| format!("failed to inspect {}: {error}", archive_path.display()))?
         .len();
-    if archive_size > MAX_COMPRESSED_ARCHIVE_BYTES {
+    if archive_size > MAX_UPDATER_BYTES {
         return Err(format!(
-            "compressed updater archive exceeds the {MAX_COMPRESSED_ARCHIVE_BYTES}-byte limit: {}",
+            "updater payload exceeds the {MAX_UPDATER_BYTES}-byte limit: {}",
             archive_path.display()
         ));
     }
@@ -126,5 +126,29 @@ fn main() -> ExitCode {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_current_offline_windows_installer_size() {
+        // Exact size of the NSIS artifact from main run 34030695605. Its offline
+        // WebView2 payload exceeds the former 256 MiB macOS archive limit.
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fixture.as_file().set_len(323_270_594).unwrap();
+        let bytes = read_archive_bounded(fixture.path()).unwrap();
+        assert_eq!(bytes.len(), 323_270_594);
+    }
+
+    #[test]
+    fn rejects_oversized_payload_before_allocating_its_buffer() {
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fixture.as_file().set_len(MAX_UPDATER_BYTES + 1).unwrap();
+        assert!(read_archive_bounded(fixture.path())
+            .unwrap_err()
+            .contains("exceeds"));
     }
 }
