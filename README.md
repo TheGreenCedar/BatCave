@@ -10,9 +10,9 @@
 
 BatCave shows machine-wide CPU, memory, disk, and network activity alongside the apps and processes using those resources. Select a workload to inspect its recorded history, measurement sources, and missing data.
 
-![BatCave Monitor ranking live workloads in the native Apple Silicon app](docs/images/batcave-monitor-macos-overview.jpg)
+![BatCave Monitor showing machine activity and leading workloads in the native Apple Silicon app](docs/images/batcave-monitor-macos-overview.jpg)
 
-<p align="center"><sub>Native Apple Silicon app showing live local telemetry.</sub></p>
+<p align="center"><sub>Native Apple Silicon app, captured September 5, 2026. <a href="design-qa.md">Capture details</a>.</sub></p>
 
 ## Find the problem, then inspect it
 
@@ -25,13 +25,13 @@ BatCave shows machine-wide CPU, memory, disk, and network activity alongside the
 
 If the operating system denies a process, a collector is still warming up, or a source cannot support a metric, BatCave says so. It does not turn missing telemetry into zeroes.
 
+![BatCave Monitor inspecting a workload and its recorded history in Explore](docs/images/batcave-monitor-macos-explore.jpg)
+
+<p align="center"><sub>Explore shows the selected workload’s history, current readings, and measurement sources.</sub></p>
+
 ## Per-process network activity
 
 Process-network attribution uses XNU NStat on supported macOS layouts, ETW on Windows, and optional eBPF probes on Linux. It measures IP socket payloads. If the collector lacks access or does not support the host, BatCave marks process traffic unavailable.
-
-![BatCave Monitor attributing live network traffic to a Python process on macOS](docs/images/batcave-monitor-macos-network.jpg)
-
-<p align="center"><sub>A local transfer captured through macOS NStat and attributed to its owning process.</sub></p>
 
 ## Platform support
 

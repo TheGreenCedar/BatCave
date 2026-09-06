@@ -1,30 +1,35 @@
-# Design QA
+# Native UI evidence
 
-## Source targets
+These screenshots show the native Apple Silicon app with live local telemetry on September 5, 2026. They cover Overview, Explore, and the compact workload inspector after the resource-readout and macOS network-collection fixes.
 
-- `artifacts/design/batcave-ui-overhaul/selected-overview-light.png`
-- `artifacts/design/batcave-ui-overhaul/selected-explore-light.png`
-- `artifacts/design/batcave-ui-overhaul/selected-overview-compact-light.png`
-- `artifacts/design/batcave-ui-overhaul/selected-explore-compact-light.png`
+| Capture | Details |
+| --- | --- |
+| Source | `7242f3c186d59ab6fbbbfbdbdacf133ae41816f4` |
+| App | BatCave Monitor `0.2.0-rc.5`, local ad-hoc build |
+| Host | Apple Silicon, macOS 27.0, build `26A5421a` |
+| Appearance | Cave, system dark mode |
+| Method | Direct native-window captures through Computer Use |
+| Window sizes | Overview and Explore: 1179 × 768; compact inspector: 781 × 768 |
+| GUI SHA-256 | `2cc809444c0dda04bbfb1a8034a129f1d655098518bf04c3a3e3f717b9b03cfe` |
 
-## Native implementation evidence
+The captured app predates the PostCSS dependency update; its UI and collector source match the final PR. The images are unedited native captures, not browser fixtures or mockups.
 
-- `docs/assets/ui-overhaul/overview-cave-light.png`
-- `docs/assets/ui-overhaul/explore-cave-light.png`
-- `docs/assets/ui-overhaul/compact-drawer-cave-light.png`
-- `docs/assets/ui-overhaul/chart-motion.gif`
-- `artifacts/design/batcave-ui-overhaul/native-overview-compact-cave-light.png`
-- `artifacts/design/batcave-ui-overhaul/native-explore-compact-cave-light.png`
+## Overview
 
-## Comparison history
+Read and write rates occupy separate lines, keeping each value beside its unit as activity changes. Network download and upload rates use the same layout.
 
-1. The first native render exposed the legacy stylesheet overriding the new shell and stretching Overview cards. The client-overhaul rules were moved after the legacy rules and the Overview grid was changed to content-sized rows.
-2. Native WebKit rejected the icon library's generated barrel export. Direct component imports restored the same icon set and removed the native-only parse failure.
-3. Cave light Overview and Explore captures were compared with the selected designs in `qa-overview-source-vs-native.png` and `qa-explore-source-vs-native.png`.
-4. The implementation keeps the selected design's navigation, light colors, workload density, two-column Explore layout, and compact drawer.
-5. CPU uses the existing uPlot chart in place of the radial mockup, avoiding another chart dependency. Contributor explanations use host-written copy. Models may select an eligible explanation ID but cannot write telemetry claims.
-6. Native compact renders remain contained and scroll correctly. The workload drawer traps focus, closes with Escape, and restores logical focus. Automated checks also cover 200% text, reduced motion, stale and degraded states, and all family/mode pairs.
+![Native Overview with machine resources and leading workloads](docs/images/batcave-monitor-macos-overview.jpg)
 
-## Result
+## Explore
 
-The recorded design comparison passed. These captures document that UI revision; later visible changes require fresh native checks.
+The selected workload keeps its inspector and recorded history beside the ranked list.
+
+![Native Explore with Activity Monitor selected and its session history visible](docs/images/batcave-monitor-macos-explore.jpg)
+
+## Compact inspector
+
+At a narrow window width, workload details open in a drawer. Native verification covered scrolling to the history chart, closing with Escape, and returning focus to the selected workload.
+
+![Native compact workload inspector](docs/images/batcave-monitor-macos-compact-inspector.jpg)
+
+The final native session showed live process network activity and no active collector limitation. Diagnostics still lists unavailable macOS kernel CPU as a data limitation. These captures establish visible behavior; performance budgets and signed release verification remain separate requirements in [the implementation record](docs/rescue-implementation.md).
