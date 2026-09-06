@@ -1,6 +1,6 @@
 # Release channels and verification
 
-BatCave releases must come from an approved commit at the tip of protected `main`. The workflow builds the packages, signs them, publishes an immutable GitHub Release when authorized, and verifies the public downloads. A successful build alone does not complete release verification.
+BatCave releases must come from an owner-selected commit at the tip of `main` with completed validation. The workflow builds the packages, signs the updater payloads, publishes an immutable GitHub Release when authorized, and verifies the public downloads. A successful build alone does not complete release verification.
 
 ## Version and source
 
@@ -16,9 +16,13 @@ Dispatch `Versioned release` manually from `main` with the tag, channel, and app
 
 Use the default `publish: false` for a dry run. It retains the complete workflow artifact without creating a tag or GitHub Release. Use `publish: true` only for an approved release.
 
-Every build and publication job uses the protected `release` environment. Its `RELEASE_ADMIN_READ_TOKEN` must be a fine-grained personal access token or GitHub App token with read access to repository Administration settings. Each sensitive job uses it to check release controls before reading signing secrets or changing release state. Later operations use the job's limited `GITHUB_TOKEN`.
+The repository owner can merge a PR after its six required checks pass; a second account is not required. Release preparation then requires successful `Validation` on the exact `main` commit. The workflow checks the latest run and attempt, requires all five main validation jobs to pass, and allows only the PR-only dependency review to be skipped. It repeats this check before publication. These reads use the built-in `GITHUB_TOKEN`; no admin-read token or environment reviewer is needed.
 
-The control check reads the repository owner type from GitHub. Organization repositories must return empty review-bypass lists. Personal repositories omit that organization-only field; GitHub rejects attempts to configure it. Both still require an independent approval, approval of the last push, strict validation checks, and administrator enforcement.
+Repository immutable releases must remain enabled. The workflow verifies the published release's immutable state, attestations, and public bytes. It does not read repository administration settings during the build.
+
+Windows packages are not Authenticode-signed. The release workflow has no Azure dependency or Store submission step. All three platforms still require the existing Tauri updater signing key.
+
+`macos_signing` defaults to `notarized` and requires the Apple credentials below. A prerelease may explicitly select `adhoc`; that preview is not notarized and its release notes say so. Stable releases reject `adhoc`. A missing or failed Apple credential never silently switches the selected mode.
 
 A release contains:
 
@@ -65,7 +69,7 @@ Proof builds may export post-sign uninstaller bytes with `BATCAVE_UNINSTALLER_EX
 
 The [platform capabilities matrix](platform-capabilities.md) is the canonical human view of supported release profiles; the [version 1 platform support contract](evidence/releases/platform-support-contract.v1.json) is the machine authority. `declared` records the intended host, architecture, runtime, and package boundary. `source_enforced` records that repository configuration, hosted builds, metadata, and extraction-only package checks agree with that boundary. Every current profile still has `native_oldest_supported: pending`, so none of those checks proves installation or runtime behavior on its oldest-supported host.
 
-Linux release builders are pinned to `ubuntu-22.04`. Package verification requires x86-64 ELF payloads, a maximum required symbol version of `GLIBC_2.35`, and deb dependencies on `libgtk-3-0` and `libwebkit2gtk-4.1-0`. Those are source/build gates only. Native evidence and the independent release decision remain separate requirements.
+Linux release builders are pinned to `ubuntu-22.04`. Package verification requires x86-64 ELF payloads, a maximum required symbol version of `GLIBC_2.35`, and deb dependencies on `libgtk-3-0` and `libwebkit2gtk-4.1-0`. Those are source/build gates only. Native evidence remains separate from build and package checks.
 
 Verify a downloaded file with `Get-FileHash -Algorithm SHA256` on Windows, `sha256sum --check SHA256SUMS.txt` on Linux, or `shasum -a 256 -c SHA256SUMS.txt` on macOS. Verify provenance with `gh attestation verify <file> --repo TheGreenCedar/BatCave`. On Windows, confirm the installed version in Apps settings and the executable file properties matches the release tag without the leading `v`.
 
@@ -77,29 +81,17 @@ Published deb and AppImage releases also run separate protected post-public smok
 
 Published Apple Silicon macOS updater archives run a separate [protected post-public staging observation](macos-updater-post-public-smoke.md) on `macos-15`. The private Rust verifier independently binds the immutable public release, full inventory, checksums, source attestations, updater signature, and exact archive bytes before it preflights, materializes, reverifies, and removes one private staged app tree. The result remains explicitly ineligible as release evidence and preserves `macos_updater_staging_only`; it does not install or launch the app, prove Developer ID/notarization/stapling at the staged destination, exercise A-to-B updating, or alter the unresolved DMG transport boundary.
 
-After the platform lanes produce sanitized packets for one exact public release, assemble `docs/evidence/releases/<tag>/index.json` and run `node scripts/validate-release-evidence-index.mjs` against it. The index binds packet file digests, release/workflow identity, support profiles, package roles, and selected public assets; it has no passing or accepted disposition. Its successful validation proves only that the review input is internally consistent. The release still requires live public verification, native platform evidence, updater proof, and the independent #76 release decision.
+After the platform lanes produce sanitized packets for one exact public release, assemble `docs/evidence/releases/<tag>/index.json` and run `node scripts/validate-release-evidence-index.mjs` against it. The index binds packet file digests, release/workflow identity, support profiles, package roles, and selected public assets; it has no passing or accepted disposition. Its successful validation proves only that the review input is internally consistent. Stable-release readiness still depends on live public verification, native platform evidence, and updater proof; a prerelease does not claim those open native checks are complete.
 
-## Windows signing and Store preparation
+## Optional Windows signing tools
 
-Ordinary local and pull-request builds remain unsigned. The protected versioned-release workflow is the only path that enables `BATCAVE_WINDOWS_SIGNING_PROFILE=production`. It authenticates to Azure with GitHub OIDC from the repository's `release` environment, and the federated identity must be granted only **Artifact Signing Certificate Profile Signer** on the selected certificate profile. The workflow uses no long-lived Azure client secret.
+Versioned downloads use the ordinary unsigned Windows package configuration and a mandatory Tauri updater signature. The workflow verifies that signature against the embedded public key after packaging. It publishes no Authenticode or Store readiness claim.
 
-Configure these protected environment inputs only after the production account, identity, and certificate profile have been reviewed:
-
-- Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`.
-- Variables: `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, and `ARTIFACT_SIGNING_CERTIFICATE_PROFILE`.
-- Existing Tauri updater secrets: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
-
-The repository pins `Azure/login`, the Artifact Signing SignTool integration, and the Windows SDK SignTool package to immutable commits, versions, and package digests. Signing follows one fixed byte order: build the app, CLI, service, and packaged dependencies; sign BatCave-owned inner PE files; verify both BatCave and preserved upstream signatures; build NSIS from those bytes; sign the generated uninstaller and outer installer through Tauri's custom signer; then create and verify the Tauri updater signature from the finalized Authenticode bytes. Checksums, attestations, `latest.json`, Store preflight, and the release inventory are generated only after that sequence.
-
-`scripts/test-windows-signing-profile.ps1` supplies a test-only Windows proof when production Azure credentials are unavailable. It creates a short-lived current-user code-signing certificate, signs a private copy of a caller-supplied PE, and separately proves that only the exact pinned unsigned Foundry Core SDK payload can enter the third-party re-signing path. It proves exact-byte verification and tamper rejection, then removes the certificate and bytes. It has no timestamp, cannot produce a production inventory, and is never accepted by the release candidate verifier.
-
-The production verifier requires the publisher `Albert Najjar`, one Artifact Signing leaf certificate for BatCave-owned files, RFC3161 timestamps, successful `Get-AuthenticodeSignature` and `signtool verify /pa /all /v` checks, and intact Microsoft signatures on packaged upstream PE files. Foundry Local SDK 1.2.0 is one narrow exception: `Microsoft.AI.Foundry.Local.Core.dll` is unsigned upstream, so BatCave accepts only its pinned pre-sign SHA-256 `316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea`, verifies that those exact bytes are unsigned, and signs them with BatCave's certificate before bundling. The two ONNX Runtime DLLs retain their Microsoft signatures. Evidence records Core as `third_party_resigned` with its original hash; it never describes those bytes as an upstream-preserved signature. Every other unsigned, unexpected, post-signing-modified, or byte-tampered PE still fails the release.
-
-The [Store source checklist](store/windows-submission-checklist.md) retains the existing per-machine x64 NSIS package, offline WebView2 runtime, `/S` silent install, and publisher-managed updates. Its preflight binds the exact signed installer to an immutable versioned GitHub Release URL. This source work does not reserve a Partner Center name, create an Azure account, prove a production certificate, publish a release, or submit a Store listing. Those remain explicit external and native gates. Existing public Windows preview artifacts are unsigned; do not promote them to stable or describe them as production-signed.
+The repository retains `scripts/build-signed-windows-release.ps1` and its Azure Artifact Signing helpers for a future signed distribution. They are not called by the release workflow. Their certificate, timestamp, byte-order, and tamper checks remain intact. The [Store source checklist](store/windows-submission-checklist.md) describes that separate signed distribution; unsigned preview packages do not satisfy it.
 
 ## macOS signing and notarization
 
-Pushes to `main` and manual `Platform bundles` runs produce an ad-hoc-signed Apple Silicon `.app` and DMG for internal validation. They are not notarized public downloads. Versioned releases require a Developer ID Application certificate and App Store Connect API key; the workflow will fail before packaging if any required secret is absent.
+Pushes to `main` and manual `Platform bundles` runs produce an ad-hoc-signed Apple Silicon `.app` and DMG for internal validation. The explicit `adhoc` prerelease mode packages the same type of build, verifies the DMG and updater archive, and labels the download as not notarized. The default `notarized` mode requires a Developer ID Application certificate and App Store Connect API key; it fails before packaging if any required secret is absent.
 
 Configure these GitHub Actions secrets:
 
@@ -113,7 +105,7 @@ Configure these GitHub Actions secrets:
 
 The release job writes the API key and certificate to mode-600 temporary files, imports the certificate into a temporary keychain, and lets Tauri sign, notarize, and staple the Apple Silicon app. It then signs, notarizes, and staples the containing DMG separately before removing every temporary credential in an `always()` cleanup step. `scripts/verify-macos-bundle.sh --mode release` requires an `arm64` slice and rejects an Intel `x86_64` slice, enforces macOS 12 as the deployment minimum, hardened runtime, one consistent bundle ID and Developer ID team, accepted Gatekeeper assessments, valid app and DMG staples, and a healthy DMG filesystem. The same checks apply to the app mounted from the DMG and the app extracted from the updater archive. The release is blocked if any gate fails.
 
-For a downloaded public DMG, run:
+For a downloaded notarized DMG, run:
 
 ```bash
 hdiutil verify BatCave*.dmg
