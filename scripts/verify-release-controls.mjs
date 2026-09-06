@@ -18,6 +18,7 @@ function requireControl(condition, message) {
 }
 
 export function verifyReleaseControls({
+  repositoryOwnerType,
   immutableReleases,
   branchProtection,
   environment,
@@ -26,6 +27,10 @@ export function verifyReleaseControls({
   requireControl(
     immutableReleases?.enabled === true,
     "repository immutable releases must be enabled before signing or publication",
+  );
+  requireControl(
+    repositoryOwnerType === "User" || repositoryOwnerType === "Organization",
+    "repository owner type must be verified as User or Organization",
   );
 
   const reviews = branchProtection?.required_pull_request_reviews;
@@ -43,11 +48,15 @@ export function verifyReleaseControls({
     "main branch protection must require approval of the last push",
   );
   const reviewBypasses = reviews?.bypass_pull_request_allowances;
+  // GitHub omits this organization-only field for personally owned repositories.
+  const personalRepositoryWithoutAllowances =
+    repositoryOwnerType === "User" && !Object.hasOwn(reviews, "bypass_pull_request_allowances");
   requireControl(
-    reviewBypasses &&
-      ["users", "teams", "apps"].every(
-        (kind) => Array.isArray(reviewBypasses[kind]) && reviewBypasses[kind].length === 0,
-      ),
+    personalRepositoryWithoutAllowances ||
+      (reviewBypasses &&
+        ["users", "teams", "apps"].every(
+          (kind) => Array.isArray(reviewBypasses[kind]) && reviewBypasses[kind].length === 0,
+        )),
     "main branch protection must prohibit all user, team, and app review bypass allowances",
   );
 
@@ -67,7 +76,8 @@ export function verifyReleaseControls({
     Array.isArray(statusCheckBindings) &&
       statusCheckBindings.every((check) => check?.app_id === GITHUB_ACTIONS_APP_ID) &&
       actualStatusCheckContexts.every(
-        (context) => typeof context === "string" && context.trim() === context && context.length > 0,
+        (context) =>
+          typeof context === "string" && context.trim() === context && context.length > 0,
       ) &&
       new Set(actualStatusCheckContexts).size === actualStatusCheckContexts.length &&
       actualStatusCheckContexts.length === REQUIRED_STATUS_CHECK_CONTEXTS.length &&
@@ -143,7 +153,7 @@ function githubApi(endpoint) {
   return JSON.parse(result.stdout);
 }
 
-export function verifyLiveReleaseControls(repository) {
+export function verifyLiveReleaseControls(repository, request = githubApi) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) {
     throw new Error(`invalid GitHub repository: ${repository}`);
   }
@@ -151,11 +161,18 @@ export function verifyLiveReleaseControls(repository) {
     typeof process.env.GH_TOKEN === "string" && process.env.GH_TOKEN.trim().length > 0,
     "release admin-read credential is missing",
   );
+  const metadata = request(`repos/${repository}`);
+  requireControl(
+    typeof metadata?.full_name === "string" &&
+      metadata.full_name.toLowerCase() === repository.toLowerCase(),
+    "repository metadata does not match the requested release repository",
+  );
   return verifyReleaseControls({
-    immutableReleases: githubApi(`repos/${repository}/immutable-releases`),
-    branchProtection: githubApi(`repos/${repository}/branches/main/protection`),
-    environment: githubApi(`repos/${repository}/environments/release`),
-    deploymentBranchPolicies: githubApi(
+    repositoryOwnerType: metadata.owner?.type,
+    immutableReleases: request(`repos/${repository}/immutable-releases`),
+    branchProtection: request(`repos/${repository}/branches/main/protection`),
+    environment: request(`repos/${repository}/environments/release`),
+    deploymentBranchPolicies: request(
       `repos/${repository}/environments/release/deployment-branch-policies`,
     ),
   });

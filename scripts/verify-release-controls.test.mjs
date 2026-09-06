@@ -31,6 +31,7 @@ function workflowSteps(job) {
 
 function validControls() {
   return {
+    repositoryOwnerType: "Organization",
     immutableReleases: { enabled: true, enforced_by_owner: false },
     branchProtection: {
       required_pull_request_reviews: {
@@ -97,6 +98,114 @@ test("rejects mutable repository releases", () => {
   const controls = validControls();
   controls.immutableReleases.enabled = false;
   assert.throws(() => verifyReleaseControls(controls), /immutable releases must be enabled/);
+});
+
+test("accepts the omitted bypass field returned for personal repositories", () => {
+  const controls = validControls();
+  controls.repositoryOwnerType = "User";
+  delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
+  assert.equal(verifyReleaseControls(controls), true);
+});
+
+test("requires a recognized repository owner before interpreting absent bypass settings", () => {
+  for (const owner of [undefined, null, "", "user", "Bot"]) {
+    const controls = validControls();
+    controls.repositoryOwnerType = owner;
+    assert.throws(() => verifyReleaseControls(controls), /repository owner type/);
+    delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
+    assert.throws(() => verifyReleaseControls(controls), /repository owner type/);
+  }
+});
+
+test("personal repositories still reject explicit malformed or populated bypass settings", () => {
+  for (const allowances of [
+    undefined,
+    null,
+    {},
+    { users: [], teams: [] },
+    { users: "", teams: [], apps: [] },
+    ...["users", "teams", "apps"].map((kind) => ({
+      users: [],
+      teams: [],
+      apps: [],
+      [kind]: [{ id: 1 }],
+    })),
+  ]) {
+    const controls = validControls();
+    controls.repositoryOwnerType = "User";
+    controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances =
+      allowances;
+    assert.throws(
+      () => verifyReleaseControls(controls),
+      /prohibit all user, team, and app review bypass allowances/,
+    );
+  }
+});
+
+test("personal repositories retain the independent approval and validation requirements", () => {
+  for (const weaken of [
+    (controls) => {
+      controls.branchProtection.enforce_admins.enabled = false;
+    },
+    (controls) => {
+      controls.branchProtection.required_pull_request_reviews.required_approving_review_count = 0;
+    },
+    (controls) => {
+      controls.branchProtection.required_pull_request_reviews.require_last_push_approval = false;
+    },
+    (controls) => {
+      controls.branchProtection.required_status_checks.strict = false;
+    },
+    (controls) => {
+      controls.environment.protection_rules[0].prevent_self_review = false;
+    },
+  ]) {
+    const controls = validControls();
+    controls.repositoryOwnerType = "User";
+    delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
+    weaken(controls);
+    assert.throws(() => verifyReleaseControls(controls));
+  }
+});
+
+test("live ownership comes from metadata for the requested repository", () => {
+  const originalToken = process.env.GH_TOKEN;
+  process.env.GH_TOKEN = "test-only-no-network";
+  try {
+    const controls = validControls();
+    delete controls.branchProtection.required_pull_request_reviews.bypass_pull_request_allowances;
+    const responses = new Map([
+      ["repos/owner/repository", { full_name: "Owner/Repository", owner: { type: "User" } }],
+      ["repos/owner/repository/immutable-releases", controls.immutableReleases],
+      ["repos/owner/repository/branches/main/protection", controls.branchProtection],
+      ["repos/owner/repository/environments/release", controls.environment],
+      [
+        "repos/owner/repository/environments/release/deployment-branch-policies",
+        controls.deploymentBranchPolicies,
+      ],
+    ]);
+    const requested = [];
+    const request = (endpoint) => {
+      requested.push(endpoint);
+      assert.ok(responses.has(endpoint), `unexpected endpoint: ${endpoint}`);
+      return responses.get(endpoint);
+    };
+    assert.equal(verifyLiveReleaseControls("owner/repository", request), true);
+    assert.deepEqual(requested, [...responses.keys()]);
+
+    for (const metadata of [null, {}, { full_name: "owner/different", owner: { type: "User" } }]) {
+      requested.length = 0;
+      responses.set("repos/owner/repository", metadata);
+      assert.throws(
+        () => verifyLiveReleaseControls("owner/repository", request),
+        /repository metadata does not match/,
+      );
+      assert.deepEqual(requested, ["repos/owner/repository"]);
+    }
+  } finally {
+    if (originalToken === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = originalToken;
+  }
 });
 
 test("rejects incomplete main branch protection", () => {
