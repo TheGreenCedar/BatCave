@@ -18,6 +18,8 @@ Use the default `publish: false` for a dry run. It retains the complete workflow
 
 Every build and publication job uses the protected `release` environment. Its `RELEASE_ADMIN_READ_TOKEN` must be a fine-grained personal access token or GitHub App token with read access to repository Administration settings. Each sensitive job uses it to check release controls before reading signing secrets or changing release state. Later operations use the job's limited `GITHUB_TOKEN`.
 
+The control check reads the repository owner type from GitHub. Organization repositories must return empty review-bypass lists. Personal repositories omit that organization-only field; GitHub rejects attempts to configure it. Both still require an independent approval, approval of the last push, strict validation checks, and administrator enforcement.
+
 A release contains:
 
 - the offline-capable Windows NSIS installer and standalone GUI and benchmark CLI executables;
