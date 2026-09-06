@@ -372,13 +372,14 @@ fi
 grep -Fq "updater signature verification failed" "$workspace/signature-drift.log"
 [[ ! -e "$workspace/drift-copy.app.tar.gz" ]]
 
-# This sparse fixture proves the Rust exact-byte buffer shares the 256 MiB ceiling.
+# The generic signature verifier accepts large offline Windows installers.
+# Its 1 GiB buffer ceiling is separate from the macOS extractor's 256 MiB cap.
 python3 - "$workspace/oversized.app.tar.gz" <<'PY'
 from pathlib import Path
 import sys
 
 with Path(sys.argv[1]).open("wb") as oversized:
-    oversized.truncate(256 * 1024 * 1024 + 1)
+    oversized.truncate(1024 * 1024 * 1024 + 1)
 PY
 if "${signature_command[@]}" \
   "$workspace/oversized.app.tar.gz" "$workspace/signed.app.tar.gz.sig" \
@@ -387,7 +388,7 @@ if "${signature_command[@]}" \
   echo "Expected oversized updater archive to fail before signature verification." >&2
   exit 1
 fi
-grep -Fq "compressed updater archive exceeds the 268435456-byte limit" \
+grep -Fq "updater payload exceeds the 1073741824-byte limit" \
   "$workspace/oversized.log"
 [[ ! -e "$workspace/oversized-copy.app.tar.gz" ]]
 
