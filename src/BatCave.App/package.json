@@ -41,22 +41,22 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
-    "@tauri-apps/plugin-updater": "2.10.1",
+    "@tauri-apps/plugin-updater": "2.11.0",
     "phosphor-svelte": "3.1.0",
     "uplot": "1.6.32"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.12.1",
-    "@playwright/test": "1.61.1",
-    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.62.1",
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "24.13.3",
-    "oxfmt": "0.58.0",
-    "oxlint": "1.74.0",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.81.0",
     "postcss": "8.5.28",
-    "svelte": "5.56.4",
-    "svelte-check": "4.7.2",
+    "svelte": "5.57.0",
+    "svelte-check": "4.7.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
-    "vite": "8.1.4"
+    "vite": "8.2.2"
   }
 }
