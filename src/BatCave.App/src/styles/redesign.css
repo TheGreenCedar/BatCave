@@ -3519,6 +3519,11 @@ button:disabled {
   gap: 16px;
 }
 
+.back-to-overview {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .explore-count {
   margin: 0;
   color: var(--text-muted);
