@@ -7,6 +7,7 @@ import {
   processAttentionLabel,
   processNeedsAttention,
   processOtherIoRate,
+  processStatusLabel,
 } from "../src/lib/process.ts";
 import {
   currentDiagnosticIssues,
@@ -27,6 +28,7 @@ import {
   displayAccountingMetricValue,
   formatOptionalRate,
   qualityGuidance,
+  qualityGuidanceEntries,
 } from "../src/lib/format.ts";
 import { hasNewRuntimeSample } from "../src/lib/runtimeSnapshot.ts";
 import { AcceptedRuntimeControls } from "../src/lib/runtimeControls.ts";
@@ -529,6 +531,47 @@ test("native metrics omit empty quality guidance", () => {
     }),
     ["Kernel metrics unavailable", "Memory sample held", "Swap coverage limited"],
   );
+});
+
+test("quality guidance entries group metrics that share a message", () => {
+  assert.deepEqual(
+    qualityGuidanceEntries({
+      kernel_cpu: { quality: "unavailable", message: "Kernel metrics unavailable" },
+      logical_cpu: { quality: "unavailable", message: "Kernel metrics unavailable" },
+      memory: { quality: "held", message: "Memory sample held" },
+      swap: { quality: "partial", message: "Swap coverage limited" },
+    }),
+    [
+      {
+        metrics: "Kernel CPU, Peak logical core",
+        message: "Kernel metrics unavailable",
+        consequence: "Shown as Unavailable.",
+      },
+      {
+        metrics: "Memory",
+        message: "Memory sample held",
+        consequence: "Shown as Pending until a sample arrives.",
+      },
+      {
+        metrics: "Swap",
+        message: "Swap coverage limited",
+        consequence: "Shown with a Limited badge.",
+      },
+    ],
+  );
+  assert.deepEqual(
+    qualityGuidanceEntries({ network: { quality: "native", source: "interface_aggregate" } }),
+    [],
+  );
+});
+
+test("processStatusLabel maps raw status tokens to friendly labels", () => {
+  assert.equal(processStatusLabel("Run"), "Running");
+  assert.equal(processStatusLabel("running"), "Running");
+  assert.equal(processStatusLabel("disk_sleep"), "Waiting on disk");
+  assert.equal(processStatusLabel("unknown"), "Unknown");
+  assert.equal(processStatusLabel(""), "Unknown");
+  assert.equal(processStatusLabel("tracing_stop"), "Tracing stop");
 });
 
 test("diagnostics cannot report healthy while an active limitation is listed", () => {

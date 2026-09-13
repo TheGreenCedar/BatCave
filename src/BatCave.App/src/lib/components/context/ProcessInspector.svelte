@@ -22,6 +22,7 @@
   } from "../../platformPresentation";
   import {
     processIdentity,
+    processStatusLabel,
   } from "../../process";
   import {
     resolvedProcessIcon,
@@ -146,7 +147,10 @@
         <span>{current ? "Current activity" : "Last recorded activity"}</span>
         <h3 id="current-activity-title">{accent}</h3>
       </div>
-      <small>{selectedProcess.status}</small>
+      <div>
+        <span class="status-caption">Status</span>
+        <small>{processStatusLabel(selectedProcess.status)}</small>
+      </div>
     </section>
 
     {#if hasNotableFinding(selectedProcess)}

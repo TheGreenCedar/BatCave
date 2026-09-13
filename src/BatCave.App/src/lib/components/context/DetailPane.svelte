@@ -136,7 +136,7 @@
     </div>
     <div class="detail-pane-actions">
       {#if subject === "process"}
-        <button class="system-overview-action" type="button" onclick={onShowSystem}>System overview</button>
+        <button class="system-overview-action" type="button" onclick={onShowSystem}>System detail</button>
       {/if}
       {#if compact}
         <button
@@ -159,7 +159,7 @@
     {#if subject === "process"}
       {#if inspectionError}<p class="detail-freshness" role="alert">{inspectionError}</p>
       {:else if inspectionLoading}<p class="detail-freshness" role="status">Loading the selected workload…</p>
-      {:else if inspection?.status === "exited"}<p class="detail-freshness" role="status">This identity is no longer in the latest sample. Showing its last recorded activity.</p>
+      {:else if inspection?.status === "exited"}<p class="detail-freshness" role="status">This process is no longer in the latest sample. Showing its last recorded activity.</p>
       {:else if inspection && !inspectionCurrent && inspection.status === "current"}<p class="detail-freshness" role="status">Showing the last recorded sample.</p>{/if}
       {#if selectedWorkload?.kind === "process"}
         <ProcessInspector
@@ -188,7 +188,7 @@
         />
       {:else}
         <div class="empty-panel">
-          <strong>{inspectionLoading ? "Loading workload" : inspection?.status === "evicted" ? "History was evicted" : "Identity not recorded"}</strong>
+          <strong>{inspectionLoading ? "Loading workload" : inspection?.status === "evicted" ? "History was released" : "No detail recorded"}</strong>
           <span>{inspection?.status === "evicted" ? "The bounded history store released this identity to make room for newer samples." : "No retained detail is available for this exact identity."}</span>
         </div>
       {/if}

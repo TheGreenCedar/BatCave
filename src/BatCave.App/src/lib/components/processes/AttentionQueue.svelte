@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { windowProcessViewRows, type ProcessColumn, type SortKey } from "../../process";
+  import {
+    processCountLabel,
+    windowProcessViewRows,
+    type ProcessColumn,
+    type SortKey,
+  } from "../../process";
   import type { ResolvedProcessIconCatalog } from "../../processIcons";
   import type { ProcessFocusMode, ProcessViewRow, RuntimePlatform, SortDirection } from "../../types";
   import MobileProcessList from "./MobileProcessList.svelte";
@@ -71,17 +76,7 @@
   $: rankedCount = processRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: visibleRankedCount = visibleRows.filter((row) => row.kind === "group" || !row.is_grouped).length;
   $: countLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
-  $: queueTitle = focusMode === "attention" ? "Attention queue" : focusMode === "io" ? "I/O active" : "All apps";
-
-  function processCountLabel(
-    visibleCount: number,
-    totalCount: number,
-    mode: ProcessFocusMode,
-    filterText: string,
-  ): string {
-    const scope = filterText.trim() ? "matching workloads" : mode === "attention" ? "active workloads" : mode === "io" ? "I/O workloads" : "workloads";
-    return `${visibleCount} ${scope}${totalCount > 0 ? ` · ${totalCount} processes sampled` : ""}`;
-  }
+  $: queueTitle = focusMode === "attention" ? "Busy now" : focusMode === "io" ? "I/O active" : "All apps";
 
   function toggleGroup(key: string): void {
     const next = { ...expandedGroups };
