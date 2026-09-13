@@ -2,7 +2,12 @@
   import ArrowClockwise from "phosphor-svelte/lib/ArrowClockwise";
   import ArrowDown from "phosphor-svelte/lib/ArrowDown";
   import ArrowUp from "phosphor-svelte/lib/ArrowUp";
-  import { sortDirectionButtonLabel, type FocusMode, type SortKey } from "../../process";
+  import {
+    sortDirectionButtonLabel,
+    type FocusMode,
+    type FocusOption,
+    type SortKey,
+  } from "../../process";
   import type { SortDirection } from "../../types";
   import SortSelect from "../ui/SortSelect.svelte";
 
@@ -11,7 +16,7 @@
   export let sortDirection: SortDirection;
   export let commandError: string;
   export let rankingUpdateAvailable: boolean;
-  export let focusOptions: { value: FocusMode; label: string }[];
+  export let focusOptions: FocusOption[];
   export let sortOptions: { value: SortKey; label: string }[];
   export let mutationsDisabled = false;
   export let onFocus: (mode: FocusMode) => void;
@@ -36,6 +41,7 @@
         class:active={focusMode === option.value}
         type="button"
         aria-pressed={focusMode === option.value}
+        title={option.description}
         disabled={mutationsDisabled}
         onclick={() => onFocus(option.value)}
       >
@@ -67,19 +73,21 @@
     </button>
   </div>
 
-  {#if rankingUpdateAvailable}
-    <button
-      class="ranking-update"
-      type="button"
-      aria-label="Update workload order"
-      title="Update workload order"
-      disabled={mutationsDisabled}
-      onclick={applyRanking}
-    >
-      <ArrowClockwise size={16} weight="bold" aria-hidden="true" />
-      <span>Update order</span>
-    </button>
-  {/if}
+  <div class="ranking-slot">
+    {#if rankingUpdateAvailable}
+      <button
+        class="ranking-update"
+        type="button"
+        aria-label="New ranking available. Order is held while you browse — click to update."
+        title="New ranking available. Order is held while you browse — click to update."
+        disabled={mutationsDisabled}
+        onclick={applyRanking}
+      >
+        <ArrowClockwise size={16} weight="bold" aria-hidden="true" />
+        <span>Update order</span>
+      </button>
+    {/if}
+  </div>
 
   {#if commandError}
     <p class="command-error command-bar-error" role="alert">{commandError}</p>

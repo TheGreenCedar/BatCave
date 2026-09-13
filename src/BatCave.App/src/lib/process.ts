@@ -27,6 +27,7 @@ export type SortKey =
 export interface ProcessColumn {
   key: SortKey;
   label: string;
+  description?: string;
   metric?: boolean;
 }
 
@@ -66,16 +67,34 @@ export interface ProcessIdentity {
   isChild: boolean;
 }
 
-export const focusOptions: { value: FocusMode; label: string }[] = [
-  { value: "all", label: "All apps" },
-  { value: "attention", label: "Attention" },
-  { value: "io", label: "I/O active" },
+export interface FocusOption {
+  value: FocusMode;
+  label: string;
+  description: string;
+}
+
+export const focusOptions: FocusOption[] = [
+  {
+    value: "all",
+    label: "All apps",
+    description: "Every app and process in the latest sample",
+  },
+  {
+    value: "attention",
+    label: "Busy now",
+    description: "Apps with notable CPU, memory, I/O, or network use, or limited access",
+  },
+  {
+    value: "io",
+    label: "I/O active",
+    description: "Apps reading or writing to disk right now",
+  },
 ];
 
 export const sortOptions: { value: SortKey; label: string }[] = [
-  { value: "attention", label: "Attention" },
-  { value: "cpu", label: "CPU (one core)" },
-  { value: "memory", label: "Resident memory" },
+  { value: "attention", label: "Activity" },
+  { value: "cpu", label: "CPU" },
+  { value: "memory", label: "Memory" },
   { value: "io", label: "I/O" },
   { value: "network", label: "Network" },
   { value: "name", label: "Name" },
@@ -84,11 +103,78 @@ export const sortOptions: { value: SortKey; label: string }[] = [
 export const processColumns: ProcessColumn[] = [
   { key: "name", label: "Workload" },
   { key: "attention", label: "Status" },
-  { key: "cpu", label: "CPU / core", metric: true },
-  { key: "memory", label: "Resident memory", metric: true },
-  { key: "io", label: "Read/write I/O", metric: true },
-  { key: "network", label: "Network", metric: true },
+  {
+    key: "cpu",
+    label: "CPU",
+    description: "CPU use, one logical core = 100%",
+    metric: true,
+  },
+  { key: "memory", label: "Memory", description: "Resident memory", metric: true },
+  {
+    key: "io",
+    label: "I/O",
+    description: "Disk read + write per second",
+    metric: true,
+  },
+  {
+    key: "network",
+    label: "Network",
+    description: "Network sent + received per second",
+    metric: true,
+  },
 ];
+
+export function processCountLabel(
+  visibleCount: number,
+  totalCount: number,
+  mode: ProcessFocusMode,
+  filterText: string,
+): string {
+  const scope = filterText.trim()
+    ? "matching workloads"
+    : mode === "attention"
+      ? "active workloads"
+      : mode === "io"
+        ? "I/O workloads"
+        : "workloads";
+  return `${visibleCount} ${scope}${totalCount > 0 ? ` · ${totalCount} processes sampled` : ""}`;
+}
+
+export function processStatusLabel(status: string): string {
+  switch (status.toLocaleLowerCase().trim()) {
+    case "run":
+    case "running":
+    case "runnable":
+      return "Running";
+    case "sleep":
+    case "sleeping":
+    case "s":
+      return "Sleeping";
+    case "disk_sleep":
+      return "Waiting on disk";
+    case "idle":
+      return "Idle";
+    case "stopped":
+      return "Stopped";
+    case "zombie":
+      return "Zombie";
+    case "dead":
+      return "Exited";
+    case "parked":
+      return "Parked";
+    case "paging":
+      return "Paging";
+    case "wakekill":
+      return "Stopping";
+    case "":
+    case "unknown":
+      return "Unknown";
+    default: {
+      const label = status.toLocaleLowerCase().replaceAll("_", " ").trim();
+      return label.charAt(0).toLocaleUpperCase() + label.slice(1);
+    }
+  }
+}
 
 export function processViewRowKey(row: ProcessViewRow): string {
   return row.detail.workload_id;

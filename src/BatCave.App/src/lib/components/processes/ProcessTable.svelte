@@ -142,7 +142,11 @@
     <thead>
       <tr>
         {#each columns as column}
-          <th aria-sort={sortAriaValue(column.key, sortKey, sortDirection)} class:metric={column.metric}>
+          <th
+            aria-sort={sortAriaValue(column.key, sortKey, sortDirection)}
+            class:metric={column.metric}
+            title={column.description}
+          >
             <button
               class="sort-header"
               class:active={sortKey === column.key}
@@ -186,6 +190,7 @@
                       type="button"
                       aria-expanded={expanded}
                       data-workload-group-key={row.detail.group_key}
+                      title={expanded ? "Collapse group" : "Expand group"}
                       aria-label={`${expanded ? "Collapse" : "Expand"} ${row.detail.label} group, ${processCountLabel(row.detail.process_count)}`}
                       onclick={() => onToggleGroup(row.detail.group_key)}
                     >

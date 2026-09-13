@@ -2,6 +2,7 @@
   import { FixtureInspectionArchive, InspectionRequestGate, getWorkloadInspection, type WorkloadInspection } from "./lib/workloadInspection";
   import { invoke } from "@tauri-apps/api/core";
   import { check, type Update } from "@tauri-apps/plugin-updater";
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import { onMount } from "svelte";
   import fixtureProcessIcon from "../src-tauri/icons/64x64.png";
@@ -69,6 +70,7 @@
     advanceProcessRanking,
     nextSortDirection,
     processColumns,
+    processCountLabel,
     processIdentity,
     processNeedsAttention,
     prepareProcessViewRows,
@@ -275,6 +277,13 @@
     snapshot.system.swap_total_bytes ?? 0,
   );
   $: processViewRows = displayProcessRows;
+  $: totalProcessCount = snapshot.total_process_count || snapshot.system.process_count;
+  $: rankedCount = processViewRows.filter(
+    (row) => row.kind === "group" || !row.is_grouped,
+  ).length;
+  $: exploreCountLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
+  $: activeFocusDescription =
+    focusOptions.find((option) => option.value === focusMode)?.description ?? "";
   $: iconProcesses = snapshot.overview_rows.flatMap((row) => row.kind === "process" ? [row.detail.process] : []);
   $: processIcons = buildResolvedProcessIconCatalog([...iconProcesses, ...snapshot.processes], nativeProcessIcons);
   $: filteredProcesses = processViewRows.flatMap((row) =>
@@ -1698,6 +1707,26 @@
       return;
     }
 
+    const navigable =
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !settingsOpen &&
+      !diagnosticsOpen &&
+      !compactDetailOpen &&
+      !(target instanceof HTMLInputElement) &&
+      !(target instanceof HTMLTextAreaElement) &&
+      !(target instanceof HTMLSelectElement) &&
+      !(target instanceof HTMLButtonElement) &&
+      !(target instanceof HTMLElement && target.isContentEditable);
+
+    if (navigable && (event.key === "1" || event.key === "2")) {
+      event.preventDefault();
+      navigateTo(event.key === "1" ? "overview" : "explore");
+      return;
+    }
+
     if (
       event.key === "/" &&
       !event.altKey &&
@@ -1973,7 +2002,18 @@
   {:else}
     <main class="explore-view" aria-labelledby="explore-heading">
       <header class="explore-heading">
-        <h2 id="explore-heading">Workloads</h2>
+        <div>
+          <h2 id="explore-heading">Workloads</h2>
+          <p class="explore-count" role="status">{exploreCountLabel} · {activeFocusDescription}</p>
+        </div>
+        <button
+          class="text-action back-to-overview"
+          type="button"
+          onclick={() => navigateTo("overview")}
+        >
+          <CaretLeft size={16} weight="bold" aria-hidden="true" />
+          Back to Overview
+        </button>
       </header>
       <div class="explore-toolbar">
         <label class="explore-search" for="process-search">
@@ -1983,6 +2023,7 @@
             value={searchText}
             oninput={(event) => setSearchText(event.currentTarget.value)}
             aria-label="Search apps and processes"
+            title="Search (/)"
             placeholder="Search by name or process"
             autocomplete="off"
             disabled={protocolMismatch !== null}
@@ -2008,7 +2049,7 @@
         <div class="explore-queue">
           <AttentionQueue
             processRows={processViewRows}
-            totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
+            {totalProcessCount}
             {focusMode}
             {searchText}
             columns={visibleProcessColumns}

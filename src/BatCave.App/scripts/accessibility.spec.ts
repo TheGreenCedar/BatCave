@@ -150,6 +150,8 @@ test("enhanced explanations are an explicit local opt-in with a deterministic fa
 }) => {
   await openFixture(page, "settings");
   const dialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(dialog.getByText("Not available on this system.")).toBeVisible();
+  await dialog.getByText("What this would do").click();
   const toggle = dialog.getByRole("switch", {
     name: "Use local AI to choose explanations",
   });
@@ -313,7 +315,7 @@ test("compact resource detail closes with Escape and restores the selected workl
   await expect
     .poll(() => page.evaluate(() => document.activeElement?.closest("dialog") !== null))
     .toBe(true);
-  const firstControl = dialog.getByRole("button", { name: "System overview" });
+  const firstControl = dialog.getByRole("button", { name: "System detail" });
   await firstControl.focus();
   await page.keyboard.press("Shift+Tab");
   await expect
@@ -738,7 +740,7 @@ test("exited inspection retains exact identity and last sample on desktop and co
   const pane = page.getByRole("complementary", { name: "Resource detail" });
   await expect(
     pane.getByText(
-      "This identity is no longer in the latest sample. Showing its last recorded activity.",
+      "This process is no longer in the latest sample. Showing its last recorded activity.",
     ),
   ).toBeVisible();
   await expect(pane.getByText("Last recorded activity", { exact: true })).toBeVisible();

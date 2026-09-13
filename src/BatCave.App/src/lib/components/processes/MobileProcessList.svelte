@@ -1,6 +1,6 @@
 <script lang="ts">
   import { displayProcessName } from "../../cockpit";
-  import { ProcessInteraction } from "../../process";
+  import { ProcessInteraction, processStatusLabel } from "../../process";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
   import {
     processRowSecondaryLabel,
@@ -187,7 +187,7 @@
         </span>
         <span class="card-foot">
           <span>{row.kind === "group" ? processCountLabel(row.detail.process_count) : `PID ${process?.pid}`}</span>
-          <span>{row.kind === "group" ? "Aggregate" : process?.status}</span>
+          <span>{row.kind === "group" ? "Aggregate" : processStatusLabel(process?.status ?? "")}</span>
         </span>
       </button>
       {#if row.kind === "group"}

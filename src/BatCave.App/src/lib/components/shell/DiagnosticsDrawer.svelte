@@ -14,7 +14,12 @@
     privilegedSourceLabel,
     processElevationLabel,
   } from "../../environmentPresentation";
-  import { formatBytes, metricQualityLabel, qualityGuidance } from "../../format";
+  import {
+    formatBytes,
+    metricQualityLabel,
+    qualityGuidance,
+    qualityGuidanceEntries,
+  } from "../../format";
   import { platformPresentation } from "../../platformPresentation";
   import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
 
@@ -33,6 +38,7 @@
     snapshot.environment.admin_mode_available,
   );
   $: guidance = qualityGuidance(systemQuality);
+  $: guidanceEntries = qualityGuidanceEntries(systemQuality);
   $: hasQualityLimitations = guidance.length > 0;
   $: hasActiveLimitations = issues.length > 0 || hasQualityLimitations;
   $: presentation = platformPresentation(snapshot.environment);
@@ -173,10 +179,10 @@
               <span>{guidance.length}</span>
             </div>
             <div class="diagnostic-list">
-              {#each guidance as item}
+              {#each guidanceEntries as entry}
                 <article class="diagnostic-issue">
-                  <h4>Metric coverage</h4>
-                  <p>{item}</p>
+                  <h4>{entry.metrics}</h4>
+                  <p>{entry.message}{entry.consequence ? ` ${entry.consequence}` : ""}</p>
                 </article>
               {/each}
             </div>
