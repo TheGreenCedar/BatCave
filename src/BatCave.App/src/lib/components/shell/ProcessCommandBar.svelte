@@ -6,6 +6,7 @@
     sortDirectionButtonLabel,
     type FocusMode,
     type FocusOption,
+    type SortOption,
     type SortKey,
   } from "../../process";
   import type { SortDirection } from "../../types";
@@ -17,7 +18,7 @@
   export let commandError: string;
   export let rankingUpdateAvailable: boolean;
   export let focusOptions: FocusOption[];
-  export let sortOptions: { value: SortKey; label: string }[];
+  export let sortOptions: SortOption[];
   export let mutationsDisabled = false;
   export let onFocus: (mode: FocusMode) => void;
   export let onSort: (key: SortKey) => void;
