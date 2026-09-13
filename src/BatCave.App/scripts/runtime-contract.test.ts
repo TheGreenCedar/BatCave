@@ -560,6 +560,24 @@ test("quality guidance entries group metrics that share a message", () => {
     ],
   );
   assert.deepEqual(
+    qualityGuidanceEntries({
+      cpu: { quality: "held", message: "Collector warming up" },
+      disk: { quality: "unavailable", message: "Collector warming up" },
+    }),
+    [
+      {
+        metrics: "Machine CPU",
+        message: "Collector warming up",
+        consequence: "Shown as Pending until a sample arrives.",
+      },
+      {
+        metrics: "Disk read/write",
+        message: "Collector warming up",
+        consequence: "Shown as Unavailable.",
+      },
+    ],
+  );
+  assert.deepEqual(
     qualityGuidanceEntries({ network: { quality: "native", source: "interface_aggregate" } }),
     [],
   );

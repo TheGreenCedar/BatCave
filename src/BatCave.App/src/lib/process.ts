@@ -91,17 +91,23 @@ export const focusOptions: FocusOption[] = [
   },
 ];
 
-export const sortOptions: { value: SortKey; label: string }[] = [
-  { value: "attention", label: "Activity" },
-  { value: "cpu", label: "CPU" },
-  { value: "memory", label: "Memory" },
-  { value: "io", label: "I/O" },
-  { value: "network", label: "Network" },
-  { value: "name", label: "Name" },
+export interface SortOption {
+  value: SortKey;
+  label: string;
+  description: string;
+}
+
+export const sortOptions: SortOption[] = [
+  { value: "attention", label: "Activity", description: "Busiest workloads first" },
+  { value: "cpu", label: "CPU", description: "CPU use, one logical core = 100%" },
+  { value: "memory", label: "Memory", description: "Resident memory" },
+  { value: "io", label: "I/O", description: "Disk read and write rate" },
+  { value: "network", label: "Network", description: "Network send and receive rate" },
+  { value: "name", label: "Name", description: "Alphabetical by workload name" },
 ];
 
 export const processColumns: ProcessColumn[] = [
-  { key: "name", label: "Workload" },
+  { key: "name", label: "Workload", description: "App or process name" },
   { key: "attention", label: "Status" },
   {
     key: "cpu",
@@ -123,6 +129,10 @@ export const processColumns: ProcessColumn[] = [
     metric: true,
   },
 ];
+
+export function countWorkloadRows(rows: ProcessViewRow[]): number {
+  return rows.filter((row) => row.kind === "group" || !row.is_grouped).length;
+}
 
 export function processCountLabel(
   visibleCount: number,

@@ -71,6 +71,7 @@
     nextSortDirection,
     processColumns,
     processCountLabel,
+    countWorkloadRows,
     processIdentity,
     processNeedsAttention,
     prepareProcessViewRows,
@@ -278,10 +279,13 @@
   );
   $: processViewRows = displayProcessRows;
   $: totalProcessCount = snapshot.total_process_count || snapshot.system.process_count;
-  $: rankedCount = processViewRows.filter(
-    (row) => row.kind === "group" || !row.is_grouped,
-  ).length;
-  $: exploreCountLabel = processCountLabel(rankedCount, totalProcessCount, focusMode, searchText);
+  let matchedWorkloadCount = 0;
+  $: exploreCountLabel = processCountLabel(
+    matchedWorkloadCount,
+    totalProcessCount,
+    focusMode,
+    searchText,
+  );
   $: activeFocusDescription =
     focusOptions.find((option) => option.value === focusMode)?.description ?? "";
   $: iconProcesses = snapshot.overview_rows.flatMap((row) => row.kind === "process" ? [row.detail.process] : []);
@@ -1754,6 +1758,7 @@
   }
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
+    matchedWorkloadCount = countWorkloadRows(incoming);
     const prepared = prepareProcessViewRows(incoming, selectedWorkloadId, 180);
     incoming = prepared.rows;
 

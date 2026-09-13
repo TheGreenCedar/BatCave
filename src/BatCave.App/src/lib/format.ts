@@ -425,7 +425,9 @@ export function qualityGuidanceEntries(quality: SystemMetricQuality): QualityGui
           : metric?.quality === "unavailable"
             ? "Shown as Unavailable."
             : "";
-    const existing = entries.find((entry) => entry.message === message);
+    const existing = entries.find(
+      (entry) => entry.message === message && entry.consequence === consequence,
+    );
     if (existing) {
       existing.metrics = `${existing.metrics}, ${label}`;
     } else {
