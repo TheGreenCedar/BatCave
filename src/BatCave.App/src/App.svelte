@@ -320,7 +320,7 @@
   $: visibleProcessColumns = processColumns
     .filter((column) => column.key !== "attention")
     .map((column) =>
-      column.key === "memory" ? { ...column, label: presentation.memoryLabel } : column,
+      column.key === "memory" ? { ...column, description: presentation.memoryLabel } : column,
     );
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
