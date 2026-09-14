@@ -1431,6 +1431,7 @@
     inspectionGate.clear();
     resourceSummaries = [];
     displayProcessRows = [];
+    matchedWorkloadCount = 0;
     pendingProcessRows = null;
     runtimeQueryRequestSeq += 1;
     if (searchDebounceId !== undefined) {
