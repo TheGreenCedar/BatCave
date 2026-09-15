@@ -519,20 +519,25 @@ export function settleProcessRanking(
   lastSettledAt: number,
   settleIntervalMs = 10_000,
 ): RankingSettle {
-  if (current.length === 0) {
+  const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row] as const));
+  const currentKeys = new Set(current.map(processViewRowKey));
+
+  const survivors = current.flatMap((row) => {
+    const next = incomingByKey.get(processViewRowKey(row));
+    return next ? [next] : [];
+  });
+  const commonIncoming = incoming.filter((row) => currentKeys.has(processViewRowKey(row)));
+
+  if (survivors.length === 0) {
     return { rows: incoming, settledAt: now };
   }
 
-  const currentIndexByKey = new Map(
-    current.map((row, index) => [processViewRowKey(row), index] as const),
+  const survivorIndexByKey = new Map(
+    survivors.map((row, index) => [processViewRowKey(row), index] as const),
   );
-  if (currentIndexByKey.size !== incoming.length) {
-    return { rows: incoming, settledAt: now };
-  }
-
-  for (let index = 0; index < incoming.length; index += 1) {
-    const currentIndex = currentIndexByKey.get(processViewRowKey(incoming[index]));
-    if (currentIndex === undefined || Math.abs(index - currentIndex) > 1) {
+  for (let index = 0; index < commonIncoming.length; index += 1) {
+    const survivorIndex = survivorIndexByKey.get(processViewRowKey(commonIncoming[index]));
+    if (survivorIndex === undefined || Math.abs(index - survivorIndex) > 1) {
       return { rows: incoming, settledAt: now };
     }
   }
@@ -541,7 +546,14 @@ export function settleProcessRanking(
     return { rows: incoming, settledAt: now };
   }
 
-  return { rows: stabilizeProcessRows(current, incoming), settledAt: lastSettledAt };
+  const rows = [...survivors];
+  for (let index = 0; index < incoming.length; index += 1) {
+    const row = incoming[index];
+    if (!currentKeys.has(processViewRowKey(row))) {
+      rows.splice(Math.min(index, rows.length), 0, row);
+    }
+  }
+  return { rows, settledAt: lastSettledAt };
 }
 
 export function windowProcessViewRows(

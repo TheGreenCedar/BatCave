@@ -295,12 +295,36 @@ test("settleProcessRanking adopts displacement beyond one row immediately", () =
   assert.equal(settled.settledAt, 5_000);
 });
 
-test("settleProcessRanking adopts membership changes immediately", () => {
-  const current = [row("1", 10), row("2", 9)];
-  const added = settleProcessRanking(current, [...current, row("3", 8)], 5_000, 1_000);
-  assert.equal(added.rows.length, 3);
-  assert.equal(added.settledAt, 5_000);
-  const removed = settleProcessRanking(current, [row("1", 10)], 6_000, 1_000);
-  assert.equal(removed.rows.length, 1);
-  assert.equal(removed.settledAt, 6_000);
+test("settleProcessRanking inserts a new row at its incoming position without reordering", () => {
+  const current = [row("1", 10), row("2", 9), row("3", 8)];
+  const incoming = [row("1", 10), row("4", 9.5), row("2", 9), row("3", 8)];
+  const settled = settleProcessRanking(current, incoming, 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), [
+    "process:1:0",
+    "process:4:0",
+    "process:2:0",
+    "process:3:0",
+  ]);
+  assert.equal(settled.rows[0], incoming[0]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+test("settleProcessRanking drops a removed row without reordering the rest", () => {
+  const current = [row("1", 10), row("2", 9), row("3", 8)];
+  const incoming = [row("1", 10), row("3", 8)];
+  const settled = settleProcessRanking(current, incoming, 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:1:0", "process:3:0"]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+test("settleProcessRanking measures displacement only among common rows", () => {
+  const current = [row("1", 10), row("2", 9), row("3", 8), row("4", 7)];
+  const incoming = [row("2", 9), row("1", 10), row("4", 7)];
+  const settled = settleProcessRanking(current, incoming, 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), [
+    "process:1:0",
+    "process:2:0",
+    "process:4:0",
+  ]);
+  assert.equal(settled.settledAt, 1_000);
 });
