@@ -692,6 +692,7 @@ test("independent inspection keeps identity and timestamp when switching A to B 
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "process");
   const pane = page.getByRole("complementary", { name: "Resource detail" });
+  await pane.getByRole("button", { name: "Memory history" }).click();
   const first = page.locator('[data-workload-id][aria-pressed="true"]:visible').first();
   const id = await first.getAttribute("data-workload-id");
   const identity = await pane.locator(".identity-title-row strong").textContent();
@@ -703,15 +704,17 @@ test("independent inspection keeps identity and timestamp when switching A to B 
   await expect(pane).not.toBeVisible();
   await page.locator('[data-view="explore"]').click();
   await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  await pane.getByRole("button", { name: "Memory history" }).click();
   await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", timestamp ?? "");
   const second = page.locator('[data-workload-id][aria-pressed="false"]:visible').first();
   await second.click();
   await expect(pane.locator(".identity-title-row strong")).not.toHaveText(identity ?? "");
   await page.locator(`[data-workload-id="${id}"]:visible`).first().click();
   await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  const memoryHistory = pane.getByRole("button", { name: "Memory history" });
+  if ((await memoryHistory.getAttribute("aria-expanded")) !== "true") await memoryHistory.click();
   await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", timestamp ?? "");
-  await pane.getByRole("combobox", { name: "History resource" }).selectOption("memory");
-  await expect(pane.locator(".history-readout strong")).toContainText("bytes");
+  await expect(pane.locator(".history-readout strong")).toContainText(/[KMGT]?B$/);
   const slider = pane.getByRole("slider", { name: "Recorded sample" });
   await slider.focus();
   await expect(slider).toBeFocused();
@@ -726,6 +729,7 @@ test("independent inspection keeps identity and timestamp when switching A to B 
   await expect(dialog).not.toBeVisible();
   await compactSelection.click();
   await expect(dialog.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  await dialog.getByRole("button", { name: "Memory history" }).click();
   await expect(dialog.locator(".history-readout time")).toHaveAttribute(
     "datetime",
     timestamp ?? "",
@@ -744,6 +748,7 @@ test("exited inspection retains exact identity and last sample on desktop and co
     ),
   ).toBeVisible();
   await expect(pane.getByText("Last recorded activity", { exact: true })).toBeVisible();
+  await pane.getByRole("button", { name: "CPU history" }).click();
   await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", /T/);
   await expectNoAxeViolations(page);
   await page.setViewportSize({ width: 760, height: 900 });

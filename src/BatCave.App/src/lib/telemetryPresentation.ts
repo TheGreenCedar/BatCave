@@ -140,12 +140,7 @@ export function metricPresentation(
     return { canDisplay: false, label: "Unavailable", emptyLabel: "Unavailable" };
   if (quality.quality === "held")
     return { canDisplay: false, label: "Pending", emptyLabel: "Pending" };
-  const qualityLabel =
-    quality.quality === "partial"
-      ? "Limited"
-      : quality.quality === "estimated"
-        ? "Estimated"
-        : "Current";
+  const qualityLabel = quality.quality === "partial" ? "Limited" : "Current";
   const freshness = state === "stale" ? "Stale" : state === "paused" ? "Paused" : null;
   return {
     canDisplay: true,

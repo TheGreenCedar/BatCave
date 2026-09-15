@@ -24,7 +24,11 @@
     headline: "Waiting for measurements.",
     summary: "Waiting for the first local system sample.",
     tone: "neutral",
-    attention: null,
+    attention: {
+      title: "Starting up",
+      detail: "Waiting for the first local system sample.",
+      tone: "healthy",
+    },
     primaryResource: "cpu",
   };
   export let resources: ResourceSummaryOption[] = [];
@@ -174,15 +178,13 @@
     {/each}
   </section>
 
-  {#if status.attention}
-    <section class={`overview-attention tone-${status.attention.tone}`} aria-labelledby="overview-attention-heading">
-      <div>
-        <h3 id="overview-attention-heading">{status.attention.title}</h3>
-        <p>{status.attention.detail}</p>
-      </div>
-      <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
-    </section>
-  {/if}
+  <section class={`overview-attention tone-${status.attention.tone}`} aria-labelledby="overview-attention-heading">
+    <div>
+      <h3 id="overview-attention-heading">{status.attention.title}</h3>
+      <p>{status.attention.detail}</p>
+    </div>
+    <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
+  </section>
 
   <section class="overview-workloads" aria-labelledby="leading-workloads-heading">
     <header>

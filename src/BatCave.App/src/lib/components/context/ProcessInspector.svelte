@@ -1,25 +1,18 @@
 <script lang="ts">
   import { displayProcessName } from "../../cockpit";
   import Copy from "phosphor-svelte/lib/Copy";
+  import InspectionChart from "../../InspectionChart.svelte";
   import {
-    accessLabel,
     displayProcessMetricValue,
-    formatBytes,
-    formatOptionalRate,
-    formatPercent,
-    formatRate,
-    metricQualityLabel,
     processActivityLabel,
     processFindingLabel,
-    processMemoryQuality,
-    processTrustLabel,
   } from "../../format";
   import {
     platformPresentation,
-    privateMemoryValue,
-    residentMemoryValue,
     type PlatformPresentation,
   } from "../../platformPresentation";
+  import type { ChartPalette } from "../../themes";
+  import type { WorkloadInspection } from "../../workloadInspection";
   import {
     processIdentity,
     processStatusLabel,
@@ -39,11 +32,12 @@
   export let copyStatus = "";
   export let current = false;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
-  export let platform: "windows" | "linux" | "macos" | "fixture" = "fixture";
-  export let processNetworkLabel: (process: ProcessSample) => string;
   export let insightNarrative: string | null = null;
   export let insightNarrativeGenerated = false;
   export let onCopy: () => void;
+  export let inspection: WorkloadInspection | null = null;
+  // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
+  export let activeTheme: ChartPalette;
 
   $: selectedProcess = detail.process;
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
@@ -54,34 +48,6 @@
 
   function processNetworkRate(process: ProcessSample): number {
     return (process.network_received_bps ?? 0) + (process.network_transmitted_bps ?? 0);
-  }
-
-  function processCpuLabel(process: ProcessSample): string {
-    return displayProcessMetricValue(process.cpu_percent, process.quality?.cpu, formatPercent);
-  }
-
-  function processIoLabel(process: ProcessSample): string {
-    return displayProcessMetricValue(processReadWriteIoRate(), process.quality?.io, formatRate);
-  }
-
-  function processIoTotalLabel(process: ProcessSample, value: number): string {
-    return displayProcessMetricValue(value, process.quality?.io, formatBytes);
-  }
-
-  function processOtherIoLabel(process: ProcessSample): string {
-    return displayProcessMetricValue(
-      process.other_io_bps,
-      process.quality?.other_io,
-      formatOptionalRate,
-    );
-  }
-
-  function processOtherIoTotalLabel(process: ProcessSample): string {
-    return displayProcessMetricValue(
-      process.other_io_total_bytes,
-      process.quality?.other_io,
-      (value) => (value === undefined ? "Unavailable" : formatBytes(value)),
-    );
   }
 
   function findingCopy(process: ProcessSample): string {
@@ -162,32 +128,14 @@
       </div>
     {/if}
 
-    <section class="key-metrics" aria-labelledby="key-metrics-title">
-      <h3 id="key-metrics-title">Key metrics</h3>
-      <dl>
-        <div class="metric-cpu"><dt>CPU <small>One core</small></dt><dd>{processCpuLabel(selectedProcess)}</dd></div>
-        <div class="metric-memory"><dt>{presentation.memoryLabel} <small>Bytes</small></dt><dd>{residentMemoryValue(selectedProcess, platform)}</dd></div>
-        <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{processIoLabel(selectedProcess)}</dd></div>
-        <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{processNetworkLabel(selectedProcess)}</dd></div>
-      </dl>
-    </section>
+    {#if inspection}<InspectionChart points={inspection.history} {activeTheme} />{/if}
 
 <details class="technical-disclosure inspector-technical">
       <summary>Technical details</summary>
       <dl class="key-value-grid technical-grid">
         <div><dt>Process ID</dt><dd>{selectedProcess.pid}</dd></div>
         <div><dt>Parent</dt><dd>{selectedProcess.parent_pid ?? "Unavailable"}</dd></div>
-        <div><dt>Kernel CPU (one core)</dt><dd>{selectedProcess.kernel_cpu_percent === undefined ? "Unavailable" : displayProcessMetricValue(selectedProcess.kernel_cpu_percent, selectedProcess.quality?.cpu, formatPercent)}</dd></div>
-        <div><dt>{presentation.privateMemoryLabel}</dt><dd>{privateMemoryValue(selectedProcess, platform)}</dd></div>
-        <div><dt>Read I/O total</dt><dd>{processIoTotalLabel(selectedProcess, selectedProcess.io_read_total_bytes)}</dd></div>
-        <div><dt>Write I/O total</dt><dd>{processIoTotalLabel(selectedProcess, selectedProcess.io_write_total_bytes)}</dd></div>
-        <div><dt>Other I/O rate</dt><dd>{processOtherIoLabel(selectedProcess)}</dd></div>
-        <div><dt>Other I/O total</dt><dd>{processOtherIoTotalLabel(selectedProcess)}</dd></div>
         <div><dt>Threads</dt><dd>{displayProcessMetricValue(selectedProcess.threads, selectedProcess.quality?.threads, String)}</dd></div>
-        <div><dt>{presentation.handlesLabel}</dt><dd>{displayProcessMetricValue(selectedProcess.handles, selectedProcess.quality?.handles, String)}</dd></div>
-        <div><dt>Access</dt><dd>{accessLabel(selectedProcess.access_state)}</dd></div>
-        <div><dt>Memory quality</dt><dd>{metricQualityLabel(processMemoryQuality(selectedProcess), "Quality not reported")}</dd></div>
-        <div><dt>Telemetry coverage</dt><dd>{processTrustLabel(selectedProcess)}</dd></div>
       </dl>
       <div class="technical-path">
         <span>Executable path</span>

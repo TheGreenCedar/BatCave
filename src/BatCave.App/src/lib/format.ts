@@ -69,11 +69,10 @@ export function metricQualityShortLabel(
 
   switch (metric.quality) {
     case "native":
+    case "estimated":
       return "Native";
     case "partial":
       return "Partial";
-    case "estimated":
-      return "Estimated";
     case "held":
       return "Held";
     case "unavailable":
@@ -141,11 +140,7 @@ export function nextProcessMetricHistory(
 }
 
 function observationQualifier(quality: MetricQualityInfo | undefined): string {
-  return quality?.quality === "estimated"
-    ? ", estimated"
-    : quality?.quality === "partial"
-      ? ", limited coverage"
-      : "";
+  return quality?.quality === "partial" ? ", limited coverage" : "";
 }
 
 export function processFindingLabel(
@@ -271,7 +266,7 @@ export function displayGroupMetricValue<T>(
   if (metric.quality === "partial" || coverage.available < coverage.total) {
     return `${formatted} · ${coverage.available}/${coverage.total} · limited`;
   }
-  return metric.quality === "estimated" ? `${formatted} · estimated` : formatted;
+  return formatted;
 }
 
 function groupMetricIsComplete(
@@ -303,7 +298,7 @@ function groupHighFinding(
   if (metric.quality === "partial" || coverage.available < coverage.total) {
     return `${message} Coverage is limited to ${coverage.available} of ${coverage.total} processes.`;
   }
-  return metric.quality === "estimated" ? `${message} This aggregate is estimated.` : message;
+  return message;
 }
 
 export function groupFindingLabel(detail: GroupDetail): string {
@@ -457,9 +452,8 @@ export function qualityGuidance(quality: SystemMetricQuality): string[] {
 export function formatMetricQuality(value: MetricQuality): string {
   switch (value) {
     case "native":
-      return "Native";
     case "estimated":
-      return "Estimated";
+      return "Native";
     case "held":
       return "Held";
     case "partial":

@@ -195,7 +195,7 @@ test("host owns current units and qualifications and invalidates quality changes
   } satisfies NarrativeInvocation["facts"];
   const invocation = makeNarrativeInvocation("workload_insight", 22, facts, "workload:code-2022");
   for (const [id, expected] of [
-    ["memory_usage", "Code 2022: 522 MiB of memory in this sample (estimated)."],
+    ["memory_usage", "Code 2022: 522 MiB of memory in this sample."],
     [
       "disk_activity",
       "Code 2022: 3 KiB/s of recorded read/write I/O in this sample (limited coverage).",
