@@ -300,8 +300,7 @@ export function renderNarrative(
   const metric = facts.metrics.find((value) => value.kind === resource);
   if (!metric) return null;
   const quality = facts.measurement_limitations.find((value) => value.kind === resource)?.quality;
-  const qualification =
-    quality === "estimated" ? " (estimated)" : quality === "limited" ? " (limited coverage)" : "";
+  const qualification = quality === "limited" ? " (limited coverage)" : "";
   const measured = formatMeasuredResource(resource, metric.rounded_value);
   return `${facts.display_name}: ${measured} in this sample${qualification}.`;
 }

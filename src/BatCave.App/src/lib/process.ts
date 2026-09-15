@@ -344,7 +344,6 @@ function processActivityAttentionLabel(
 ): string {
   const qualifiers: string[] = [];
   if (state === "partial") qualifiers.push("limited");
-  if (state === "estimated") qualifiers.push("estimated");
   if (!allMetricsComplete && state !== "partial") qualifiers.push("telemetry limited");
   return qualifiers.length > 0 ? `${metric.label} · ${qualifiers.join(" · ")}` : metric.label;
 }
@@ -397,7 +396,6 @@ export function processAttentionLabel(process: ProcessSample): string {
     return "Limited";
   }
   if (process.access_state !== "full") return "access limited";
-  if (states.includes("estimated")) return "steady · estimated";
   return "steady";
 }
 
@@ -429,7 +427,6 @@ function groupActivityLabel(
     return `${label} · ${coverage.available}/${coverage.total} · limited`;
   }
   if (!allMetricsComplete) return `${label} · telemetry limited`;
-  if (quality.quality === "estimated") return `${label} · estimated`;
   return label;
 }
 
@@ -508,6 +505,43 @@ export function stabilizeProcessRows(
   const stableKeys = new Set(stable.map(processViewRowKey));
 
   return [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
+}
+
+export interface RankingSettle {
+  rows: ProcessViewRow[];
+  settledAt: number;
+}
+
+export function settleProcessRanking(
+  current: ProcessViewRow[],
+  incoming: ProcessViewRow[],
+  now: number,
+  lastSettledAt: number,
+  settleIntervalMs = 10_000,
+): RankingSettle {
+  if (current.length === 0) {
+    return { rows: incoming, settledAt: now };
+  }
+
+  const currentIndexByKey = new Map(
+    current.map((row, index) => [processViewRowKey(row), index] as const),
+  );
+  if (currentIndexByKey.size !== incoming.length) {
+    return { rows: incoming, settledAt: now };
+  }
+
+  for (let index = 0; index < incoming.length; index += 1) {
+    const currentIndex = currentIndexByKey.get(processViewRowKey(incoming[index]));
+    if (currentIndex === undefined || Math.abs(index - currentIndex) > 1) {
+      return { rows: incoming, settledAt: now };
+    }
+  }
+
+  if (now - lastSettledAt >= settleIntervalMs) {
+    return { rows: incoming, settledAt: now };
+  }
+
+  return { rows: stabilizeProcessRows(current, incoming), settledAt: lastSettledAt };
 }
 
 export function windowProcessViewRows(

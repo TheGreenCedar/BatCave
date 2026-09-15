@@ -649,7 +649,7 @@ test("singleton attention labels publish only quality-backed activity", () => {
   );
   assert.equal(
     processAttentionLabel(process({ cpu_percent: 90, quality: quality("estimated") })),
-    "CPU activity · estimated",
+    "CPU activity",
   );
   assert.equal(
     processAttentionLabel(

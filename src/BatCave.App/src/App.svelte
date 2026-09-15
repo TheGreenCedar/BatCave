@@ -81,6 +81,7 @@
     sortKeyForColumn,
     sortOptions,
     shouldHoldProcessOrder,
+    settleProcessRanking,
     type FocusMode,
     type SortKey,
   } from "./lib/process";
@@ -245,6 +246,7 @@
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
+  let rankingSettledAt = 0;
   let runtimeQueryRequestSeq = 0;
   let runtimeCadenceRequestSeq = 0;
   let pendingCadenceRequestSeq = 0;
@@ -1064,9 +1066,8 @@
     const limitations: NarrativeFactPacket["measurement_limitations"] = [];
     for (const kind of ["cpu", "memory", "io", "network"] as const) {
       const quality = process.quality?.[kind]?.quality;
-      if (quality === "native") continue;
-      if (quality === "estimated") limitations.push({ kind, quality: "estimated" });
-      else if (quality === "partial") limitations.push({ kind, quality: "limited" });
+      if (quality === "native" || quality === "estimated") continue;
+      if (quality === "partial") limitations.push({ kind, quality: "limited" });
       else if (quality === "held") limitations.push({ kind, quality: "stale" });
       else limitations.push({ kind, quality: "unavailable" });
     }
@@ -1764,10 +1765,20 @@
     incoming = prepared.rows;
 
     const hold = !forceRankingRefresh && shouldHoldRanking();
-    const ranking = advanceProcessRanking(displayProcessRows, incoming, hold);
-    displayProcessRows = ranking.rows;
-    rankingUpdateAvailable = ranking.updateAvailable;
-    pendingProcessRows = hold ? incoming : null;
+    if (hold) {
+      const ranking = advanceProcessRanking(displayProcessRows, incoming, true);
+      displayProcessRows = ranking.rows;
+      rankingUpdateAvailable = ranking.updateAvailable;
+      pendingProcessRows = incoming;
+    } else {
+      const settled = forceRankingRefresh
+        ? { rows: incoming, settledAt: Date.now() }
+        : settleProcessRanking(displayProcessRows, incoming, Date.now(), rankingSettledAt);
+      displayProcessRows = settled.rows;
+      rankingSettledAt = settled.settledAt;
+      rankingUpdateAvailable = false;
+      pendingProcessRows = null;
+    }
     forceRankingRefresh = false;
   }
 
@@ -1778,6 +1789,7 @@
   function applyPendingRanking(): void {
     if (pendingProcessRows !== null) {
       displayProcessRows = pendingProcessRows;
+      rankingSettledAt = Date.now();
     }
     pendingProcessRows = null;
     rankingUpdateAvailable = false;
@@ -1816,7 +1828,8 @@
     } catch (error) {
       if (!inspectionGate.accept(ticket, { stable_id: stableId, publication_seq: publication })) return;
       inspectionLoading = false;
-      inspectionError = commandErrorMessage(error, "Unable to load this workload.");
+      const message = commandErrorMessage(error, "Unable to load this workload.");
+      if (message !== "workload_inspection_publication_pending") inspectionError = message;
     }
   }
 
@@ -2091,7 +2104,6 @@
             {copyStatus}
             {activeTheme}
             {presentation}
-            {processNetworkLabel}
             insightNarrative={selectedWorkloadInsight}
             insightNarrativeGenerated={workloadNarrativeCopy !== null}
             onCopy={() => void copySelectedWorkloadSummary()}

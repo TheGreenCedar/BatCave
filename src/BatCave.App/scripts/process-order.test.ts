@@ -8,6 +8,7 @@ import {
   reconcileWorkloadSelection,
   selectedWorkloadDetail,
   shouldHoldProcessOrder,
+  settleProcessRanking,
   advanceProcessRanking,
   ProcessInteraction,
   stabilizeProcessRows,
@@ -268,3 +269,38 @@ function groupCoverage(total: number) {
     threads: coverage,
   };
 }
+
+test("settleProcessRanking keeps an adjacent swap stable inside the settle interval", () => {
+  const current = [row("1", 10), row("2", 9), row("3", 8)];
+  const incoming = [row("2", 10), row("1", 9), row("3", 8)];
+  const settled = settleProcessRanking(current, incoming, 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), current.map(processViewRowKey));
+  assert.equal(settled.rows[0], incoming[1]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+test("settleProcessRanking adopts the incoming order after the settle interval", () => {
+  const current = [row("1", 10), row("2", 9), row("3", 8)];
+  const incoming = [row("2", 10), row("1", 9), row("3", 8)];
+  const settled = settleProcessRanking(current, incoming, 11_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), incoming.map(processViewRowKey));
+  assert.equal(settled.settledAt, 11_000);
+});
+
+test("settleProcessRanking adopts displacement beyond one row immediately", () => {
+  const current = [row("1", 10), row("2", 9), row("3", 8)];
+  const incoming = [row("3", 10), row("1", 9), row("2", 8)];
+  const settled = settleProcessRanking(current, incoming, 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), incoming.map(processViewRowKey));
+  assert.equal(settled.settledAt, 5_000);
+});
+
+test("settleProcessRanking adopts membership changes immediately", () => {
+  const current = [row("1", 10), row("2", 9)];
+  const added = settleProcessRanking(current, [...current, row("3", 8)], 5_000, 1_000);
+  assert.equal(added.rows.length, 3);
+  assert.equal(added.settledAt, 5_000);
+  const removed = settleProcessRanking(current, [row("1", 10)], 6_000, 1_000);
+  assert.equal(removed.rows.length, 1);
+  assert.equal(removed.settledAt, 6_000);
+});

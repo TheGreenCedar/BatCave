@@ -1,5 +1,4 @@
 <script lang="ts">
-  import InspectionChart from "../../InspectionChart.svelte";
   import type { WorkloadInspection } from "../../workloadInspection";
   import X from "phosphor-svelte/lib/X";
   import { focusDialogStart, trapDialogFocus } from "../../dialogFocus";
@@ -11,7 +10,6 @@
   import type { ChartPalette } from "../../themes";
   import type {
     KernelPoolTag,
-    ProcessSample,
     RuntimeSnapshot,
     SystemMemoryAccounting,
     SystemMetricQuality,
@@ -41,7 +39,6 @@
   export let copyStatus = "";
   export let activeTheme: ChartPalette;
   export let presentation: PlatformPresentation;
-  export let processNetworkLabel: (process: ProcessSample) => string;
   export let insightNarrative: string | null = null;
   export let insightNarrativeGenerated = false;
   export let onCopy: () => void;
@@ -159,8 +156,7 @@
     {#if subject === "process"}
       {#if inspectionError}<p class="detail-freshness" role="alert">{inspectionError}</p>
       {:else if inspectionLoading}<p class="detail-freshness" role="status">Loading the selected workload…</p>
-      {:else if inspection?.status === "exited"}<p class="detail-freshness" role="status">This process is no longer in the latest sample. Showing its last recorded activity.</p>
-      {:else if inspection && !inspectionCurrent && inspection.status === "current"}<p class="detail-freshness" role="status">Showing the last recorded sample.</p>{/if}
+      {:else if inspection?.status === "exited"}<p class="detail-freshness" role="status">This process is no longer in the latest sample. Showing its last recorded activity.</p>{/if}
       {#if selectedWorkload?.kind === "process"}
         <ProcessInspector
           detail={selectedWorkload}
@@ -170,11 +166,11 @@
           {copyStatus}
           current={inspectionCurrent}
           {presentation}
-          platform={snapshot.environment.platform}
-          {processNetworkLabel}
           {insightNarrative}
           {insightNarrativeGenerated}
           {onCopy}
+          {inspection}
+          {activeTheme}
         />
       {:else if selectedWorkload?.kind === "group"}
         <GroupInspector
@@ -185,6 +181,8 @@
           iconSrc={selectedWorkloadIconSrc}
           iconMatched={selectedWorkloadIconMatched}
           {onCopy}
+          {inspection}
+          {activeTheme}
         />
       {:else}
         <div class="empty-panel">
@@ -192,7 +190,6 @@
           <span>{inspection?.status === "evicted" ? "The bounded history store released this identity to make room for newer samples." : "No retained detail is available for this exact identity."}</span>
         </div>
       {/if}
-      {#if selectedWorkload && inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
     {:else}
       <SystemDetail
         {detailMode}
