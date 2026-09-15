@@ -12,7 +12,7 @@ BatCave shows machine-wide CPU, memory, disk, and network activity alongside the
 
 ![BatCave Monitor showing machine activity and leading workloads in the native Apple Silicon app](docs/images/batcave-monitor-macos-overview.jpg)
 
-<p align="center"><sub>Native Apple Silicon app, captured September 5, 2026. <a href="design-qa.md">Capture details</a>.</sub></p>
+<p align="center"><sub>Native Apple Silicon app, captured September 15, 2026. <a href="design-qa.md">Capture details</a>.</sub></p>
 
 ## Find the problem, then inspect it
 
@@ -25,9 +25,9 @@ BatCave shows machine-wide CPU, memory, disk, and network activity alongside the
 
 If the operating system denies a process, a collector is still warming up, or a source cannot support a metric, BatCave says so. It does not turn missing telemetry into zeroes.
 
-![BatCave Monitor inspecting a workload and its recorded history in Explore](docs/images/batcave-monitor-macos-explore.jpg)
+![BatCave Monitor inspecting a workload's history for every resource in Explore](docs/images/batcave-monitor-macos-explore.jpg)
 
-<p align="center"><sub>Explore shows the selected workload’s history, current readings, and measurement sources.</sub></p>
+<p align="center"><sub>Explore shows the selected workload's history for each resource; select a strip to expand it.</sub></p>
 
 ## Per-process network activity
 
