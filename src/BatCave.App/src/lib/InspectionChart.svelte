@@ -18,22 +18,22 @@
   $: firstTime = points[0]?.sampled_at_ms ?? 0;
   $: lastTime = points.at(-1)?.sampled_at_ms ?? firstTime;
   $: span = Math.max(1000, lastTime - firstTime);
-  function ceilingFor(metric: HistoryMetric): number {
+  function ceilingFor(samples: WorkloadHistoryPoint[], metric: HistoryMetric): number {
     return (
       Math.max(
         metric === "cpu" ? 100 : 1,
-        ...points.map((point) => point[metric].value ?? 0),
+        ...samples.map((point) => point[metric].value ?? 0),
       ) * 1.05
     );
   }
-  function strokeFor(metric: HistoryMetric): string {
+  function strokeFor(theme: ChartPalette, metric: HistoryMetric): string {
     return metric === "cpu"
-      ? activeTheme.cpuStroke
+      ? theme.cpuStroke
       : metric === "memory"
-        ? activeTheme.memoryStroke
+        ? theme.memoryStroke
         : metric === "io"
-          ? activeTheme.diskReadStroke
-          : activeTheme.networkDownStroke;
+          ? theme.diskReadStroke
+          : theme.networkDownStroke;
   }
   function formatValue(metric: HistoryMetric, value: number): string {
     return metric === "cpu"
@@ -42,13 +42,13 @@
         ? formatBytes(value)
         : formatRate(value);
   }
-  function formatLatest(metric: HistoryMetric): string {
-    const latest = [...points].reverse().find((point) => point[metric].value !== null);
+  function formatLatest(samples: WorkloadHistoryPoint[], metric: HistoryMetric): string {
+    const latest = [...samples].reverse().find((point) => point[metric].value !== null);
     if (!latest) return "—";
     return formatValue(metric, latest[metric].value ?? 0);
   }
-  function x(time: number): number {
-    return 8 + ((time - firstTime) / span) * 584;
+  function x(at: number, first: number, width: number): number {
+    return 8 + ((at - first) / width) * 584;
   }
   function chartPath(
     samples: WorkloadHistoryPoint[],
@@ -107,8 +107,8 @@
 <section class="inspection-history" aria-label="Workload history">
   <div class="history-heading"><h3>History</h3><small>{points.length} samples</small></div>
   {#each metrics as metric (metric.key)}
-    {@const stroke = strokeFor(metric.key)}
-    {@const ceiling = ceilingFor(metric.key)}
+    {@const stroke = strokeFor(activeTheme, metric.key)}
+    {@const ceiling = ceilingFor(points, metric.key)}
     <button
       type="button"
       class="history-row"
@@ -126,7 +126,7 @@
           vector-effect="non-scaling-stroke"
         />
       </svg>
-      <span class="history-row-value">{formatLatest(metric.key)}</span>
+      <span class="history-row-value">{formatLatest(points, metric.key)}</span>
     </button>
     {#if expanded === metric.key}
       <div class="history-detail">
@@ -146,8 +146,8 @@
               vector-effect="non-scaling-stroke"
             />
             <line
-              x1={x(selected.sampled_at_ms)}
-              x2={x(selected.sampled_at_ms)}
+              x1={x(selected.sampled_at_ms, firstTime, span)}
+              x2={x(selected.sampled_at_ms, firstTime, span)}
               y1="6"
               y2="125"
               stroke="currentColor"
@@ -155,7 +155,7 @@
               stroke-dasharray="3 3"
             />
             {#if selected[metric.key].value !== null}<circle
-                cx={x(selected.sampled_at_ms)}
+                cx={x(selected.sampled_at_ms, firstTime, span)}
                 cy={122 - ((selected[metric.key].value ?? 0) / ceiling) * 112}
                 r="3.5"
                 fill={stroke}
