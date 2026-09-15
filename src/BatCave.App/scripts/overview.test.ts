@@ -19,7 +19,8 @@ test("overview reports measured utilization without diagnosing machine health", 
   const status = buildOverviewStatus(snapshot, "live", 0);
   assert.match(status.headline, /CPU|Memory/);
   assert.doesNotMatch(status.headline + status.summary, /normal|pressure|healthy|unusual/i);
-  assert.equal(status.attention, null);
+  assert.equal(status.attention.tone, "healthy");
+  assert.equal(status.attention.title, "Monitoring");
 });
 
 test("the primary resource follows explicit selection, independently of utilization and quality", () => {
@@ -84,7 +85,7 @@ test("metric presentation fails closed and preserves real zero plus freshness", 
   }
   assert.equal(metricPresentation({ quality: "native" }, "starting", false).label, "No sample");
   assert.equal(metricPresentation({ quality: "native" }, "stale", true).label, "Stale");
-  assert.equal(metricPresentation({ quality: "estimated" }, "live", true).label, "Estimated");
+  assert.equal(metricPresentation({ quality: "estimated" }, "live", true).label, "Current");
   assert.equal(overviewQualityLabel({ quality: "native" }, "live", true), null);
   assert.equal(overviewQualityLabel({ quality: "partial" }, "live", true), "Limited");
   const row = makeFixtureSnapshot(1, undefined, "macos").process_view_rows.find(
@@ -176,4 +177,17 @@ test("Overview order holds fresh identities through pointer and keyboard interac
   assert.deepEqual(ranking.update("memory", incoming), incoming);
   assert.deepEqual(ranking.update("memory", []), []);
   assert.deepEqual(ranking.setInteraction("pointer", false), []);
+});
+
+test("Overview ranking keeps an adjacent swap stable inside the settle interval", () => {
+  const initial = makeFixtureSnapshot(1, undefined, "macos").overview_rows.slice(0, 3);
+  const swapped = [initial[1], initial[0], initial[2]];
+  const ranking = new OverviewRanking();
+  assert.deepEqual(ranking.update("cpu", initial), initial);
+  assert.deepEqual(
+    ranking.update("cpu", swapped).map((row) => row.detail.workload_id),
+    initial.map((row) => row.detail.workload_id),
+  );
+  const displaced = [initial[2], initial[0], initial[1]];
+  assert.deepEqual(ranking.update("cpu", displaced), displaced);
 });

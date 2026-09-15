@@ -2,6 +2,7 @@
   import { FixtureInspectionArchive, InspectionRequestGate, getWorkloadInspection, type WorkloadInspection } from "./lib/workloadInspection";
   import { invoke } from "@tauri-apps/api/core";
   import { check, type Update } from "@tauri-apps/plugin-updater";
+  import CaretLeft from "phosphor-svelte/lib/CaretLeft";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
   import { onMount } from "svelte";
   import fixtureProcessIcon from "../src-tauri/icons/64x64.png";
@@ -69,6 +70,8 @@
     advanceProcessRanking,
     nextSortDirection,
     processColumns,
+    processCountLabel,
+    countWorkloadRows,
     processIdentity,
     processNeedsAttention,
     prepareProcessViewRows,
@@ -78,6 +81,7 @@
     sortKeyForColumn,
     sortOptions,
     shouldHoldProcessOrder,
+    settleProcessRanking,
     type FocusMode,
     type SortKey,
   } from "./lib/process";
@@ -242,6 +246,7 @@
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
+  let rankingSettledAt = 0;
   let runtimeQueryRequestSeq = 0;
   let runtimeCadenceRequestSeq = 0;
   let pendingCadenceRequestSeq = 0;
@@ -275,6 +280,16 @@
     snapshot.system.swap_total_bytes ?? 0,
   );
   $: processViewRows = displayProcessRows;
+  $: totalProcessCount = snapshot.total_process_count || snapshot.system.process_count;
+  let matchedWorkloadCount = 0;
+  $: exploreCountLabel = processCountLabel(
+    matchedWorkloadCount,
+    totalProcessCount,
+    focusMode,
+    searchText,
+  );
+  $: activeFocusDescription =
+    focusOptions.find((option) => option.value === focusMode)?.description ?? "";
   $: iconProcesses = snapshot.overview_rows.flatMap((row) => row.kind === "process" ? [row.detail.process] : []);
   $: processIcons = buildResolvedProcessIconCatalog([...iconProcesses, ...snapshot.processes], nativeProcessIcons);
   $: filteredProcesses = processViewRows.flatMap((row) =>
@@ -311,7 +326,7 @@
   $: visibleProcessColumns = processColumns
     .filter((column) => column.key !== "attention")
     .map((column) =>
-      column.key === "memory" ? { ...column, label: presentation.memoryLabel } : column,
+      column.key === "memory" ? { ...column, description: presentation.memoryLabel } : column,
     );
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
@@ -1051,9 +1066,8 @@
     const limitations: NarrativeFactPacket["measurement_limitations"] = [];
     for (const kind of ["cpu", "memory", "io", "network"] as const) {
       const quality = process.quality?.[kind]?.quality;
-      if (quality === "native") continue;
-      if (quality === "estimated") limitations.push({ kind, quality: "estimated" });
-      else if (quality === "partial") limitations.push({ kind, quality: "limited" });
+      if (quality === "native" || quality === "estimated") continue;
+      if (quality === "partial") limitations.push({ kind, quality: "limited" });
       else if (quality === "held") limitations.push({ kind, quality: "stale" });
       else limitations.push({ kind, quality: "unavailable" });
     }
@@ -1418,6 +1432,7 @@
     inspectionGate.clear();
     resourceSummaries = [];
     displayProcessRows = [];
+    matchedWorkloadCount = 0;
     pendingProcessRows = null;
     runtimeQueryRequestSeq += 1;
     if (searchDebounceId !== undefined) {
@@ -1698,6 +1713,26 @@
       return;
     }
 
+    const navigable =
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !settingsOpen &&
+      !diagnosticsOpen &&
+      !compactDetailOpen &&
+      !(target instanceof HTMLInputElement) &&
+      !(target instanceof HTMLTextAreaElement) &&
+      !(target instanceof HTMLSelectElement) &&
+      !(target instanceof HTMLButtonElement) &&
+      !(target instanceof HTMLElement && target.isContentEditable);
+
+    if (navigable && (event.key === "1" || event.key === "2")) {
+      event.preventDefault();
+      navigateTo(event.key === "1" ? "overview" : "explore");
+      return;
+    }
+
     if (
       event.key === "/" &&
       !event.altKey &&
@@ -1725,14 +1760,25 @@
   }
 
   function updateProcessRows(incoming: ProcessViewRow[]): void {
+    matchedWorkloadCount = countWorkloadRows(incoming);
     const prepared = prepareProcessViewRows(incoming, selectedWorkloadId, 180);
     incoming = prepared.rows;
 
     const hold = !forceRankingRefresh && shouldHoldRanking();
-    const ranking = advanceProcessRanking(displayProcessRows, incoming, hold);
-    displayProcessRows = ranking.rows;
-    rankingUpdateAvailable = ranking.updateAvailable;
-    pendingProcessRows = hold ? incoming : null;
+    if (hold) {
+      const ranking = advanceProcessRanking(displayProcessRows, incoming, true);
+      displayProcessRows = ranking.rows;
+      rankingUpdateAvailable = ranking.updateAvailable;
+      pendingProcessRows = incoming;
+    } else {
+      const settled = forceRankingRefresh
+        ? { rows: incoming, settledAt: Date.now() }
+        : settleProcessRanking(displayProcessRows, incoming, Date.now(), rankingSettledAt);
+      displayProcessRows = settled.rows;
+      rankingSettledAt = settled.settledAt;
+      rankingUpdateAvailable = false;
+      pendingProcessRows = null;
+    }
     forceRankingRefresh = false;
   }
 
@@ -1743,6 +1789,7 @@
   function applyPendingRanking(): void {
     if (pendingProcessRows !== null) {
       displayProcessRows = pendingProcessRows;
+      rankingSettledAt = Date.now();
     }
     pendingProcessRows = null;
     rankingUpdateAvailable = false;
@@ -1781,7 +1828,8 @@
     } catch (error) {
       if (!inspectionGate.accept(ticket, { stable_id: stableId, publication_seq: publication })) return;
       inspectionLoading = false;
-      inspectionError = commandErrorMessage(error, "Unable to load this workload.");
+      const message = commandErrorMessage(error, "Unable to load this workload.");
+      if (message !== "workload_inspection_publication_pending") inspectionError = message;
     }
   }
 
@@ -1973,7 +2021,18 @@
   {:else}
     <main class="explore-view" aria-labelledby="explore-heading">
       <header class="explore-heading">
-        <h2 id="explore-heading">Workloads</h2>
+        <div>
+          <h2 id="explore-heading">Workloads</h2>
+          <p class="explore-count" role="status">{exploreCountLabel} · {activeFocusDescription}</p>
+        </div>
+        <button
+          class="text-action back-to-overview"
+          type="button"
+          onclick={() => navigateTo("overview")}
+        >
+          <CaretLeft size={16} weight="bold" aria-hidden="true" />
+          Back to Overview
+        </button>
       </header>
       <div class="explore-toolbar">
         <label class="explore-search" for="process-search">
@@ -1983,6 +2042,7 @@
             value={searchText}
             oninput={(event) => setSearchText(event.currentTarget.value)}
             aria-label="Search apps and processes"
+            title="Search (/)"
             placeholder="Search by name or process"
             autocomplete="off"
             disabled={protocolMismatch !== null}
@@ -2008,7 +2068,7 @@
         <div class="explore-queue">
           <AttentionQueue
             processRows={processViewRows}
-            totalProcessCount={snapshot.total_process_count || snapshot.system.process_count}
+            {totalProcessCount}
             {focusMode}
             {searchText}
             columns={visibleProcessColumns}
@@ -2044,7 +2104,6 @@
             {copyStatus}
             {activeTheme}
             {presentation}
-            {processNetworkLabel}
             insightNarrative={selectedWorkloadInsight}
             insightNarrativeGenerated={workloadNarrativeCopy !== null}
             onCopy={() => void copySelectedWorkloadSummary()}

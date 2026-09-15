@@ -10,6 +10,7 @@ import {
   ProcessInteraction,
   processViewRowKey,
   processViewRowMetrics,
+  settleProcessRanking,
 } from "./process.ts";
 import {
   buildTelemetryPresentation,
@@ -26,7 +27,7 @@ export interface OverviewStatus {
   headline: string;
   summary: string;
   tone: OverviewTone;
-  attention: { title: string; detail: string; tone: "warning" | "danger" } | null;
+  attention: { title: string; detail: string; tone: "healthy" | "warning" | "danger" };
   primaryResource: DetailMode;
 }
 
@@ -97,7 +98,11 @@ export function buildOverviewStatus(
             detail: "Affected measurements carry their quality beside the value.",
             tone: "warning",
           }
-        : null,
+        : {
+            title: telemetry.label,
+            detail: telemetry.detail,
+            tone: "healthy",
+          },
     primaryResource,
   };
 }
@@ -108,13 +113,21 @@ export class OverviewRanking {
   private rows: ProcessViewRow[] = [];
   private incoming: ProcessViewRow[] = [];
   private interacting = false;
+  private lastSettledAt = 0;
   private readonly interaction = new ProcessInteraction();
 
   update(resource: DetailMode, incoming: ProcessViewRow[]): ProcessViewRow[] {
+    if (this.resource !== resource) this.lastSettledAt = 0;
     const held = this.resource === resource && this.interacting;
     this.resource = resource;
     this.incoming = incoming;
-    this.rows = advanceProcessRanking(this.rows, incoming, held).rows;
+    if (held) {
+      this.rows = advanceProcessRanking(this.rows, incoming, true).rows;
+    } else {
+      const settled = settleProcessRanking(this.rows, incoming, Date.now(), this.lastSettledAt);
+      this.rows = settled.rows;
+      this.lastSettledAt = settled.settledAt;
+    }
     return this.rows;
   }
 
@@ -189,11 +202,7 @@ export function overviewMetricValue(row: ProcessViewRow, resource: DetailMode): 
     );
   const quality = row.detail.process.quality?.[metric];
   const label = displayProcessMetricValue(value, quality, formatter);
-  return quality?.quality === "estimated"
-    ? `${label} · estimated`
-    : quality?.quality === "partial"
-      ? `${label} · limited`
-      : label;
+  return quality?.quality === "partial" ? `${label} · limited` : label;
 }
 
 export function overviewQualityLabel(

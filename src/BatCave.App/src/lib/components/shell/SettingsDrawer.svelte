@@ -128,6 +128,39 @@
   }
 </script>
 
+{#snippet narrativeProviderCard()}
+  <div class="narrative-provider-card">
+    <div>
+      <strong>{narrativeProviderLabel(narrativeCapability)}</strong>
+      <span>{narrativeCapabilityExplanation(narrativeCapability)}</span>
+    </div>
+    {#if narrativeCapability.model_name || narrativeCapability.download_size_bytes}
+      <dl>
+        {#if narrativeCapability.model_name}<div><dt>Model</dt><dd>{narrativeCapability.model_name}</dd></div>{/if}
+        {#if narrativeCapability.download_size_bytes !== undefined}<div><dt>Download</dt><dd>{formatBytes(narrativeCapability.download_size_bytes)}</dd></div>{/if}
+        {#if narrativeCapability.license_name}
+          <div>
+            <dt>License</dt>
+            <dd title={narrativeCapability.license_url}>{narrativeCapability.license_name}</dd>
+          </div>
+        {/if}
+      </dl>
+    {/if}
+    {#if narrativeModelAction === "cancelling"}
+      <button type="button" disabled>Cancelling…</button>
+    {:else if narrativeModelAction === "downloading" || narrativeCapability.download_state === "downloading"}
+      <progress
+        aria-label="Local model download progress"
+        max="100"
+        value={narrativeDownloadProgress(narrativeCapability)}
+      ></progress>
+      <button type="button" disabled={!narrativeCapability.can_cancel_download} onclick={onCancelNarrativeModelDownload}>Cancel download</button>
+    {:else if narrativeCapability.can_download}
+      <button type="button" onclick={onDownloadNarrativeModel}>Download local model</button>
+    {/if}
+  </div>
+{/snippet}
+
 <dialog
   bind:this={dialog}
   class="drawer-layer"
@@ -159,6 +192,26 @@
     </header>
 
     <div class="drawer-scroll">
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h3>Monitoring</h3>
+          <p>Pause or refresh live collection.</p>
+        </div>
+        <div class="sampling-actions">
+          <button type="button" disabled={runtimeMutationsDisabled} onclick={onPaused}>
+            {#if isPaused}<Play size={17} weight="fill" aria-hidden="true" />{:else}<Pause size={17} weight="fill" aria-hidden="true" />{/if}
+            {isPaused ? "Resume monitoring" : "Pause monitoring"}
+          </button>
+          <button type="button" onclick={onRefresh}>
+            <ArrowClockwise size={17} weight="bold" aria-hidden="true" />
+            Refresh now
+          </button>
+        </div>
+        {#if commandError}
+          <p class="command-error" role="alert">{commandError}</p>
+        {/if}
+      </section>
+
       <section class="settings-section">
         <div class="settings-section-heading">
           <h3>Appearance</h3>
@@ -196,51 +249,46 @@
           <h3>Enhanced explanations</h3>
           <p>Let a local model choose which measured activity to explain. BatCave supplies the facts and wording.</p>
         </div>
-        <label class="setting-row narrative-toggle">
-          <span>
-            <strong>Use local AI to choose explanations</strong>
-            <small>Off by default. Deterministic explanations always remain available.</small>
-          </span>
-          <input
-            type="checkbox"
-            role="switch"
-            checked={enhancedNarratives}
-            onchange={(event) => onEnhancedNarratives(event.currentTarget.checked)}
-          />
-        </label>
-        <p class="setting-note">
-          Turning this on never downloads a model. Only rounded workload facts are shared with the local provider; paths, process IDs, diagnostics, and other workloads are excluded.
-        </p>
-        <div class="narrative-provider-card">
-          <div>
-            <strong>{narrativeProviderLabel(narrativeCapability)}</strong>
-            <span>{narrativeCapabilityExplanation(narrativeCapability)}</span>
-          </div>
-          {#if narrativeCapability.model_name || narrativeCapability.download_size_bytes}
-            <dl>
-              {#if narrativeCapability.model_name}<div><dt>Model</dt><dd>{narrativeCapability.model_name}</dd></div>{/if}
-              {#if narrativeCapability.download_size_bytes !== undefined}<div><dt>Download</dt><dd>{formatBytes(narrativeCapability.download_size_bytes)}</dd></div>{/if}
-              {#if narrativeCapability.license_name}
-                <div>
-                  <dt>License</dt>
-                  <dd title={narrativeCapability.license_url}>{narrativeCapability.license_name}</dd>
-                </div>
-              {/if}
-            </dl>
-          {/if}
-          {#if narrativeModelAction === "cancelling"}
-            <button type="button" disabled>Cancelling…</button>
-          {:else if narrativeModelAction === "downloading" || narrativeCapability.download_state === "downloading"}
-            <progress
-              aria-label="Local model download progress"
-              max="100"
-              value={narrativeDownloadProgress(narrativeCapability)}
-            ></progress>
-            <button type="button" disabled={!narrativeCapability.can_cancel_download} onclick={onCancelNarrativeModelDownload}>Cancel download</button>
-          {:else if narrativeCapability.can_download}
-            <button type="button" onclick={onDownloadNarrativeModel}>Download local model</button>
-          {/if}
-        </div>
+        {#if narrativeCapability.availability === "unsupported"}
+          <p class="setting-note">Not available on this system.</p>
+          <details class="technical-disclosure">
+            <summary>What this would do</summary>
+            <label class="setting-row narrative-toggle">
+              <span>
+                <strong>Use local AI to choose explanations</strong>
+                <small>Off by default. Deterministic explanations always remain available.</small>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                checked={enhancedNarratives}
+                disabled
+                onchange={(event) => onEnhancedNarratives(event.currentTarget.checked)}
+              />
+            </label>
+            <p class="setting-note">
+              Turning this on never downloads a model. Only rounded workload facts are shared with the local provider; paths, process IDs, diagnostics, and other workloads are excluded.
+            </p>
+            {@render narrativeProviderCard()}
+          </details>
+        {:else}
+          <label class="setting-row narrative-toggle">
+            <span>
+              <strong>Use local AI to choose explanations</strong>
+              <small>Off by default. Deterministic explanations always remain available.</small>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={enhancedNarratives}
+              onchange={(event) => onEnhancedNarratives(event.currentTarget.checked)}
+            />
+          </label>
+          <p class="setting-note">
+            Turning this on never downloads a model. Only rounded workload facts are shared with the local provider; paths, process IDs, diagnostics, and other workloads are excluded.
+          </p>
+          {@render narrativeProviderCard()}
+        {/if}
         {#if narrativeSettingsStatus}
           <p class="setting-note narrative-settings-status" role="status" aria-live="polite">
             {narrativeSettingsStatus}
@@ -252,16 +300,6 @@
         <div class="settings-section-heading">
           <h3>Advanced sampling and chart history</h3>
           <p>Adjust collection only when you need a different balance of detail and overhead.</p>
-        </div>
-        <div class="sampling-actions">
-          <button type="button" disabled={runtimeMutationsDisabled} onclick={onPaused}>
-            {#if isPaused}<Play size={17} weight="fill" aria-hidden="true" />{:else}<Pause size={17} weight="fill" aria-hidden="true" />{/if}
-            {isPaused ? "Resume monitoring" : "Pause monitoring"}
-          </button>
-          <button type="button" onclick={onRefresh}>
-            <ArrowClockwise size={17} weight="bold" aria-hidden="true" />
-            Refresh now
-          </button>
         </div>
         <label class="setting-row">
           <span>Refresh cadence</span>
@@ -286,17 +324,6 @@
             {/each}
           </select>
         </label>
-        <div class="history-reset-actions">
-          <button class="danger-outline" type="button" onclick={requestReset}>
-            {resetConfirm ? "Confirm reset history" : "Reset chart history"}
-          </button>
-          {#if resetConfirm}
-            <button class="text-action" type="button" onclick={() => (resetConfirm = false)}>Cancel</button>
-          {/if}
-        </div>
-        {#if commandError}
-          <p class="command-error" role="alert">{commandError}</p>
-        {/if}
       </section>
 
       <section class="settings-section">
@@ -354,6 +381,21 @@
         <button class="diagnostics-action" type="button" onclick={onOpenDiagnostics}>
           Open diagnostics
         </button>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-heading">
+          <h3>Reset</h3>
+          <p>Clears retained chart history. Live values are not affected.</p>
+        </div>
+        <div class="history-reset-actions">
+          <button class="danger-outline" type="button" onclick={requestReset}>
+            {resetConfirm ? "Confirm reset history" : "Reset chart history"}
+          </button>
+          {#if resetConfirm}
+            <button class="text-action" type="button" onclick={() => (resetConfirm = false)}>Cancel</button>
+          {/if}
+        </div>
       </section>
     </div>
   </div>

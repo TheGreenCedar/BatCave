@@ -7,6 +7,7 @@ import {
   processAttentionLabel,
   processNeedsAttention,
   processOtherIoRate,
+  processStatusLabel,
 } from "../src/lib/process.ts";
 import {
   currentDiagnosticIssues,
@@ -27,6 +28,7 @@ import {
   displayAccountingMetricValue,
   formatOptionalRate,
   qualityGuidance,
+  qualityGuidanceEntries,
 } from "../src/lib/format.ts";
 import { hasNewRuntimeSample } from "../src/lib/runtimeSnapshot.ts";
 import { AcceptedRuntimeControls } from "../src/lib/runtimeControls.ts";
@@ -531,6 +533,65 @@ test("native metrics omit empty quality guidance", () => {
   );
 });
 
+test("quality guidance entries group metrics that share a message", () => {
+  assert.deepEqual(
+    qualityGuidanceEntries({
+      kernel_cpu: { quality: "unavailable", message: "Kernel metrics unavailable" },
+      logical_cpu: { quality: "unavailable", message: "Kernel metrics unavailable" },
+      memory: { quality: "held", message: "Memory sample held" },
+      swap: { quality: "partial", message: "Swap coverage limited" },
+    }),
+    [
+      {
+        metrics: "Kernel CPU, Peak logical core",
+        message: "Kernel metrics unavailable",
+        consequence: "Shown as Unavailable.",
+      },
+      {
+        metrics: "Memory",
+        message: "Memory sample held",
+        consequence: "Shown as Pending until a sample arrives.",
+      },
+      {
+        metrics: "Swap",
+        message: "Swap coverage limited",
+        consequence: "Shown with a Limited badge.",
+      },
+    ],
+  );
+  assert.deepEqual(
+    qualityGuidanceEntries({
+      cpu: { quality: "held", message: "Collector warming up" },
+      disk: { quality: "unavailable", message: "Collector warming up" },
+    }),
+    [
+      {
+        metrics: "Machine CPU",
+        message: "Collector warming up",
+        consequence: "Shown as Pending until a sample arrives.",
+      },
+      {
+        metrics: "Disk read/write",
+        message: "Collector warming up",
+        consequence: "Shown as Unavailable.",
+      },
+    ],
+  );
+  assert.deepEqual(
+    qualityGuidanceEntries({ network: { quality: "native", source: "interface_aggregate" } }),
+    [],
+  );
+});
+
+test("processStatusLabel maps raw status tokens to friendly labels", () => {
+  assert.equal(processStatusLabel("Run"), "Running");
+  assert.equal(processStatusLabel("running"), "Running");
+  assert.equal(processStatusLabel("disk_sleep"), "Waiting on disk");
+  assert.equal(processStatusLabel("unknown"), "Unknown");
+  assert.equal(processStatusLabel(""), "Unknown");
+  assert.equal(processStatusLabel("tracing_stop"), "Tracing stop");
+});
+
 test("diagnostics cannot report healthy while an active limitation is listed", () => {
   assert.equal(diagnosticOverviewLabel("native", "off", false, 1, 0), "Limited");
   assert.equal(diagnosticOverviewLabel("native", "off", false, 0, 1), "Limited");
@@ -588,7 +649,7 @@ test("singleton attention labels publish only quality-backed activity", () => {
   );
   assert.equal(
     processAttentionLabel(process({ cpu_percent: 90, quality: quality("estimated") })),
-    "CPU activity · estimated",
+    "CPU activity",
   );
   assert.equal(
     processAttentionLabel(
