@@ -452,8 +452,9 @@ export function qualityGuidance(quality: SystemMetricQuality): string[] {
 export function formatMetricQuality(value: MetricQuality): string {
   switch (value) {
     case "native":
-    case "estimated":
       return "Native";
+    case "estimated":
+      return "Estimated";
     case "held":
       return "Held";
     case "partial":

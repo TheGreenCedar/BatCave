@@ -559,6 +559,10 @@ test("compact metric quality labels keep the full source-aware label available",
 
   const partial: MetricQualityInfo = { quality: "partial", source: "process_aggregate" };
   assert.equal(metricQualityLabel(partial, "Aggregate"), "Partial / process aggregate");
+  assert.equal(
+    metricQualityLabel({ quality: "estimated", source: "sysinfo" }, "x"),
+    "Estimated / sysinfo",
+  );
   assert.equal(metricQualityShortLabel(partial, "Aggregate"), "Partial");
   assert.equal(metricQualityShortLabel(undefined, "Aggregate"), "Aggregate");
   assert.equal(
