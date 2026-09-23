@@ -39,7 +39,7 @@
   );
   $: guidance = qualityGuidance(systemQuality);
   $: guidanceEntries = qualityGuidanceEntries(systemQuality);
-  $: hasQualityLimitations = guidance.length > 0;
+  $: hasQualityLimitations = guidanceEntries.length > 0;
   $: hasActiveLimitations = issues.length > 0 || hasQualityLimitations;
   $: presentation = platformPresentation(snapshot.environment);
   $: overviewLabel = diagnosticOverviewLabel(
@@ -47,7 +47,7 @@
     snapshot.admin_mode.state,
     snapshot.health.degraded,
     issues.length,
-    guidance.length,
+    guidanceEntries.length,
   );
 
   let dialog: HTMLDialogElement | null = null;
@@ -172,11 +172,11 @@
           </section>
         {/if}
 
-        {#if guidance.length > 0}
+        {#if guidanceEntries.length > 0}
           <section class="diagnostic-section" aria-labelledby="quality-limitations-title">
             <div class="drawer-section-title">
               <h3 id="quality-limitations-title">Data limitations</h3>
-              <span>{guidance.length}</span>
+              <span>{guidanceEntries.length}</span>
             </div>
             <div class="diagnostic-list">
               {#each guidanceEntries as entry}
