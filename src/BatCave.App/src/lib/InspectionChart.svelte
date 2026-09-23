@@ -43,8 +43,8 @@
         : formatRate(value);
   }
   function formatLatest(samples: WorkloadHistoryPoint[], metric: HistoryMetric): string {
-    const latest = [...samples].reverse().find((point) => point[metric].value !== null);
-    if (!latest) return "—";
+    const latest = samples.at(-1);
+    if (!latest || latest[metric].value === null) return "—";
     return formatValue(metric, latest[metric].value ?? 0);
   }
   function x(at: number, first: number, width: number): number {
