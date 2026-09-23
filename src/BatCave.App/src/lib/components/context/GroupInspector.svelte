@@ -71,7 +71,7 @@
     <p class="insight-copy"><strong>Worth noting:</strong> {groupFindingLabel(detail)}</p>
   {/if}
 
-  {#if inspection}<InspectionChart points={inspection.history} {activeTheme} />{/if}
+  {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
   {#if copyStatus}
     <p

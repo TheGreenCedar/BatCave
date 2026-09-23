@@ -3,6 +3,8 @@
   import type { ChartPalette } from "./themes";
   import type { HistoryMetric, WorkloadHistoryPoint } from "./workloadInspection";
   export let points: WorkloadHistoryPoint[] = [];
+  export let retainedPoints = 0;
+  export let historyTruncated = false;
   // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
   export let activeTheme: ChartPalette;
   let expanded: HistoryMetric | null = null;
@@ -105,7 +107,17 @@
 </script>
 
 <section class="inspection-history" aria-label="Workload history">
-  <div class="history-heading"><h3>History</h3><small>{points.length} samples</small></div>
+  <div class="history-heading">
+    <h3>History</h3>
+    <small
+      >{retainedPoints > points.length
+        ? `${points.length} of ${retainedPoints} samples`
+        : `${points.length} samples`}</small
+    >
+  </div>
+  {#if historyTruncated}<p class="history-limit">
+      Earlier samples are outside this retained window.
+    </p>{/if}
   {#each metrics as metric (metric.key)}
     {@const stroke = strokeFor(activeTheme, metric.key)}
     {@const ceiling = ceilingFor(points, metric.key)}
@@ -268,5 +280,10 @@
   }
   .history-readout strong {
     font-size: 14px;
+  }
+  .history-limit {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin: 8px 0;
   }
 </style>

@@ -128,7 +128,7 @@
       </div>
     {/if}
 
-    {#if inspection}<InspectionChart points={inspection.history} {activeTheme} />{/if}
+    {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
 <details class="technical-disclosure inspector-technical">
       <summary>Technical details</summary>
