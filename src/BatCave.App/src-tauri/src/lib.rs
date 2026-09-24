@@ -93,7 +93,8 @@ fn run_cli(args: &[String]) -> Option<i32> {
 
 #[tauri::command(async)]
 fn get_snapshot(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
-    protocol::encode_snapshot(state.snapshot()?)
+    let snapshot = state.published_snapshot_arc()?;
+    protocol::encode_snapshot_ref(&snapshot)
 }
 
 #[tauri::command(async)]

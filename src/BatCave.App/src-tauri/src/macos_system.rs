@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    ffi::{c_char, c_void, CStr},
+    ffi::{c_char, c_int, c_void, CStr},
+    io,
+    mem::size_of,
     ptr,
 };
 
@@ -187,6 +189,112 @@ impl MacosSystemCollector {
             )),
         });
     }
+}
+
+/// Sum of per-interface byte counters from the kernel route table and IFMIB
+/// data, replacing sysinfo's `Networks` refresh (which paid for a `getifaddrs`
+/// per interface via `if_indextoname` plus one more for addresses).
+/// The 64-bit counters come from IFMIB_IFDATA; the RTM_IFINFO2 `ifm_data`
+/// counters are 32-bit-capped for unprivileged callers (sysinfo issue #1378).
+pub(crate) fn interface_byte_totals() -> io::Result<(u64, u64)> {
+    let mut received = 0_u64;
+    let mut transmitted = 0_u64;
+    for index in route_interface_indices()? {
+        // An interface whose IFMIB read fails contributes 0, matching sysinfo.
+        if let Ok((rx, tx)) = interface_counters(index) {
+            received = received.saturating_add(rx);
+            transmitted = transmitted.saturating_add(tx);
+        }
+    }
+    Ok((received, transmitted))
+}
+
+fn sysctl_route(mib: &mut [c_int], buffer: *mut c_void, size: &mut usize) -> io::Result<()> {
+    let result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            buffer,
+            size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn route_interface_indices() -> io::Result<Vec<u16>> {
+    let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
+    let mut size = 0_usize;
+    sysctl_route(&mut mib, ptr::null_mut(), &mut size)?;
+    let mut capacity = size.saturating_add(size / 4).max(4096);
+    for _ in 0..4 {
+        let mut buffer = vec![0_u8; capacity];
+        let mut written = capacity;
+        match sysctl_route(&mut mib, buffer.as_mut_ptr().cast(), &mut written) {
+            Ok(()) => {
+                buffer.truncate(written);
+                return Ok(interface_indices_from_route_dump(&buffer));
+            }
+            // The table grew between the size probe and the read; retry bigger.
+            Err(error) if error.raw_os_error() == Some(libc::ENOMEM) => {
+                capacity = capacity.saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::from_raw_os_error(libc::ENOMEM))
+}
+
+fn interface_indices_from_route_dump(buffer: &[u8]) -> Vec<u16> {
+    // Walk the shared rt_msghdr prefix (msglen/version/type/addrs/flags/index);
+    // if_msghdr itself carries a trailing if_data, so records of other types can
+    // be shorter than size_of::<if_msghdr>().
+    const HDR_PREFIX: usize = 16;
+    let mut indices = Vec::new();
+    let mut offset = 0_usize;
+    while offset + HDR_PREFIX <= buffer.len() {
+        let msglen = usize::from(u16::from_ne_bytes(
+            buffer[offset..offset + 2].try_into().unwrap_or_default(),
+        ));
+        if msglen < HDR_PREFIX || offset + msglen > buffer.len() {
+            break;
+        }
+        let msg_type = buffer[offset + 3];
+        if i32::from(msg_type) == libc::RTM_IFINFO2 && msglen >= size_of::<libc::if_msghdr2>() {
+            let index = u16::from_ne_bytes(
+                buffer[offset + 12..offset + 14]
+                    .try_into()
+                    .unwrap_or_default(),
+            );
+            indices.push(index);
+        }
+        offset += msglen;
+    }
+    indices
+}
+
+fn interface_counters(index: u16) -> io::Result<(u64, u64)> {
+    let mut mib = [
+        libc::CTL_NET,
+        libc::PF_LINK,
+        libc::NETLINK_GENERIC,
+        libc::IFMIB_IFDATA,
+        c_int::from(index),
+        libc::IFDATA_GENERAL,
+    ];
+    let mut data: libc::ifmibdata = unsafe { std::mem::zeroed() };
+    let mut size = size_of::<libc::ifmibdata>();
+    sysctl_route(
+        &mut mib,
+        (&mut data as *mut libc::ifmibdata).cast::<c_void>(),
+        &mut size,
+    )?;
+    Ok((data.ifmd_data.ifi_ibytes, data.ifmd_data.ifi_obytes))
 }
 
 fn collect_host_disk() -> HostDiskCollection {
@@ -584,5 +692,61 @@ mod tests {
             after_raw.len(),
             after.device_ids
         );
+    }
+
+    fn route_record(msg_type: u8, index: u16, tail: &[u8]) -> Vec<u8> {
+        let mut record = Vec::new();
+        if i32::from(msg_type) == libc::RTM_IFINFO2 {
+            let mut header: libc::if_msghdr2 = unsafe { std::mem::zeroed() };
+            header.ifm_msglen = (size_of::<libc::if_msghdr2>() + tail.len()) as u16;
+            header.ifm_type = msg_type;
+            header.ifm_index = index;
+            record.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(
+                    (&header as *const libc::if_msghdr2).cast::<u8>(),
+                    size_of::<libc::if_msghdr2>(),
+                )
+            });
+        } else {
+            let mut header: libc::if_msghdr = unsafe { std::mem::zeroed() };
+            header.ifm_msglen = (size_of::<libc::if_msghdr>() + tail.len()) as u16;
+            header.ifm_type = msg_type;
+            record.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(
+                    (&header as *const libc::if_msghdr).cast::<u8>(),
+                    size_of::<libc::if_msghdr>(),
+                )
+            });
+        }
+        record.extend_from_slice(tail);
+        record
+    }
+
+    #[test]
+    fn route_dump_walker_extracts_ifinfo2_indices() {
+        let mut buffer = Vec::new();
+        // A non-IFINFO2 record first: the walker must skip it.
+        buffer.extend_from_slice(&route_record(libc::RTM_NEWADDR as u8, 0, &[0; 24]));
+        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 4, &[]));
+        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 9, &[0; 40]));
+        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 12, &[0; 8]));
+        // Trailing garbage shorter than a header is ignored.
+        buffer.extend_from_slice(&[0xff, 0x00]);
+
+        assert_eq!(interface_indices_from_route_dump(&buffer), vec![4, 9, 12]);
+        assert!(interface_indices_from_route_dump(&[]).is_empty());
+    }
+
+    #[test]
+    #[ignore = "live host check: compares against sysinfo Networks totals"]
+    fn live_interface_totals_match_sysinfo_networks() {
+        let (rx, tx) = interface_byte_totals().expect("interface totals read");
+        let networks = sysinfo::Networks::new_with_refreshed_list();
+        let (sys_rx, sys_tx) = networks.iter().fold((0_u64, 0_u64), |(r, t), (_, data)| {
+            (r + data.total_received(), t + data.total_transmitted())
+        });
+        println!("native rx={rx} tx={tx}; sysinfo rx={sys_rx} tx={sys_tx}");
+        assert!(rx.abs_diff(sys_rx) <= 1024 * 1024, "rx {rx} vs {sys_rx}");
+        assert!(tx.abs_diff(sys_tx) <= 1024 * 1024, "tx {tx} vs {sys_tx}");
     }
 }

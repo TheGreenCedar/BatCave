@@ -461,6 +461,19 @@ impl RuntimeState {
         evaluate_snapshot_health(&mut snapshot, self.clock.now_ms());
         Ok(snapshot)
     }
+
+    /// Same semantics as `published_snapshot`, but shared: the health evaluation is
+    /// applied to the stored snapshot in place (cloning only if it is shared), so
+    /// hot read paths do not deep-clone the process table.
+    pub fn published_snapshot_arc(&self) -> Result<Arc<RuntimeSnapshot>, String> {
+        let mut published = self
+            .published
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = Arc::make_mut(&mut published.snapshot);
+        evaluate_snapshot_health(snapshot, self.clock.now_ms());
+        Ok(Arc::clone(&published.snapshot))
+    }
 }
 
 impl Drop for RuntimeState {
@@ -6943,6 +6956,13 @@ mod tests {
         assert_eq!(
             store.admin_mode.source,
             RuntimePrivilegedSource::CollectorService
+        );
+        // A store-built snapshot encodes identically through the borrowing path.
+        assert_eq!(
+            serde_json::to_value(crate::protocol::encode_snapshot_ref(&store.snapshot).unwrap())
+                .unwrap(),
+            serde_json::to_value(crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap())
+                .unwrap()
         );
         store.publish_snapshot_only(None);
         let encoded = crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();

@@ -3,7 +3,7 @@ pub(crate) mod encode;
 pub(crate) mod types;
 mod validate;
 
-pub use encode::encode_snapshot;
+pub use encode::{encode_snapshot, encode_snapshot_ref};
 pub(crate) use types::RuntimeReleaseIdentityV4;
 pub use types::{
     ProcessFocusModeV4, ProtocolEnvelope, RuntimeQueryInputV4, RuntimeUiPreferencesV4,
@@ -68,6 +68,48 @@ mod tests {
         };
         assert_eq!(payload.health.evaluated_at_ms, expected_evaluation);
         assert_eq!(payload.health.sample_age_ms, expected_sample_age);
+    }
+
+    #[test]
+    fn encode_snapshot_ref_matches_the_owned_encoder() {
+        let mut variants = vec![fixture_snapshot()];
+
+        // A fatal snapshot exercises the moved health detail fields.
+        let mut fatal = fixture_snapshot();
+        fatal.health.engine_state = Some(crate::contracts::RuntimeEngineState::Fatal);
+        fatal.health.fatal_error = Some(crate::contracts::RuntimeFatalError {
+            code: "engine_fatal".to_string(),
+            message: "sampling engine stopped".to_string(),
+            occurred_at_ms: fatal.published_at_ms,
+        });
+        variants.push(fatal);
+
+        // Warnings, preferences and collector-service detail exercise the
+        // remaining owned-field clones in the reference encoder.
+        let mut detailed = fixture_snapshot();
+        detailed.settings.ui_preferences = Some(RuntimeUiPreferences {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        });
+        detailed.warnings.push(crate::contracts::RuntimeWarning {
+            key: "collector_degraded".to_string(),
+            publication_seq: detailed.publication_seq,
+            occurred_at_ms: detailed.published_at_ms,
+            category: "collector".to_string(),
+            message: "collector degraded".to_string(),
+        });
+        variants.push(detailed);
+
+        for snapshot in variants {
+            assert_eq!(
+                serde_json::to_value(
+                    super::encode::encode_snapshot_ref(&snapshot).expect("ref encode")
+                )
+                .expect("ref envelope serializes"),
+                serde_json::to_value(encode_snapshot(snapshot.clone()).expect("owned encode"))
+                    .expect("owned envelope serializes"),
+            );
+        }
     }
 
     fn normalize_fixture_metadata(snapshot: &mut RuntimeSnapshot) {

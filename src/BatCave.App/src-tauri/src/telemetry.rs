@@ -6,7 +6,9 @@ use std::{
 #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 use std::collections::HashMap;
 
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
+#[cfg(not(target_os = "macos"))]
+use sysinfo::Networks;
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 #[cfg(not(target_os = "macos"))]
 use sysinfo::{ProcessRefreshKind, UpdateKind};
 
@@ -62,6 +64,7 @@ pub struct TelemetrySampleProvenance {
 
 pub struct TelemetryCollector {
     system: System,
+    #[cfg(not(target_os = "macos"))]
     networks: Networks,
     #[cfg(target_os = "linux")]
     linux_system: LinuxSystemCollector,
@@ -126,6 +129,7 @@ impl TelemetryCollector {
     ) -> Self {
         Self {
             system: System::new_with_specifics(sysinfo_refresh_kind()),
+            #[cfg(not(target_os = "macos"))]
             networks: Networks::new_with_refreshed_list(),
             #[cfg(target_os = "linux")]
             linux_system: LinuxSystemCollector::new(),
@@ -170,10 +174,17 @@ impl TelemetryCollector {
 
         let process_sample_started_ms = now_ms();
         self.system.refresh_specifics(sysinfo_refresh_kind());
+        #[cfg(not(target_os = "macos"))]
         self.networks.refresh(true);
 
         let logical_cpu_percent = logical_cpu_percent(&self.system, &mut warnings);
-        let sysinfo_snapshot = collect_sysinfo_system(&self.system, &self.networks);
+        // macOS sums the kernel interface counters directly; sysinfo's Networks
+        // refresh does a getifaddrs per interface per tick.
+        #[cfg(not(target_os = "macos"))]
+        let sysinfo_snapshot =
+            collect_sysinfo_system(&self.system, summed_network_totals(&self.networks));
+        #[cfg(target_os = "macos")]
+        let sysinfo_snapshot = collect_sysinfo_system(&self.system, (0, 0));
 
         // macOS enumerates processes with libproc; sysinfo processes stay on Windows
         // and the generic fallback.
@@ -279,7 +290,10 @@ impl TelemetryCollector {
             self.networks.refresh(true);
             (
                 Some(collect_sysinfo_processes(&self.system)),
-                Some(collect_sysinfo_system(&self.system, &self.networks)),
+                Some(collect_sysinfo_system(
+                    &self.system,
+                    summed_network_totals(&self.networks),
+                )),
             )
         } else {
             (None, None)
@@ -557,9 +571,27 @@ fn collect_system_snapshot(
 
     #[cfg(target_os = "macos")]
     {
-        let _ = (logical_cpu_percent, warnings);
+        let _ = logical_cpu_percent;
         let mut snapshot = sysinfo_snapshot;
         collector.macos_system.enrich(&mut snapshot, processes);
+        let network_quality = match crate::macos_system::interface_byte_totals() {
+            Ok((received, transmitted)) => {
+                snapshot.network_received_total_bytes = received;
+                snapshot.network_transmitted_total_bytes = transmitted;
+                MetricQualityInfo::new(MetricQuality::Native, MetricSource::InterfaceAggregate)
+            }
+            Err(error) => {
+                warnings.push(format!("macos_interface_totals_failed:{error}"));
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::InterfaceAggregate)
+                    .with_limitation(
+                        MetricLimitationCode::CollectorFailure,
+                        "Kernel interface byte totals could not be read.",
+                    )
+            }
+        };
+        if let Some(quality) = snapshot.quality.as_mut() {
+            quality.network = Some(network_quality);
+        }
         Ok(snapshot)
     }
 
@@ -664,16 +696,20 @@ impl TelemetryCollector {
     }
 }
 
-fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetricsSnapshot {
-    let (network_received_total_bytes, network_transmitted_total_bytes) =
-        networks
-            .iter()
-            .fold((0_u64, 0_u64), |(received, transmitted), (_, data)| {
-                (
-                    received.saturating_add(data.total_received()),
-                    transmitted.saturating_add(data.total_transmitted()),
-                )
-            });
+#[cfg(not(target_os = "macos"))]
+fn summed_network_totals(networks: &Networks) -> (u64, u64) {
+    networks
+        .iter()
+        .fold((0_u64, 0_u64), |(received, transmitted), (_, data)| {
+            (
+                received.saturating_add(data.total_received()),
+                transmitted.saturating_add(data.total_transmitted()),
+            )
+        })
+}
+
+fn collect_sysinfo_system(system: &System, network_totals: (u64, u64)) -> SystemMetricsSnapshot {
+    let (network_received_total_bytes, network_transmitted_total_bytes) = network_totals;
 
     SystemMetricsSnapshot {
         cpu_percent: round1(system.global_cpu_usage() as f64),
@@ -1155,7 +1191,7 @@ mod tests {
     #[test]
     fn isolated_process_probe_failure_stays_row_local() {
         let native = MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi);
-        let mut system = collect_sysinfo_system(&System::new(), &Networks::new());
+        let mut system = collect_sysinfo_system(&System::new(), (0, 0));
         system.quality = Some(SystemMetricQuality {
             cpu: Some(native.clone()),
             kernel_cpu: Some(native.clone()),
@@ -1189,11 +1225,10 @@ mod tests {
     #[test]
     fn sysinfo_fallback_marks_physical_disk_unavailable_for_native_collector_failures() {
         let system = System::new();
-        let networks = Networks::new();
 
         // Windows and Linux both return this shared snapshot when their native system
         // collector fails, so a zero payload must never be presented as measured disk I/O.
-        let snapshot = collect_sysinfo_system(&system, &networks);
+        let snapshot = collect_sysinfo_system(&system, (0, 0));
         let disk = snapshot
             .quality
             .as_ref()
@@ -1594,12 +1629,13 @@ mod tests {
         assert_eq!(disk.source, Some(MetricSource::Iokit));
         assert_eq!(disk.quality, MetricQuality::Native);
         assert!(sample.system.disk_read_total_bytes > 0);
+        // Interface totals come from the kernel route table + IFMIB, not sysinfo.
         assert_eq!(
             system_quality
                 .network
                 .as_ref()
                 .and_then(|quality| quality.source),
-            Some(MetricSource::Sysinfo)
+            Some(MetricSource::InterfaceAggregate)
         );
 
         let current_pid = std::process::id().to_string();

@@ -6,9 +6,18 @@ use crate::contracts::{
 /// Evaluate the immutable publication using the runtime's monotonic wire clock.
 /// A settings publication and a heartbeat are not successful telemetry samples.
 pub(crate) fn evaluate_snapshot_health(snapshot: &mut RuntimeSnapshot, now_ms: u64) {
+    let health = evaluated_health(snapshot, now_ms);
+    snapshot.health = health;
+}
+
+/// The health fields evaluation would write, without mutating the snapshot.
+pub(crate) fn evaluated_health(
+    snapshot: &RuntimeSnapshot,
+    now_ms: u64,
+) -> crate::contracts::RuntimeHealth {
     use RuntimeHealthReason::*;
     let now_ms = now_ms.max(snapshot.published_at_ms);
-    let health = &mut snapshot.health;
+    let mut health = snapshot.health.clone();
     health.updated_at_ms = now_ms;
     health.reason_codes.retain(|reason| {
         !matches!(
@@ -68,6 +77,7 @@ pub(crate) fn evaluate_snapshot_health(snapshot: &mut RuntimeSnapshot, now_ms: u
         }
     };
     health.degraded = !health.reason_codes.is_empty();
+    health
 }
 
 #[cfg(test)]
