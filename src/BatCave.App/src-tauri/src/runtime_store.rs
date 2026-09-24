@@ -52,7 +52,7 @@ const SETTINGS_FILE: &str = "settings.json";
 #[cfg(test)]
 const WARM_CACHE_FILE: &str = "warm-cache.json";
 const MAX_WARNINGS: usize = 16;
-const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 10;
+const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 60;
 const APP_CPU_DEGRADE_PCT: f64 = 25.0;
 const APP_RSS_DEGRADE_BYTES: u64 = 350 * 1024 * 1024;
 const ATTENTION_CPU_PERCENT: f64 = 10.0;
@@ -818,11 +818,8 @@ fn publish_workload_archive(
     if store.live_process_snapshot && archive.wants_sample(snapshot.sample_seq) {
         match archive.begin_ingress(&store.previous_processes) {
             Ok(()) => {
-                {
-                    let rows = shape_full_process_view(&store.previous_processes);
-                    if let Err(error) = archive.observe(snapshot, &rows, true) {
-                        eprintln!("workload history publication failed: {error}");
-                    }
+                if let Err(error) = archive.observe(snapshot, &store.full_view_rows, true) {
+                    eprintln!("workload history publication failed: {error}");
                 }
                 archive.end_ingress();
             }
@@ -1058,6 +1055,10 @@ struct RuntimeStore {
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
     previous_processes: Vec<ProcessSample>,
+    // Cached query-independent groupings and the unfiltered view; rebuilt only when
+    // previous_processes changes (see set_previous_processes / rebuild_process_views).
+    process_groups: Vec<ProcessAppGroup>,
+    full_view_rows: Vec<ProcessViewRow>,
     live_process_snapshot: bool,
     tick_p95: P95Window,
     sort_p95: P95Window,
@@ -1287,6 +1288,8 @@ impl RuntimeStore {
         };
         let health_window = metric_window(settings.metric_window_seconds);
         let durable_query = settings.query.clone();
+        let process_groups = build_process_groups(&warm_cache.rows);
+        let full_view_rows = emit_process_view(&process_groups, &full_view_query());
         let snapshot = build_snapshot(
             publication_seq,
             clock.now_ms(),
@@ -1300,6 +1303,8 @@ impl RuntimeStore {
             Some(persistence_health),
             empty_system(),
             &warm_cache.rows,
+            &process_groups,
+            &full_view_rows,
             shape_rows(&warm_cache.rows, &settings.query),
             warnings.iter().cloned().collect(),
         );
@@ -1316,6 +1321,8 @@ impl RuntimeStore {
             warnings,
             previous_totals: None,
             previous_processes: warm_cache.rows,
+            process_groups,
+            full_view_rows,
             live_process_snapshot: false,
             tick_p95: P95Window::new(health_window),
             sort_p95: P95Window::new(health_window),
@@ -1515,7 +1522,7 @@ impl RuntimeStore {
             hold_process_rates(sample_processes)
         };
         add_process_memory_accounting(&mut system, &processes);
-        self.previous_processes = processes;
+        self.set_previous_processes(processes);
         self.live_process_snapshot = process_rows_fresh;
         self.previous_totals = Some(TelemetryTotals::from_system(&system, source_sample_ts_ms));
         self.publication_seq = self.publication_seq.saturating_add(1);
@@ -1556,11 +1563,23 @@ impl RuntimeStore {
             Some(self.persistence.health()),
             system,
             &self.previous_processes,
+            &self.process_groups,
+            &self.full_view_rows,
             rows,
             self.warnings.iter().cloned().collect(),
         );
 
         publication_started
+    }
+
+    fn rebuild_process_views(&mut self) {
+        self.process_groups = build_process_groups(&self.previous_processes);
+        self.full_view_rows = emit_process_view(&self.process_groups, &full_view_query());
+    }
+
+    fn set_previous_processes(&mut self, processes: Vec<ProcessSample>) {
+        self.previous_processes = processes;
+        self.rebuild_process_views();
     }
 
     fn apply_collector_service_status(
@@ -1582,7 +1601,7 @@ impl RuntimeStore {
             .flatten();
         if previous_binding != next_binding {
             self.previous_totals = None;
-            self.previous_processes.clear();
+            self.set_previous_processes(Vec::new());
             self.live_process_snapshot = false;
         }
 
@@ -1626,6 +1645,8 @@ impl RuntimeStore {
             Some(self.persistence.health()),
             self.snapshot.system.clone(),
             &self.previous_processes,
+            &self.process_groups,
+            &self.full_view_rows,
             rows,
             self.warnings.iter().cloned().collect(),
         );
@@ -1695,6 +1716,8 @@ impl RuntimeStore {
         for process in &mut self.previous_processes {
             hold_process_after_collector_failure(process, sampled_at_ms, held_at_ms);
         }
+        // Held quality markers feed group aggregates; the cached views must reflect them.
+        self.rebuild_process_views();
     }
 
     fn refresh_snapshot_health(&mut self) {
@@ -2278,10 +2301,16 @@ fn build_snapshot(
     persistence: Option<RuntimePersistence>,
     system: SystemMetricsSnapshot,
     all_processes: &[ProcessSample],
+    process_groups: &[ProcessAppGroup],
+    full_view_rows: &[ProcessViewRow],
     processes: Vec<ProcessSample>,
     warnings: Vec<RuntimeWarning>,
 ) -> RuntimeSnapshot {
-    let process_view_rows = shape_process_view(all_processes, &settings.query);
+    let process_view_rows = if query_is_full_view(&settings.query, process_groups.len()) {
+        full_view_rows.to_vec()
+    } else {
+        emit_process_view(process_groups, &settings.query)
+    };
     let mut snapshot = RuntimeSnapshot {
         event_kind: "runtime_snapshot".to_string(),
         publication_seq,
@@ -2299,7 +2328,7 @@ fn build_snapshot(
         process_contributors: summarize_process_contributors(all_processes),
         processes,
         process_view_rows,
-        overview_rows: shape_overview_rows(all_processes),
+        overview_rows: shape_overview_rows(full_view_rows),
         total_process_count: all_processes.len(),
         warnings,
     };
@@ -2307,14 +2336,8 @@ fn build_snapshot(
     snapshot
 }
 
-fn shape_overview_rows(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
-    let rows = shape_process_view(
-        processes,
-        &RuntimeQuery {
-            limit: usize::MAX,
-            ..RuntimeQuery::default()
-        },
-    );
+// Operates on the already-shaped full view; rows are cloned only when selected.
+fn shape_overview_rows(rows: &[ProcessViewRow]) -> Vec<ProcessViewRow> {
     let mut selected_keys = HashSet::new();
     let row_key = |row: &ProcessViewRow| match row {
         ProcessViewRow::Group { detail, .. } => detail.group_key.clone(),
@@ -2393,8 +2416,9 @@ fn shape_overview_rows(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
         });
         selected_keys.extend(ranked.into_iter().take(5).map(row_key));
     }
-    rows.into_iter()
+    rows.iter()
         .filter(|row| selected_keys.contains(&row_key(row)))
+        .cloned()
         .collect()
 }
 
@@ -2769,17 +2793,36 @@ struct ProcessAppGroup {
     threads: u64,
 }
 
+#[cfg(test)]
 pub(crate) fn shape_full_process_view(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
-    shape_process_view(
-        processes,
-        &RuntimeQuery {
-            limit: usize::MAX,
-            ..RuntimeQuery::default()
-        },
-    )
+    emit_process_view(&build_process_groups(processes), &full_view_query())
 }
 
+fn full_view_query() -> RuntimeQuery {
+    RuntimeQuery {
+        limit: usize::MAX,
+        ..RuntimeQuery::default()
+    }
+}
+
+// The full-view cache can serve a query row-for-row only when the query selects every
+// group with the default focus and ordering.
+fn query_is_full_view(query: &RuntimeQuery, group_count: usize) -> bool {
+    let default = RuntimeQuery::default();
+    query.filter_text.trim().is_empty()
+        && query.focus_mode == default.focus_mode
+        && query.sort_column == default.sort_column
+        && query.sort_direction == default.sort_direction
+        && query.limit.max(1) >= group_count
+}
+
+#[cfg(test)]
 fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessViewRow> {
+    emit_process_view(&build_process_groups(processes), query)
+}
+
+// Query-independent phase: workload membership plus group aggregation.
+fn build_process_groups(processes: &[ProcessSample]) -> Vec<ProcessAppGroup> {
     let memberships = crate::workload_identity::workload_memberships(processes);
     let mut groups = Vec::<ProcessAppGroup>::new();
     let mut group_indexes = HashMap::<String, usize>::new();
@@ -2831,30 +2874,39 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
         group.processes.push(process.clone());
     }
 
+    groups
+}
+
+// Query-dependent phase: filter, sort, limit, emit. Sorts index order so the cached
+// groups are never mutated.
+fn emit_process_view(groups: &[ProcessAppGroup], query: &RuntimeQuery) -> Vec<ProcessViewRow> {
     // Queries select established scopes; filtering never changes aggregate membership/history.
     let needle = query.filter_text.trim().to_lowercase();
-    groups.retain(|group| {
-        group.processes.iter().any(|process| {
-            (needle.is_empty()
-                || process.name.to_lowercase().contains(&needle)
-                || process.pid.contains(&needle)
-                || process.exe.to_lowercase().contains(&needle))
-                && matches_focus_mode(process, query.focus_mode)
+    let mut order = (0..groups.len())
+        .filter(|index| {
+            groups[*index].processes.iter().any(|process| {
+                (needle.is_empty()
+                    || process.name.to_lowercase().contains(&needle)
+                    || process.pid.contains(&needle)
+                    || process.exe.to_lowercase().contains(&needle))
+                    && matches_focus_mode(process, query.focus_mode)
+            })
         })
-    });
-    for group in &mut groups {
-        group
-            .processes
-            .sort_by(|left, right| compare_process(left, right, query));
-    }
-    groups.sort_by(|left, right| compare_process_group(left, right, query));
+        .collect::<Vec<_>>();
+    order.sort_by(|left, right| compare_process_group(&groups[*left], &groups[*right], query));
 
-    let mut rows = Vec::with_capacity(processes.len() + groups.len());
-    for group in groups.into_iter().take(query.limit.max(1)) {
+    let process_count = order
+        .iter()
+        .take(query.limit.max(1))
+        .map(|index| groups[*index].processes.len())
+        .sum::<usize>();
+    let mut rows = Vec::with_capacity(process_count + order.len());
+    for index in order.into_iter().take(query.limit.max(1)) {
+        let group = &groups[index];
         let grouped = group.processes.len() > 1;
         let group_count = group.processes.len();
         if grouped {
-            let detail = group_detail(&group);
+            let detail = group_detail(group);
             rows.push(ProcessViewRow::Group {
                 attention_label: group_attention_label(
                     &detail,
@@ -2872,17 +2924,22 @@ fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<
             });
         }
 
-        for process in group.processes {
-            let identity = process_identity(&process);
+        let mut member_order = (0..group.processes.len()).collect::<Vec<_>>();
+        member_order.sort_by(|left, right| {
+            compare_process(&group.processes[*left], &group.processes[*right], query)
+        });
+        for member_index in member_order {
+            let process = &group.processes[member_index];
+            let identity = process_identity(process);
             let is_child = grouped && process.pid != group.presentation_process.pid;
-            let attention_label = process_attention_label(&process);
+            let attention_label = process_attention_label(process);
             rows.push(ProcessViewRow::Process {
                 detail: Box::new(ProcessDetail {
                     kind: ProcessDetailKind::Process,
-                    workload_id: process_workload_id(&process),
-                    io_bps: process_io_rate(&process),
-                    network_bps: process_network_rate(&process),
-                    process,
+                    workload_id: process_workload_id(process),
+                    io_bps: process_io_rate(process),
+                    network_bps: process_network_rate(process),
+                    process: process.clone(),
                 }),
                 group_key: group.key.clone(),
                 group_label: group.label.clone(),
@@ -5031,6 +5088,8 @@ mod tests {
             None,
             empty_system(),
             &all_processes,
+            &build_process_groups(&all_processes),
+            &emit_process_view(&build_process_groups(&all_processes), &full_view_query()),
             visible_processes,
             Vec::new(),
         );
@@ -5201,6 +5260,8 @@ mod tests {
             None,
             empty_system(),
             &all_processes,
+            &build_process_groups(&all_processes),
+            &emit_process_view(&build_process_groups(&all_processes), &full_view_query()),
             visible_processes,
             Vec::new(),
         );
@@ -6826,6 +6887,8 @@ mod tests {
             Some(store.persistence.health()),
             empty_system(),
             &all_processes,
+            &build_process_groups(&all_processes),
+            &emit_process_view(&build_process_groups(&all_processes), &full_view_query()),
             vec![trusted],
             Vec::new(),
         );
@@ -6855,7 +6918,7 @@ mod tests {
         let base_dir = runtime_test_dir("collector-service-transition");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
-        store.previous_processes = vec![sample("10", "old-source", 1.0)];
+        store.set_previous_processes(vec![sample("10", "old-source", 1.0)]);
         store.live_process_snapshot = true;
         store.previous_totals = Some(TelemetryTotals::from_system(&empty_system(), 1));
 
@@ -7424,7 +7487,7 @@ mod tests {
         fs::create_dir_all(&base_dir).expect("test dir exists");
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.admin_mode.state = RuntimeAdminModeState::Active;
-        store.previous_processes = vec![sample("10", "Elevated", 0.0)];
+        store.set_previous_processes(vec![sample("10", "Elevated", 0.0)]);
         store.publication_seq = 10;
 
         let _ = store.persist_warm_cache();
@@ -7531,10 +7594,10 @@ mod tests {
                     .and_then(|component| component.active_failure.as_ref()),
             )
             .expect("failure serializes");
-            store.previous_processes = vec![
+            store.set_previous_processes(vec![
                 sample("10", "Quiet", 0.1),
                 sample("20", "Busy", ATTENTION_CPU_PERCENT),
-            ];
+            ]);
             store.live_process_snapshot = true;
             store.publish_snapshot_only(None);
             assert_eq!(store.snapshot.processes.len(), 2);
@@ -7726,7 +7789,7 @@ mod tests {
             theme: "ember".to_string(),
             history_point_limit: 180,
         });
-        store.previous_processes = vec![sample("10", "Cached", 0.0)];
+        store.set_previous_processes(vec![sample("10", "Cached", 0.0)]);
         store.publication_seq = 12;
 
         store
@@ -7921,7 +7984,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         processes.push(sample("6", "measured", 1.0));
-        let rows = shape_overview_rows(&processes);
+        let rows = shape_overview_rows(&shape_full_process_view(&processes));
         assert!(rows.iter().any(
             |row| matches!(row, ProcessViewRow::Process { detail, .. } if detail.process.pid == "6")
         ));
@@ -7930,6 +7993,112 @@ mod tests {
             1,
             "unavailable magnitudes do not establish a ranking"
         );
+    }
+
+    #[test]
+    fn cached_views_match_the_stateless_shapers_for_every_query() {
+        // Realistic mix: two multi-process app groups, singletons, an unavailable
+        // process and a denied process.
+        let mut processes = Vec::new();
+        for (app, base_pid) in [("browser", 100u32), ("editor", 200u32)] {
+            let mut parent = sample(&base_pid.to_string(), app, 10.0);
+            parent.exe = format!("/opt/{app}/{app}");
+            processes.push(parent.clone());
+            for child in 1..3u32 {
+                let mut process = sample(&(base_pid + child).to_string(), app, 1.0);
+                process.parent_pid = Some(base_pid.to_string());
+                process.exe = parent.exe.clone();
+                process.quality = if child == 2 {
+                    group_test_quality(MetricQuality::Held)
+                } else {
+                    group_test_quality(MetricQuality::Native)
+                };
+                processes.push(process);
+            }
+        }
+        let mut unavailable = sample("300", "sensor", 0.5);
+        unavailable.quality = group_test_quality(MetricQuality::Unavailable);
+        processes.push(unavailable);
+        let mut denied = sample("301", "systemd", 0.0);
+        denied.access_state = AccessState::Denied;
+        processes.push(denied);
+        processes.push(sample("302", "worker", 42.0));
+
+        let mut store = RuntimeStore::new();
+        store.set_previous_processes(processes.clone());
+
+        let focus_modes = [
+            ProcessFocusMode::All,
+            ProcessFocusMode::Attention,
+            ProcessFocusMode::Io,
+        ];
+        let sort_columns = [
+            SortColumn::Attention,
+            SortColumn::Name,
+            SortColumn::Pid,
+            SortColumn::CpuPct,
+            SortColumn::MemoryBytes,
+            SortColumn::IoBps,
+            SortColumn::NetworkBps,
+            SortColumn::Threads,
+            SortColumn::Handles,
+            SortColumn::StartTimeMs,
+        ];
+        let sort_directions = [SortDirection::Asc, SortDirection::Desc];
+        let limits = [usize::MAX, 1, 2];
+        let filters = ["", "worker", "nomatch"];
+
+        for filter_text in filters {
+            for focus_mode in focus_modes {
+                for sort_column in sort_columns {
+                    for sort_direction in sort_directions {
+                        for limit in limits {
+                            let query = RuntimeQuery {
+                                filter_text: filter_text.to_string(),
+                                focus_mode,
+                                sort_column,
+                                sort_direction,
+                                limit,
+                            };
+                            store.settings.query = query.clone();
+                            let snapshot = build_snapshot(
+                                1,
+                                now_ms(),
+                                1,
+                                Some(now_ms()),
+                                store.provenance.environment(),
+                                &store.settings,
+                                &store.admin_mode,
+                                false,
+                                RuntimeHealth::default(),
+                                None,
+                                empty_system(),
+                                &processes,
+                                &store.process_groups,
+                                &store.full_view_rows,
+                                Vec::new(),
+                                Vec::new(),
+                            );
+                            let context = format!("query {query:?}");
+                            assert_eq!(
+                                serde_json::to_value(&snapshot.process_view_rows).unwrap(),
+                                serde_json::to_value(shape_process_view(&processes, &query))
+                                    .unwrap(),
+                                "process_view_rows diverged for {context}"
+                            );
+                            assert_eq!(
+                                serde_json::to_value(&snapshot.overview_rows).unwrap(),
+                                serde_json::to_value(shape_overview_rows(
+                                    &shape_full_process_view(&processes)
+                                ))
+                                .unwrap(),
+                                "overview_rows diverged for {context}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {
