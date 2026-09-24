@@ -929,7 +929,7 @@ function validateWorkloads(
     if (
       contributor.process_id !== null &&
       (!nonEmptyString(contributor.display_name) ||
-        contributor.available_contributors !== contributor.total_contributors ||
+        contributor.available_contributors === 0 ||
         contributor.total_contributors === 0 ||
         quality === "held" ||
         quality === "unavailable")

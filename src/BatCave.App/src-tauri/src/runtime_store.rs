@@ -5411,6 +5411,89 @@ mod tests {
     }
 
     #[test]
+    fn partial_coverage_contributors_encode_through_the_protocol() {
+        let base_dir = runtime_test_dir("partial-contributor-encode");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+
+        let denied = || {
+            MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc)
+                .with_limitation(MetricLimitationCode::AccessDenied, "Access denied.")
+        };
+        let measured = sample("10", "Measured", 42.0);
+        let mut denied_process = sample("20", "DeniedDaemon", 0.0);
+        denied_process.access_state = AccessState::Denied;
+        denied_process.quality = Some(ProcessMetricQuality {
+            cpu: Some(denied()),
+            memory: Some(denied()),
+            io: Some(denied()),
+            network: Some(denied()),
+            ..ProcessMetricQuality::default()
+        });
+        let mut newborn = sample("30", "Newborn", 0.0);
+        newborn
+            .quality
+            .as_mut()
+            .expect("sample quality")
+            .cpu = Some(
+            MetricQualityInfo::new(MetricQuality::Held, MetricSource::Libproc).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Waiting for a second CPU sample.",
+            ),
+        );
+
+        let sample_ts_ms = store.clock.now_ms();
+        store.apply_raw_sample(
+            crate::telemetry::TelemetrySample {
+                latency_ms: 0,
+                collector_state: RuntimeCollectorState::Healthy,
+                system: empty_system(),
+                processes: vec![measured, denied_process, newborn],
+                warnings: Vec::new(),
+                collector_service: None,
+                source_provenance: None,
+                standard_fallback_process_etw_disabled: false,
+            },
+            0.0,
+            sample_ts_ms,
+        );
+
+        let contributors = &store.snapshot.process_contributors;
+        assert_eq!(contributors.cpu.as_deref(), Some("Measured"));
+        assert_eq!(
+            contributors.cpu_coverage,
+            Some(MetricCoverage {
+                available: 1,
+                total: 3
+            })
+        );
+        assert_eq!(
+            contributors.cpu_quality.as_ref().map(|info| info.quality),
+            Some(MetricQuality::Partial)
+        );
+        // A denied + held mix must not keep the named winner off the wire.
+        let envelope = crate::protocol::encode_snapshot(store.snapshot.clone())
+            .expect("partial-coverage contributors encode");
+        let crate::protocol::types::ProtocolEvent::RuntimeSnapshot(payload) = &envelope.event
+        else {
+            unreachable!("snapshot event")
+        };
+        let cpu = payload
+            .contributors
+            .iter()
+            .find(|contributor| {
+                contributor.metric == crate::protocol::types::ContributorMetricV4::Cpu
+            })
+            .expect("cpu contributor");
+        assert!(cpu.process_id.is_some());
+        assert_eq!(cpu.display_name.as_deref(), Some("Measured"));
+        assert_eq!(cpu.available_contributors, 1);
+        assert_eq!(cpu.total_contributors, 3);
+        assert!(cpu.limitation_index.is_some());
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
     fn contributor_name_ambiguity_uses_full_sample_when_query_keeps_one_row() {
         let first = sample("10", "worker", 80.0);
         let second = sample("20", "worker", 40.0);

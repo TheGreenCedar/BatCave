@@ -58,7 +58,13 @@
     type NarrativeFactPacket,
   } from "./lib/narratives";
   import { buildOverviewStatus, leadingOverviewRows } from "./lib/overview";
-  import { buildTelemetryPresentation, metricPresentation } from "./lib/telemetryPresentation";
+  import {
+    applyCollectionHysteresis,
+    buildTelemetryPresentation,
+    createCollectionHysteresis,
+    isCollectionLimited,
+    metricPresentation,
+  } from "./lib/telemetryPresentation";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -77,13 +83,12 @@
     prepareProcessViewRows,
     processSelectionKey,
     processViewRowKey,
-    processViewRowMetrics,
-    rankingNearTie,
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
     shouldHoldProcessOrder,
-    settleProcessRanking,
+    throttleProcessRanking,
+    EXPLORE_REORDER_INTERVAL_MS,
     type FocusMode,
     type SortKey,
   } from "./lib/process";
@@ -359,7 +364,14 @@
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
-  $: telemetry = buildTelemetryPresentation(snapshot, pollState === "starting" ? "starting" : pollState === "error" ? "stale" : isPaused ? "paused" : "live");
+  const collectionHysteresis = createCollectionHysteresis();
+  let limitedLatched = false;
+  let transportState: CollectionState = "starting";
+  $: transportState = pollState === "starting" ? "starting" : pollState === "error" ? "stale" : isPaused ? "paused" : "live";
+  $: telemetry = applyCollectionHysteresis(
+    buildTelemetryPresentation(snapshot, transportState),
+    limitedLatched,
+  );
   $: collectionState = telemetry.state;
   $: overviewNarrativeCopy = collectionState === "live" && enhancedNarratives && overviewPrimaryProcess
     ? renderNarrative(overviewNarrative, processNarrativeFacts(overviewPrimaryProcess, overviewResource === "disk" ? "io" : overviewResource, "top_contributor"),
@@ -1498,6 +1510,14 @@
       return;
     }
 
+    limitedLatched = collectionHysteresis(
+      isCollectionLimited(
+        buildTelemetryPresentation(
+          next,
+          pollState === "error" ? "stale" : next.settings.paused ? "paused" : "live",
+        ),
+      ),
+    );
 
     history = nextSystemHistory(history, next, historyPointLimit);
     lastHistorySampleSeq = next.sample_seq;
@@ -1803,13 +1823,12 @@
     } else {
       const settled = forceRankingRefresh
         ? { rows: incoming, settledAt: Date.now() }
-        : settleProcessRanking(
+        : throttleProcessRanking(
             displayProcessRows,
             incoming,
             Date.now(),
             rankingSettledAt,
-            10_000,
-            exploreRankingNearTie(),
+            EXPLORE_REORDER_INTERVAL_MS,
           );
       displayProcessRows = settled.rows;
       rankingSettledAt = settled.settledAt;
@@ -1818,32 +1837,6 @@
       exitedRowKeys = new Set();
     }
     forceRankingRefresh = false;
-  }
-
-  const EXPLORE_RANK_FLOOR: Partial<Record<SortKey, number>> = {
-    cpu: 2,
-    memory: 32 * 1024 * 1024,
-    io: 32 * 1024,
-    read: 32 * 1024,
-    write: 32 * 1024,
-    network: 32 * 1024,
-  };
-
-  function exploreRankValue(row: ProcessViewRow): number {
-    const metrics = processViewRowMetrics(row);
-    if (sortKey === "cpu") return metrics.cpuPercent;
-    if (sortKey === "memory") return metrics.memoryBytes;
-    if (sortKey === "network") return metrics.networkBps;
-    return metrics.ioBps;
-  }
-
-  function exploreRankingNearTie():
-    | ((a: ProcessViewRow, b: ProcessViewRow) => boolean)
-    | undefined {
-    const floor = EXPLORE_RANK_FLOOR[sortKey];
-    if (floor === undefined) return undefined;
-    const near = rankingNearTie(floor);
-    return (a, b) => near(exploreRankValue(a), exploreRankValue(b));
   }
 
   function shouldHoldRanking(): boolean {

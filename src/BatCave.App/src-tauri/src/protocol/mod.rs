@@ -939,6 +939,60 @@ mod tests {
             )),
             include_str!("../fixtures/runtime-protocol-v4/macos-limited.json"),
         );
+        // Regression fixture for H5/H7: a denied system process and a held
+        // first-sample process leave contributor coverage partial, yet the
+        // measured winner's name and identity still publish.
+        let mut partial_contributors = fixture_for(RuntimePlatform::Macos);
+        let denied_metric = || {
+            quality(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+                MetricLimitationCode::AccessDenied,
+                "macOS denied access to this process.",
+            )
+        };
+        let mut denied = partial_contributors.processes[0].clone();
+        denied.pid = "7777".to_string();
+        denied.start_time_ms += 2;
+        denied.name = "denied-daemon".to_string();
+        denied.exe = "/usr/libexec/denied-daemon".to_string();
+        denied.parent_pid = None;
+        denied.access_state = crate::contracts::AccessState::Denied;
+        denied.quality = Some(ProcessMetricQuality {
+            cpu: Some(denied_metric()),
+            memory: Some(denied_metric()),
+            io: Some(denied_metric()),
+            other_io: Some(denied_metric()),
+            network: Some(denied_metric()),
+            threads: Some(denied_metric()),
+            handles: Some(denied_metric()),
+        });
+        let mut held = partial_contributors.processes[1].clone();
+        held.pid = "8888".to_string();
+        held.start_time_ms += 3;
+        held.name = "newborn-agent".to_string();
+        held.exe = "/usr/libexec/newborn-agent".to_string();
+        held.parent_pid = None;
+        held
+            .quality
+            .as_mut()
+            .expect("fixture quality")
+            .cpu = Some(
+            quality(MetricQuality::Held, MetricSource::Libproc).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Waiting for a second CPU sample.",
+            ),
+        );
+        partial_contributors.processes.push(denied);
+        partial_contributors.processes.push(held);
+        crate::runtime_store::shape_protocol_fixture_snapshot(&mut partial_contributors);
+        normalize_fixture_metadata(&mut partial_contributors);
+        update_or_assert(
+            &fixture_dir.join("macos-partial-contributors.json"),
+            json_with_newline(&encode_fixture(
+                partial_contributors,
+                RuntimeArchitectureV4::Aarch64,
+            )),
+            include_str!("../fixtures/runtime-protocol-v4/macos-partial-contributors.json"),
+        );
         update_or_assert(
             &fixture_dir.join("browser-windows.json"),
             json_with_newline(&encode_fixture(

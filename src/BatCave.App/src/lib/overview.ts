@@ -16,6 +16,7 @@ import {
 } from "./process.ts";
 import {
   buildTelemetryPresentation,
+  isCollectionLimited,
   metricPresentation,
   type CollectionState,
 } from "./telemetryPresentation.ts";
@@ -83,7 +84,16 @@ export function buildOverviewStatus(
             : primaryResource === "disk"
               ? "Device throughput. Process read/write I/O is ranked separately and does not identify physical disk activity."
               : "Network interface throughput. Process traffic is attributed separately.";
-  const warning = telemetry.tone !== "healthy" && telemetry.state === "live";
+  // Collector-limited conditions and the limitation count stay chip-only; the
+  // banner is reserved for states that interrupt monitoring.
+  const collectorLimited =
+    isCollectionLimited(telemetry) ||
+    snapshot.health.collector_state === "limited" ||
+    new Set(snapshot.health.reason_codes).has("collector_limited") ||
+    new Set(snapshot.health.reason_codes).has("collector_warning");
+  const warning =
+    telemetry.tone === "danger" ||
+    (telemetry.tone !== "healthy" && telemetry.state === "live" && !collectorLimited);
   return {
     headline,
     summary,
@@ -94,17 +104,11 @@ export function buildOverviewStatus(
           detail: telemetry.detail,
           tone: telemetry.tone === "danger" ? "danger" : "warning",
         }
-      : limitationCount > 0 && telemetry.state === "live"
-        ? {
-            title: `${limitationCount} data limitation${limitationCount === 1 ? "" : "s"}`,
-            detail: "Affected measurements carry their quality beside the value.",
-            tone: "warning",
-          }
-        : {
-            title: telemetry.label,
-            detail: telemetry.detail,
-            tone: "healthy",
-          },
+      : {
+          title: telemetry.label,
+          detail: telemetry.detail,
+          tone: "healthy",
+        },
     primaryResource,
   };
 }
