@@ -243,6 +243,7 @@
   let resourceSummaries: ResourceSummaryOption[] = [];
   let displayProcessRows: ProcessViewRow[] = [];
   let pendingProcessRows: ProcessViewRow[] | null = null;
+  let exitedRowKeys: Set<string> = new Set();
   let queueInteracting = false;
   let rankingUpdateAvailable = false;
   let settingsOpen = false;
@@ -1794,6 +1795,7 @@
     if (hold) {
       const ranking = advanceProcessRanking(displayProcessRows, incoming, true);
       displayProcessRows = ranking.rows;
+      exitedRowKeys = ranking.exitedKeys;
       rankingUpdateAvailable = ranking.updateAvailable;
       pendingProcessRows = incoming;
     } else {
@@ -1811,6 +1813,7 @@
       rankingSettledAt = settled.settledAt;
       rankingUpdateAvailable = false;
       pendingProcessRows = null;
+      exitedRowKeys = new Set();
     }
     forceRankingRefresh = false;
   }
@@ -1852,6 +1855,7 @@
     }
     pendingProcessRows = null;
     rankingUpdateAvailable = false;
+    exitedRowKeys = new Set();
   }
 
   function applyPendingRankingIfReleased(): void {
@@ -2075,6 +2079,7 @@
       leadingIconKind={overviewPrimaryIdentity?.icon ?? "process"}
       leadingIconSrc={overviewPrimaryIcon.src}
       leadingIconMatched={overviewPrimaryIcon.origin === "name_match"}
+      leadingIconSystemTool={overviewPrimaryIcon.systemTool ?? false}
       onSelectResource={selectOverviewResource}
       onInspectResource={() => selectDetailMode(overviewResource)}
       onOpenDiagnostics={() => (diagnosticsOpen = true)}
@@ -2131,6 +2136,7 @@
         <div class="explore-queue">
           <AttentionQueue
             processRows={processViewRows}
+            {exitedRowKeys}
             {totalProcessCount}
             {focusMode}
             {searchText}

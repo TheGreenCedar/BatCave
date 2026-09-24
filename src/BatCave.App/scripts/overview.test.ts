@@ -192,7 +192,12 @@ test("Overview order holds fresh identities through pointer and keyboard interac
   ranking.setInteraction("pointer", true);
   ranking.update("cpu", initial);
   assert.deepEqual(ranking.update("memory", incoming), incoming);
-  assert.deepEqual(ranking.update("memory", []), []);
+  // While interacting, an emptied incoming list keeps the last rows as ghosts.
+  assert.deepEqual(
+    ranking.update("memory", []).map((row) => row.detail.workload_id),
+    incoming.map((row) => row.detail.workload_id),
+  );
+  // Releasing the interaction drops the ghosts.
   assert.deepEqual(ranking.setInteraction("pointer", false), []);
 });
 
@@ -247,6 +252,10 @@ test("OverviewRanking reports an available update while held and applies it on r
   const reordered = [rows[1], rows[2], rows[0]];
   const ranking = new OverviewRanking();
   ranking.update("cpu", rows);
+  assert.equal(ranking.updateAvailable, false);
+
+  // A settle-hold without interaction stays silent.
+  ranking.update("cpu", reordered);
   assert.equal(ranking.updateAvailable, false);
 
   ranking.setInteraction("pointer", true);

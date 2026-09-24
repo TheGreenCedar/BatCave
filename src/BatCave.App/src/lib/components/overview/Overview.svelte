@@ -40,6 +40,7 @@
   export let leadingIconKind: ProcessIconKind = "process";
   export let leadingIconSrc: string | undefined = undefined;
   export let leadingIconMatched = false;
+  export let leadingIconSystemTool = false;
   export let leadingSelection: string | null = null;
   export let onInspectResource: () => void;
   export let onOpenDiagnostics: () => void;
@@ -137,6 +138,7 @@
             kind={leadingIconKind}
             src={leadingIconSrc}
             matched={leadingIconMatched}
+            systemTool={leadingIconSystemTool}
           />
           <span>
             <strong title={leadingName}>{leadingName}</strong>
@@ -226,6 +228,7 @@
             kind={iconKind(row)}
             src={resolvedIcon.src}
             matched={resolvedIcon.origin === "name_match"}
+            systemTool={resolvedIcon.systemTool ?? false}
           />
           <span class="overview-workload-name">
             <strong title={row.kind === "process" ? row.detail.process.exe || row.detail.process.name : row.detail.label}>{rowLabel(row)}</strong>

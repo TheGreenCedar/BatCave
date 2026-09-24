@@ -84,6 +84,7 @@
           child={identity.isChild}
           src={resolvedIcon.src}
           matched={resolvedIcon.origin === "name_match"}
+          systemTool={resolvedIcon.systemTool ?? false}
         />
       </span>
       <span class="identity-copy">

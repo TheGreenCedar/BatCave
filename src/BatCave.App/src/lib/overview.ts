@@ -153,14 +153,14 @@ export class OverviewRanking {
       this.rows = settled.rows;
       this.lastSettledAt = settled.settledAt;
     }
-    this.updateAvailable = !hasSameProcessOrder(this.rows, incoming);
+    this.updateAvailable = this.interacting && !hasSameProcessOrder(this.rows, incoming);
     return this.rows;
   }
 
   setInteraction(source: "pointer" | "focus", active: boolean): ProcessViewRow[] {
     this.interacting = this.interaction.set(source, active);
     if (!this.interacting) this.rows = this.incoming;
-    this.updateAvailable = !hasSameProcessOrder(this.rows, this.incoming);
+    this.updateAvailable = this.interacting && !hasSameProcessOrder(this.rows, this.incoming);
     return this.rows;
   }
 

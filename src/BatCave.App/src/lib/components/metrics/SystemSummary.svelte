@@ -18,6 +18,7 @@
   export let leadingIconKind: ProcessIconKind = "process";
   export let leadingIconSrc: string | undefined = undefined;
   export let leadingIconMatched = false;
+  export let leadingIconSystemTool = false;
   export let onSelect: (mode: DetailMode) => void;
 
   function resourceValue(resource: ResourceSummaryOption): string {
@@ -45,6 +46,7 @@
         kind={leadingIconKind}
         src={leadingIconSrc}
         matched={leadingIconMatched}
+        systemTool={leadingIconSystemTool}
       />
       <span>
         <small>Compatible process attribution</small>

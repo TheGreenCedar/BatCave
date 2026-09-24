@@ -384,3 +384,35 @@ test("settleProcessRanking without a near-tie keeps the previous one-position be
   assert.deepEqual(settled.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
   assert.equal(settled.settledAt, 1_000);
 });
+
+test("held ranking keeps vanished rows in place as ghosts", () => {
+  const initial = [row("1", 30), row("2", 20), row("3", 10)];
+  const next = [row("1", 90), row("3", 80)];
+  const held = advanceProcessRanking(initial, next, true);
+
+  assert.deepEqual(held.rows.map(processViewRowKey), ["process:1:0", "process:2:0", "process:3:0"]);
+  // The ghost reuses the last known row object rather than incoming data.
+  assert.equal(held.rows[1], initial[1]);
+  assert.deepEqual([...held.exitedKeys], ["process:2:0"]);
+  assert.equal(held.updateAvailable, true);
+});
+
+test("releasing a held ranking drops ghost rows", () => {
+  const initial = [row("1", 30), row("2", 20)];
+  const next = [row("1", 90)];
+  const held = advanceProcessRanking(initial, next, true);
+  const released = advanceProcessRanking(held.rows, next, false);
+
+  assert.deepEqual(released.rows.map(processViewRowKey), ["process:1:0"]);
+  assert.equal(released.exitedKeys.size, 0);
+  assert.equal(released.updateAvailable, false);
+});
+
+test("held ranking still appends new incoming rows after ghosts", () => {
+  const initial = [row("1", 30), row("2", 20)];
+  const next = [row("1", 90), row("4", 80)];
+  const held = advanceProcessRanking(initial, next, true);
+
+  assert.deepEqual(held.rows.map(processViewRowKey), ["process:1:0", "process:2:0", "process:4:0"]);
+  assert.deepEqual([...held.exitedKeys], ["process:2:0"]);
+});

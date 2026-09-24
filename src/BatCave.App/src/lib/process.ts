@@ -98,7 +98,12 @@ export interface SortOption {
 }
 
 export const sortOptions: SortOption[] = [
-  { value: "attention", label: "Activity", description: "Busiest workloads first" },
+  {
+    value: "attention",
+    label: "Activity",
+    description:
+      "Activity ranks workloads by combined CPU, memory, disk and network use, weighted toward CPU.",
+  },
   { value: "cpu", label: "CPU", description: "CPU use, one logical core = 100%" },
   { value: "memory", label: "Memory", description: "Resident memory" },
   { value: "io", label: "I/O", description: "Disk read and write rate" },
@@ -655,17 +660,37 @@ export function shouldHoldProcessOrder(interaction: {
   return interaction.view === "explore" && interaction.interacting;
 }
 
+export interface RankedRows {
+  rows: ProcessViewRow[];
+  updateAvailable: boolean;
+  /** Keys of rows kept in place although they vanished from `incoming`. */
+  exitedKeys: Set<string>;
+}
+
 export function advanceProcessRanking(
   current: ProcessViewRow[],
   incoming: ProcessViewRow[],
   held: boolean,
-): { rows: ProcessViewRow[]; updateAvailable: boolean } {
-  return held
-    ? {
-        rows: stabilizeProcessRows(current, incoming),
-        updateAvailable: !hasSameProcessOrder(current, incoming),
-      }
-    : { rows: incoming, updateAvailable: false };
+): RankedRows {
+  if (!held) return { rows: incoming, updateAvailable: false, exitedKeys: new Set() };
+
+  const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row] as const));
+  const exitedKeys = new Set<string>();
+  const stable = current.map((row) => {
+    const next = incomingByKey.get(processViewRowKey(row));
+    if (next) return next;
+    // Ghost: keep the last known row object so nothing shifts under the cursor.
+    exitedKeys.add(processViewRowKey(row));
+    return row;
+  });
+  const stableKeys = new Set(current.map(processViewRowKey));
+  const rows = [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
+
+  return {
+    rows,
+    updateAvailable: exitedKeys.size > 0 || !hasSameProcessOrder(current, incoming),
+    exitedKeys,
+  };
 }
 
 export function reconcileWorkloadSelection(rows: ProcessViewRow[], selection: string): string {

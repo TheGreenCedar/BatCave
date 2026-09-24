@@ -3,6 +3,21 @@ export type ProcessIconOrigin = "native" | "name_match" | "fallback";
 export interface ResolvedProcessIcon {
   src?: string;
   origin: ProcessIconOrigin;
+  /** No icon resolved and the executable lives in a system/CLI path. */
+  systemTool?: boolean;
+}
+
+const systemToolExecutablePrefixes = [
+  "/usr/",
+  "/bin/",
+  "/sbin/",
+  "/System/Library/",
+  "/Library/Apple/",
+  "/opt/homebrew/",
+];
+
+export function isSystemToolExecutable(path: string | null | undefined): boolean {
+  return !!path && systemToolExecutablePrefixes.some((prefix) => path.startsWith(prefix));
 }
 
 export type ResolvedProcessIconCatalog = Record<string, ResolvedProcessIcon>;
@@ -92,5 +107,9 @@ export function resolvedProcessIcon(
   catalog: Readonly<ResolvedProcessIconCatalog>,
   key: string | null | undefined,
 ): ResolvedProcessIcon {
-  return (key ? catalog[key] : undefined) ?? { origin: "fallback" };
+  const resolved = (key ? catalog[key] : undefined) ?? { origin: "fallback" };
+  if (resolved.origin === "fallback" && isSystemToolExecutable(key)) {
+    return { ...resolved, systemTool: true };
+  }
+  return resolved;
 }

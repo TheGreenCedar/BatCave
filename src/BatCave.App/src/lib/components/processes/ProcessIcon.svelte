@@ -19,6 +19,7 @@
   export let child = false;
   export let src: string | undefined = undefined;
   export let matched = false;
+  export let systemTool = false;
 </script>
 
 <span
@@ -26,6 +27,7 @@
   class:has-image={Boolean(src) && kind !== "batcave"}
   class:matched
   class={`process-icon process-icon-${kind}`}
+  class:system-tool={systemTool}
   title={matched ? "Icon matched from a related process" : undefined}
   aria-hidden="true"
 >
@@ -57,6 +59,8 @@
     <WindowsLogo size={22} weight="fill" />
   {:else if child}
     <AppWindow size={21} weight="regular" />
+  {:else if systemTool}
+    <TerminalWindow size={22} weight="regular" />
   {:else}
     <DesktopTower size={22} weight="regular" />
   {/if}

@@ -4,6 +4,7 @@ import {
   buildResolvedProcessIconCatalog,
   processIconFamily,
   processIconKey,
+  resolvedProcessIcon,
   type ProcessIconCandidate,
 } from "./processIcons.ts";
 
@@ -119,4 +120,32 @@ test("removing the direct donor from the current result restores fallback", () =
 test("normalization folds Unicode compatibility and case without fuzzy matching", () => {
   assert.equal(processIconFamily("ＣＯＤＥ Helper"), "code");
   assert.equal(processIconFamily("code utility.exe"), "code");
+});
+
+test("unresolved system and CLI executables resolve as system tools", () => {
+  for (const path of [
+    "/usr/libexec/locationd",
+    "/bin/zsh",
+    "/sbin/mount",
+    "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+    "/Library/Apple/usr/share/foo/tool",
+    "/opt/homebrew/bin/node",
+  ]) {
+    assert.equal(resolvedProcessIcon({}, path).systemTool, true, path);
+    assert.equal(resolvedProcessIcon({}, path).origin, "fallback");
+  }
+});
+
+test("resolved or non-system executables are not flagged as system tools", () => {
+  assert.equal(
+    resolvedProcessIcon({ "/usr/bin/zsh": { src: "x", origin: "native" } }, "/usr/bin/zsh")
+      .systemTool,
+    undefined,
+  );
+  assert.equal(
+    resolvedProcessIcon({}, "/Applications/Foo.app/Contents/MacOS/Foo").systemTool,
+    undefined,
+  );
+  assert.equal(resolvedProcessIcon({}, "C:\\Tools\\rg.exe").systemTool, undefined);
+  assert.equal(resolvedProcessIcon({}, undefined).systemTool, undefined);
 });
