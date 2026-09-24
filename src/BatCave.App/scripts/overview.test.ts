@@ -13,6 +13,23 @@ import {
   buildTelemetryPresentation,
   metricPresentation,
 } from "../src/lib/telemetryPresentation.ts";
+import type { ProcessViewRow } from "../src/lib/types.ts";
+
+function withMetric(
+  row: ProcessViewRow,
+  resource: "cpu" | "memory",
+  value: number,
+): ProcessViewRow {
+  const clone = structuredClone(row);
+  if (resource === "cpu") {
+    if (clone.kind === "group") clone.detail.cpu_percent = value;
+    else clone.detail.process.cpu_percent = value;
+  } else {
+    if (clone.kind === "group") clone.detail.memory_bytes = value;
+    else clone.detail.process.memory_bytes = value;
+  }
+  return clone;
+}
 
 test("overview reports measured utilization without diagnosing machine health", () => {
   const snapshot = makeFixtureSnapshot(1, undefined, "macos");
@@ -179,8 +196,10 @@ test("Overview order holds fresh identities through pointer and keyboard interac
   assert.deepEqual(ranking.setInteraction("pointer", false), []);
 });
 
-test("Overview ranking keeps an adjacent swap stable inside the settle interval", () => {
-  const initial = makeFixtureSnapshot(1, undefined, "macos").overview_rows.slice(0, 3);
+test("Overview ranking keeps a near-tie swap stable inside the settle interval", () => {
+  const initial = makeFixtureSnapshot(1, undefined, "macos")
+    .overview_rows.slice(0, 3)
+    .map((row, index) => withMetric(row, "cpu", 20 + index * 0.5));
   const swapped = [initial[1], initial[0], initial[2]];
   const ranking = new OverviewRanking();
   assert.deepEqual(ranking.update("cpu", initial), initial);
@@ -188,6 +207,60 @@ test("Overview ranking keeps an adjacent swap stable inside the settle interval"
     ranking.update("cpu", swapped).map((row) => row.detail.workload_id),
     initial.map((row) => row.detail.workload_id),
   );
-  const displaced = [initial[2], initial[0], initial[1]];
-  assert.deepEqual(ranking.update("cpu", displaced), displaced);
+});
+
+test("Overview ranking adopts a large inversion immediately", () => {
+  const [first, second] = makeFixtureSnapshot(1, undefined, "macos").overview_rows.slice(0, 2);
+  const quiet = withMetric(first, "cpu", 23);
+  const busy = withMetric(second, "cpu", 182);
+  const ranking = new OverviewRanking();
+  assert.deepEqual(ranking.update("cpu", [quiet, busy]), [quiet, busy]);
+  // A quiet row outranking a much busier one is not a tie; re-sort now.
+  assert.deepEqual(ranking.update("cpu", [busy, quiet]), [busy, quiet]);
+});
+
+test("Overview ranking holds memory inversions only within the near-tie floor", () => {
+  const rows = makeFixtureSnapshot(1, undefined, "macos")
+    .overview_rows.slice(0, 2)
+    .map((row) => structuredClone(row));
+  const gib = 1024 * 1024 * 1024;
+  const mib = 1024 * 1024;
+  const base = rows.map((row, index) => withMetric(row, "memory", gib + index * 20 * mib));
+  const ranking = new OverviewRanking();
+  assert.deepEqual(ranking.update("memory", base), base);
+  // 20 MiB is inside the 32 MiB floor for a ~1 GiB row: held.
+  assert.deepEqual(
+    ranking.update("memory", [base[1], base[0]]).map((row) => row.detail.workload_id),
+    base.map((row) => row.detail.workload_id),
+  );
+
+  const far = rows.map((row, index) => withMetric(row, "memory", gib + index * 400 * mib));
+  const distant = new OverviewRanking();
+  distant.update("memory", far);
+  assert.deepEqual(distant.update("memory", [far[1], far[0]]), [far[1], far[0]]);
+});
+
+test("OverviewRanking reports an available update while held and applies it on request", () => {
+  const rows = makeFixtureSnapshot(1, undefined, "macos")
+    .overview_rows.slice(0, 3)
+    .map((row, index) => withMetric(row, "cpu", 40 - index));
+  const reordered = [rows[1], rows[2], rows[0]];
+  const ranking = new OverviewRanking();
+  ranking.update("cpu", rows);
+  assert.equal(ranking.updateAvailable, false);
+
+  ranking.setInteraction("pointer", true);
+  const held = ranking.update("cpu", reordered);
+  assert.equal(ranking.updateAvailable, true);
+  assert.deepEqual(
+    held.map((row) => row.detail.workload_id),
+    rows.map((row) => row.detail.workload_id),
+  );
+
+  assert.deepEqual(ranking.applyUpdate(), reordered);
+  assert.equal(ranking.updateAvailable, false);
+  assert.deepEqual(
+    ranking.update("cpu", reordered).map((row) => row.detail.workload_id),
+    reordered.map((row) => row.detail.workload_id),
+  );
 });

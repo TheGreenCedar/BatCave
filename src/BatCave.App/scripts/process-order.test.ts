@@ -10,6 +10,7 @@ import {
   shouldHoldProcessOrder,
   settleProcessRanking,
   advanceProcessRanking,
+  rankingNearTie,
   ProcessInteraction,
   stabilizeProcessRows,
   windowProcessViewRows,
@@ -326,5 +327,60 @@ test("settleProcessRanking measures displacement only among common rows", () => 
     "process:2:0",
     "process:4:0",
   ]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+const cpuNearTie = (a: ProcessViewRow, b: ProcessViewRow) =>
+  rankingNearTie(2)(processViewRowMetrics(a).cpuPercent, processViewRowMetrics(b).cpuPercent);
+
+test("settleProcessRanking re-sorts a large inversion immediately when near-tie is provided", () => {
+  const quiet = row("1", 23);
+  const busy = row("2", 182);
+  const settled = settleProcessRanking(
+    [quiet, busy],
+    [busy, quiet],
+    5_000,
+    1_000,
+    10_000,
+    cpuNearTie,
+  );
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:2:0", "process:1:0"]);
+  assert.equal(settled.settledAt, 5_000);
+});
+
+test("settleProcessRanking holds a near-tie inversion inside the settle interval", () => {
+  const a = row("1", 20.0);
+  const b = row("2", 21.0);
+  const settled = settleProcessRanking([a, b], [b, a], 5_000, 1_000, 10_000, cpuNearTie);
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+test("settleProcessRanking applies the near-tie floor to memory-sized values", () => {
+  const mib = 1024 * 1024;
+  const memoryNearTie = (a: ProcessViewRow, b: ProcessViewRow) =>
+    rankingNearTie(32 * mib)(
+      processViewRowMetrics(a).memoryBytes,
+      processViewRowMetrics(b).memoryBytes,
+    );
+  const a = row("1", 0);
+  if (a.kind === "process") a.detail.process.memory_bytes = 1024 * mib;
+  const b = row("2", 0);
+  if (b.kind === "process") b.detail.process.memory_bytes = 1024 * mib + 20 * mib;
+  const held = settleProcessRanking([a, b], [b, a], 5_000, 1_000, 10_000, memoryNearTie);
+  assert.deepEqual(held.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
+
+  const far = row("3", 0);
+  if (far.kind === "process") far.detail.process.memory_bytes = 1024 * mib + 400 * mib;
+  const adopted = settleProcessRanking([a, far], [far, a], 5_000, 1_000, 10_000, memoryNearTie);
+  assert.deepEqual(adopted.rows.map(processViewRowKey), ["process:3:0", "process:1:0"]);
+  assert.equal(adopted.settledAt, 5_000);
+});
+
+test("settleProcessRanking without a near-tie keeps the previous one-position behavior", () => {
+  const quiet = row("1", 23);
+  const busy = row("2", 182);
+  const settled = settleProcessRanking([quiet, busy], [busy, quiet], 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
   assert.equal(settled.settledAt, 1_000);
 });

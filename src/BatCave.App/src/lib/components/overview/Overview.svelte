@@ -34,7 +34,6 @@
   export let resources: ResourceSummaryOption[] = [];
   export let leadingRows: ProcessViewRow[] = [];
   export let processIcons: ResolvedProcessIconCatalog = {};
-  export let primaryMetric: ResourceSummaryOption | undefined = undefined;
   export let leadingName: string | null = null;
   export let leadingValue: string | null = null;
   export let leadingNarrativeGenerated = false;
@@ -50,16 +49,37 @@
 
   const ranking = new OverviewRanking();
   let displayRows: ProcessViewRow[] = [];
-  $: displayRows = ranking.update(status.primaryResource, leadingRows);
+  let orderUpdateAvailable = false;
+  $: {
+    displayRows = ranking.update(status.primaryResource, leadingRows);
+    orderUpdateAvailable = ranking.updateAvailable;
+  }
 
   function setInteraction(source: "pointer" | "focus", active: boolean): void {
     displayRows = ranking.setInteraction(source, active);
+    orderUpdateAvailable = ranking.updateAvailable;
+  }
+
+  function applyOrderUpdate(): void {
+    displayRows = ranking.applyUpdate();
+    orderUpdateAvailable = ranking.updateAvailable;
   }
 
   function handleFocusOut(event: FocusEvent & { currentTarget: HTMLDivElement }): void {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
       setInteraction("focus", false);
     }
+  }
+
+  function leadingProcessLabel(mode: DetailMode): string {
+    if (mode === "disk") return "Process attribution";
+    const names: Record<DetailMode, string> = {
+      cpu: "CPU",
+      memory: "memory",
+      disk: "disk",
+      network: "network",
+    };
+    return `Top ${names[mode]} process`;
   }
 
   function resourceIcon(mode: DetailMode) {
@@ -102,24 +122,11 @@
     <div class="overview-status-copy">
       <h2 id="overview-heading">{status.headline}</h2>
       <p>{status.summary}</p>
+      <button class="overview-inspect-resource" type="button" onclick={onInspectResource}>Inspect resource</button>
     </div>
 
-    {#if primaryMetric}
-      <div class="overview-primary-metric" aria-label={`${primaryMetric.label} ${primaryMetric.value}. ${primaryMetric.statusLabel}`}>
-        <div class="overview-primary-heading">
-          <span>{primaryMetric.label}</span>
-          <strong class:text-readout={!/^[0-9]/.test(primaryMetric.value)}>{primaryMetric.value}</strong>
-        </div>
-        <MiniChart values={primaryMetric.values} max={primaryMetric.max} stroke={primaryMetric.stroke} fill={primaryMetric.fill} />
-        <div class="overview-primary-actions">
-          <span class={`overview-metric-state tone-${status.tone}`}>{primaryMetric.shortStatusLabel}</span>
-          <button type="button" onclick={onInspectResource}>Inspect resource</button>
-        </div>
-      </div>
-    {/if}
-
     <div class="overview-contributor">
-      <span>{status.primaryResource === "disk" ? "Process attribution" : `Leading ${status.primaryResource} process`}</span>
+      <span class="overview-contributor-label">{leadingProcessLabel(status.primaryResource)}</span>
       {#if leadingName}
         <button
           type="button"
@@ -178,13 +185,15 @@
     {/each}
   </section>
 
-  <section class={`overview-attention tone-${status.attention.tone}`} aria-labelledby="overview-attention-heading">
-    <div>
-      <h3 id="overview-attention-heading">{status.attention.title}</h3>
-      <p>{status.attention.detail}</p>
-    </div>
-    <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
-  </section>
+  {#if status.attention.tone !== "healthy"}
+    <section class={`overview-attention tone-${status.attention.tone}`} aria-labelledby="overview-attention-heading">
+      <div>
+        <h3 id="overview-attention-heading">{status.attention.title}</h3>
+        <p>{status.attention.detail}</p>
+      </div>
+      <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
+    </section>
+  {/if}
 
   <section class="overview-workloads" aria-labelledby="leading-workloads-heading">
     <header>
@@ -192,6 +201,12 @@
         <h3 id="leading-workloads-heading">Leading workloads</h3>
         <p>Sorted by {status.primaryResource === "disk" ? "process read/write I/O" : status.primaryResource === "cpu" ? "CPU use per core" : status.primaryResource === "memory" ? "resident memory" : "process network traffic"} across the sample.</p>
       </div>
+      {#if orderUpdateAvailable}
+        <span class="overview-order-held">
+          Order paused
+          <button type="button" onclick={applyOrderUpdate}>Update</button>
+        </span>
+      {/if}
       <button type="button" onclick={onOpenExplore}>View all in Explore</button>
     </header>
     <div class="overview-workload-list" role="group" aria-label="Leading workloads"
@@ -216,7 +231,7 @@
             <strong title={row.kind === "process" ? row.detail.process.exe || row.detail.process.name : row.detail.label}>{rowLabel(row)}</strong>
             {#if secondaryLabel(row)}<small>{secondaryLabel(row)}</small>{/if}
           </span>
-          <span><small>CPU / core</small><strong>{overviewMetricValue(row, "cpu")}</strong></span>
+          <span><small title="Percent of one CPU core — 100% is one fully busy core">CPU / core</small><strong>{overviewMetricValue(row, "cpu")}</strong></span>
           <span><small>Memory</small><strong>{overviewMetricValue(row, "memory")}</strong></span>
           <span class="overview-workload-io"><small>I/O</small><strong>{overviewMetricValue(row, "disk")}</strong></span>
           <span class="overview-workload-network"><small>Network</small><strong>{overviewMetricValue(row, "network")}</strong></span>

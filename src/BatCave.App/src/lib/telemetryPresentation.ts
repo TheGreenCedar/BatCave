@@ -102,11 +102,11 @@ export function buildTelemetryPresentation(
     };
   }
   if (reasons.has("cadence_missed")) {
+    const device = snapshot.environment.platform === "macos" ? "your Mac" : "your computer";
     return {
       state,
       label: "Sampling delayed",
-      detail:
-        "The monitor missed a collection deadline. Available measurements remain labeled by freshness.",
+      detail: `Some samples arrived late, usually because ${device} is busy. Values stay labeled by freshness.`,
       tone: "warning",
     };
   }
@@ -114,7 +114,8 @@ export function buildTelemetryPresentation(
     return {
       state,
       label: "Monitoring limited",
-      detail: "The runtime reported a monitoring issue. Open diagnostics for details.",
+      detail:
+        "A monitoring source reported a problem. Open diagnostics to see which measurements are affected.",
       tone: "warning",
     };
   }

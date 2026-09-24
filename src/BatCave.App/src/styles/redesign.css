@@ -3020,7 +3020,6 @@ button:disabled {
 }
 
 .overview-state,
-.overview-contributor > span,
 .overview-attention > div > span {
   display: block;
   margin-bottom: 10px;
@@ -3029,6 +3028,14 @@ button:disabled {
   font-weight: 760;
   letter-spacing: 0.065em;
   text-transform: uppercase;
+}
+
+.overview-contributor-label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 650;
 }
 
 .overview-state.tone-warning,
@@ -3053,7 +3060,6 @@ button:disabled {
   line-height: 1.55;
 }
 
-.overview-primary-metric,
 .overview-contributor {
   min-width: 0;
   align-self: start;
@@ -3063,47 +3069,11 @@ button:disabled {
   background: color-mix(in srgb, var(--surface-1) 78%, transparent);
 }
 
-.overview-primary-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.overview-primary-heading span {
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  font-weight: 650;
-}
-
-.overview-primary-heading strong {
-  color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 2.3rem;
-  font-weight: 650;
-  letter-spacing: -0.055em;
-}
-
-.overview-primary-metric .chart-host {
-  min-height: 74px;
-  margin-top: 12px;
-}
-
-.overview-metric-state {
-  display: block;
-  margin-top: 8px;
-  color: var(--accent);
-  font-size: var(--text-xs);
-  font-weight: 680;
-}
-
-.overview-metric-state.tone-warning,
-.overview-metric-state.tone-danger {
-  color: var(--warning-text);
-}
-
 .overview-contributor {
-  align-content: center;
+  align-content: start;
+  justify-self: start;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .overview-contributor button {
@@ -3871,7 +3841,6 @@ button:disabled {
     gap: 18px;
   }
 
-  .overview-primary-metric,
   .overview-contributor {
     padding: 16px;
   }
@@ -3953,38 +3922,63 @@ button:disabled {
   }
 }
 
-/* Keep workload names readable when metric quality needs more room. */
-.overview-contributor strong,
+/* Names never break mid-word: single-line values truncate with ellipsis;
+   the contributor card name may clamp to two lines at word boundaries. */
+.overview-contributor strong {
+  white-space: normal;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
 .overview-contributor small,
 .overview-workload-name strong {
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.overview-primary-heading strong.text-readout {
-  font-family: var(--font-sans);
-  font-size: 1rem;
-  letter-spacing: 0;
-  line-height: 1.35;
-}
-
-.overview-primary-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.overview-primary-actions .overview-metric-state {
-  margin-top: 0;
-}
-
-.overview-primary-actions button {
-  padding: 8px 0;
+.overview-inspect-resource {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
   color: var(--accent);
   background: transparent;
   font-size: var(--text-xs);
+  font-weight: 680;
+}
+
+.overview-inspect-resource:hover {
+  text-decoration: underline;
+}
+
+.overview-order-held {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.overview-order-held button {
+  padding: 0;
+  border: 0;
+  min-height: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: var(--text-xs);
+  font-weight: 680;
+}
+
+.overview-order-held button:hover {
+  text-decoration: underline;
 }
 
 .overview-workload-list
@@ -3992,14 +3986,8 @@ button:disabled {
   > span:not(.overview-workload-name):not(.overview-workload-link)
   > strong {
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   line-height: 1.4;
-}
-
-.process-name-stack > span {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  line-height: 1.35;
 }
 
 .detail-freshness {

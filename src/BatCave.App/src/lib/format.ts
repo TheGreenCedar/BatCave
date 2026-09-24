@@ -401,7 +401,7 @@ export function qualityGuidanceEntries(quality: SystemMetricQuality): QualityGui
   const metrics: [string, MetricQualityInfo | undefined][] = [
     ["Machine CPU", quality.cpu],
     ["Kernel CPU", quality.kernel_cpu],
-    ["Peak logical core", quality.logical_cpu],
+    ["Busiest core", quality.logical_cpu],
     ["Memory", quality.memory],
     ["Swap", quality.swap],
     ["Disk read/write", quality.disk],

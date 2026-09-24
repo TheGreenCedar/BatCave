@@ -543,7 +543,7 @@ test("quality guidance entries group metrics that share a message", () => {
     }),
     [
       {
-        metrics: "Kernel CPU, Peak logical core",
+        metrics: "Kernel CPU, Busiest core",
         message: "Kernel metrics unavailable",
         consequence: "Shown as Unavailable.",
       },

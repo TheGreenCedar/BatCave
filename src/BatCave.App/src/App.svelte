@@ -77,6 +77,8 @@
     prepareProcessViewRows,
     processSelectionKey,
     processViewRowKey,
+    processViewRowMetrics,
+    rankingNearTie,
     sortColumnForKey,
     sortKeyForColumn,
     sortOptions,
@@ -384,7 +386,6 @@
   $: overviewPrimaryProcess = resolveContributorProcess(snapshot, overviewPrimaryBrief.leadingProcessId);
   $: overviewPrimaryIdentity = overviewPrimaryProcess ? processIdentity(overviewPrimaryProcess) : null;
   $: overviewPrimaryIcon = resolvedProcessIcon(processIcons, overviewPrimaryProcess ? processIconKey(overviewPrimaryProcess) : undefined);
-  $: overviewPrimaryMetric = resourceSummaries.find((resource) => resource.mode === overviewResource);
   $: healthTone = telemetry.tone;
   $: healthLabel = telemetry.label;
   $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
@@ -436,7 +437,7 @@
       value: metricValueLabel(snapshot.system.cpu_percent, systemQuality.cpu, formatPercent),
       supportingMetrics: [
         {
-          label: "Peak logical core",
+          label: "Busiest core",
           value: metricValueLabel(corePeak, logicalCpuMetricQuality(systemQuality), formatPercent),
         },
       ],
@@ -1798,13 +1799,46 @@
     } else {
       const settled = forceRankingRefresh
         ? { rows: incoming, settledAt: Date.now() }
-        : settleProcessRanking(displayProcessRows, incoming, Date.now(), rankingSettledAt);
+        : settleProcessRanking(
+            displayProcessRows,
+            incoming,
+            Date.now(),
+            rankingSettledAt,
+            10_000,
+            exploreRankingNearTie(),
+          );
       displayProcessRows = settled.rows;
       rankingSettledAt = settled.settledAt;
       rankingUpdateAvailable = false;
       pendingProcessRows = null;
     }
     forceRankingRefresh = false;
+  }
+
+  const EXPLORE_RANK_FLOOR: Partial<Record<SortKey, number>> = {
+    cpu: 2,
+    memory: 32 * 1024 * 1024,
+    io: 32 * 1024,
+    read: 32 * 1024,
+    write: 32 * 1024,
+    network: 32 * 1024,
+  };
+
+  function exploreRankValue(row: ProcessViewRow): number {
+    const metrics = processViewRowMetrics(row);
+    if (sortKey === "cpu") return metrics.cpuPercent;
+    if (sortKey === "memory") return metrics.memoryBytes;
+    if (sortKey === "network") return metrics.networkBps;
+    return metrics.ioBps;
+  }
+
+  function exploreRankingNearTie():
+    | ((a: ProcessViewRow, b: ProcessViewRow) => boolean)
+    | undefined {
+    const floor = EXPLORE_RANK_FLOOR[sortKey];
+    if (floor === undefined) return undefined;
+    const near = rankingNearTie(floor);
+    return (a, b) => near(exploreRankValue(a), exploreRankValue(b));
   }
 
   function shouldHoldRanking(): boolean {
@@ -2034,7 +2068,6 @@
       resources={resourceSummaries}
       leadingRows={overviewRows}
       {processIcons}
-      primaryMetric={overviewPrimaryMetric}
       leadingName={overviewPrimaryBrief.leadingWorkload}
       leadingValue={overviewContributorCopy}
       leadingNarrativeGenerated={overviewNarrativeCopy !== null}

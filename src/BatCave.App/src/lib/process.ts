@@ -518,6 +518,7 @@ export function settleProcessRanking(
   now: number,
   lastSettledAt: number,
   settleIntervalMs = 10_000,
+  isNearTie?: (a: ProcessViewRow, b: ProcessViewRow) => boolean,
 ): RankingSettle {
   const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row] as const));
   const currentKeys = new Set(current.map(processViewRowKey));
@@ -535,10 +536,31 @@ export function settleProcessRanking(
   const survivorIndexByKey = new Map(
     survivors.map((row, index) => [processViewRowKey(row), index] as const),
   );
-  for (let index = 0; index < commonIncoming.length; index += 1) {
-    const survivorIndex = survivorIndexByKey.get(processViewRowKey(commonIncoming[index]));
-    if (survivorIndex === undefined || Math.abs(index - survivorIndex) > 1) {
-      return { rows: incoming, settledAt: now };
+  if (isNearTie) {
+    // The held order survives only when every inversion it shows relative to
+    // the incoming order is a near-tie; any larger inversion adopts immediately.
+    for (let index = 0; index < commonIncoming.length; index += 1) {
+      for (let earlier = 0; earlier < index; earlier += 1) {
+        const incomingEarlier = commonIncoming[earlier];
+        const incomingLater = commonIncoming[index];
+        const earlierSurvivor = survivorIndexByKey.get(processViewRowKey(incomingEarlier));
+        const laterSurvivor = survivorIndexByKey.get(processViewRowKey(incomingLater));
+        if (
+          earlierSurvivor !== undefined &&
+          laterSurvivor !== undefined &&
+          earlierSurvivor > laterSurvivor &&
+          !isNearTie(incomingEarlier, incomingLater)
+        ) {
+          return { rows: incoming, settledAt: now };
+        }
+      }
+    }
+  } else {
+    for (let index = 0; index < commonIncoming.length; index += 1) {
+      const survivorIndex = survivorIndexByKey.get(processViewRowKey(commonIncoming[index]));
+      if (survivorIndex === undefined || Math.abs(index - survivorIndex) > 1) {
+        return { rows: incoming, settledAt: now };
+      }
     }
   }
 
@@ -554,6 +576,11 @@ export function settleProcessRanking(
     }
   }
   return { rows, settledAt: lastSettledAt };
+}
+
+/** Two ranked values count as a near-tie within an absolute floor or 15% of the larger value. */
+export function rankingNearTie(floor: number): (a: number, b: number) => boolean {
+  return (a, b) => Math.abs(a - b) <= Math.max(floor, 0.15 * Math.max(Math.abs(a), Math.abs(b)));
 }
 
 export function windowProcessViewRows(

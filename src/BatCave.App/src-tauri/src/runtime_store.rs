@@ -53,6 +53,8 @@ const SETTINGS_FILE: &str = "settings.json";
 const WARM_CACHE_FILE: &str = "warm-cache.json";
 const MAX_WARNINGS: usize = 16;
 const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 60;
+/// A single late tick is noise; sustained misses mark the cadence degraded.
+const CADENCE_DEGRADED_MIN_RECENT_MISSES: u64 = 3;
 /// Matches the largest historyPointOptions value the frontend can request.
 const SYSTEM_HISTORY_CAPACITY: usize = 360;
 const APP_CPU_DEGRADE_PCT: f64 = 25.0;
@@ -1815,7 +1817,7 @@ impl RuntimeStore {
             Some(RuntimeCollectorState::Limited | RuntimeCollectorState::Unavailable)
         );
         let fatal = self.engine_state == RuntimeEngineState::Fatal;
-        let cadence_degraded = self.recent_deadline_misses > 0;
+        let cadence_degraded = self.recent_deadline_misses >= CADENCE_DEGRADED_MIN_RECENT_MISSES;
         let persistence_state = self.persistence.health().state;
         let persistence_warning = self
             .warnings
@@ -4078,9 +4080,6 @@ fn process_attention_score(process: &ProcessSample) -> f64 {
     score += (io_bps as f64 / (512.0 * 1024.0)).min(20.0);
     let network_bps = process_network_rate(process);
     score += (network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
-    if process.access_state != crate::contracts::AccessState::Full {
-        score += 12.0;
-    }
 
     score
 }
@@ -4094,13 +4093,6 @@ fn group_attention_score(group: &ProcessAppGroup) -> f64 {
     score += (group.memory_bytes as f64 / (128.0 * 1024.0 * 1024.0)).min(20.0);
     score += (group.io_bps as f64 / (512.0 * 1024.0)).min(20.0);
     score += (group.network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
-    if group
-        .processes
-        .iter()
-        .any(|process| process.access_state != crate::contracts::AccessState::Full)
-    {
-        score += 12.0;
-    }
 
     score
 }
@@ -4634,22 +4626,35 @@ mod tests {
         store.collector_state = Some(RuntimeCollectorState::Healthy);
         store.warnings.clear();
         store.update_schedule_health(CollectorCadence {
-            deadline_misses: 2,
-            recent_deadline_misses: 2,
+            deadline_misses: 1,
+            recent_deadline_misses: 1,
+            deadline_lateness_p95_ms: 750.0,
+        });
+
+        let single_miss = store.build_health(0, 0.0, 0);
+        assert!(
+            !single_miss.degraded,
+            "one late tick inside the window is noise, not degradation"
+        );
+        assert_eq!(single_miss.status_summary, "Healthy.");
+
+        store.update_schedule_health(CollectorCadence {
+            deadline_misses: 3,
+            recent_deadline_misses: 3,
             deadline_lateness_p95_ms: 750.0,
         });
 
         let degraded = store.build_health(0, 0.0, 0);
         assert!(degraded.degraded);
-        assert_eq!(degraded.deadline_misses, Some(2));
-        assert_eq!(degraded.dropped_ticks, 2);
+        assert_eq!(degraded.deadline_misses, Some(3));
+        assert_eq!(degraded.dropped_ticks, 3);
         assert_eq!(
             degraded.status_summary,
-            "Sampling missed 2 deadline(s) in the current health window."
+            "Sampling missed 3 deadline(s) in the current health window."
         );
 
         store.update_schedule_health(CollectorCadence {
-            deadline_misses: 2,
+            deadline_misses: 3,
             recent_deadline_misses: 0,
             deadline_lateness_p95_ms: 0.0,
         });
@@ -4657,8 +4662,8 @@ mod tests {
         let recovered = store.build_health(0, 0.0, 0);
         assert!(!recovered.degraded);
         assert_eq!(recovered.status_summary, "Healthy.");
-        assert_eq!(recovered.deadline_misses, Some(2));
-        assert_eq!(recovered.dropped_ticks, 2);
+        assert_eq!(recovered.deadline_misses, Some(3));
+        assert_eq!(recovered.dropped_ticks, 3);
 
         drop(store);
         let _ = fs::remove_dir_all(base_dir);
@@ -6738,6 +6743,19 @@ mod tests {
         assert_eq!(accounting.denied_process_count, 1);
         assert_eq!(accounting.partial_process_count, 1);
         assert_eq!(accounting.kernel_paged_pool_bytes, Some(128));
+    }
+
+    #[test]
+    fn attention_score_does_not_reward_missing_access() {
+        let mut denied = sample("10", "Denied", 0.0);
+        denied.access_state = AccessState::Denied;
+        denied.cpu_percent = 0.0;
+        let busy = sample("20", "Busy", 5.0);
+
+        assert!(
+            process_attention_score(&denied) < process_attention_score(&busy),
+            "a denied idle process must not outrank real activity"
+        );
     }
 
     #[test]
