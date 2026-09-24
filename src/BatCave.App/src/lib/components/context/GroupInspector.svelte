@@ -1,7 +1,7 @@
 <script lang="ts">
   import Copy from "phosphor-svelte/lib/Copy";
   import InspectionChart from "../../InspectionChart.svelte";
-  import { groupFindingLabel } from "../../format";
+  import { groupActivitySummary, groupFindingLabel } from "../../format";
   import type { ProcessIconKind } from "../../process";
   import type { ChartPalette } from "../../themes";
   import type { GroupDetail } from "../../types";
@@ -63,7 +63,7 @@
   <section class="current-activity" aria-labelledby="group-current-activity-title">
     <div>
       <span>{current ? "Current activity" : "Last recorded activity"}</span>
-      <h3 id="group-current-activity-title">Aggregate of {processCountLabel(detail.process_count)}</h3>
+      <h3 id="group-current-activity-title">{groupActivitySummary(detail)}</h3>
     </div>
   </section>
 

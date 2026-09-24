@@ -140,7 +140,7 @@ export function nextProcessMetricHistory(
 }
 
 function observationQualifier(quality: MetricQualityInfo | undefined): string {
-  return quality?.quality === "partial" ? ", limited coverage" : "";
+  return quality?.quality === "partial" ? " (partial: some sources didn't report)" : "";
 }
 
 export function processFindingLabel(
@@ -211,6 +211,84 @@ export function processActivityLabel(
   if (activityQuality.every((quality) => quality?.quality === "unavailable")) return "Unavailable";
   if (activityQuality.some((quality) => quality?.quality === "unavailable")) return "Partial";
   return "Sampled";
+}
+
+function joinActivitySummary(primary: string[], secondary: string[]): string {
+  return [...(primary.length > 0 ? [primary.join(" and ")] : []), ...secondary].join("; ");
+}
+
+/** Plain-language activity sentence for the inspector lead, built only from displayable metrics. */
+export function processActivitySummary(
+  process: ProcessSample,
+  readWriteIoRate: number,
+  networkRate: number,
+  platformName: string,
+): string {
+  const primary: string[] = [];
+  const secondary: string[] = [];
+  if (processMetricIsPublishable(process.quality?.cpu)) {
+    primary.push(`${formatPercent(process.cpu_percent)} of one core`);
+  }
+  if (processMetricIsPublishable(process.quality?.memory)) {
+    primary.push(`${formatBytes(process.memory_bytes)} of memory`);
+  }
+  if (processMetricIsPublishable(process.quality?.io) && readWriteIoRate > 0) {
+    secondary.push(`disk ${formatRate(readWriteIoRate)}`);
+  }
+  if (processMetricIsPublishable(process.quality?.network) && networkRate > 0) {
+    secondary.push(`network ${formatRate(networkRate)}`);
+  }
+  const summary = joinActivitySummary(primary, secondary);
+  if (summary) return `Using ${summary}.`;
+
+  const qualities = [
+    process.quality?.cpu,
+    process.quality?.memory,
+    process.quality?.io,
+    process.quality?.network,
+  ];
+  if (qualities.some((quality) => quality?.quality === "held")) {
+    return "Measurements are pending for this workload.";
+  }
+  if (process.access_state === "denied") {
+    return `${platformName} doesn't allow BatCave to read this process's activity.`;
+  }
+  return "Measurements are unavailable for this workload.";
+}
+
+/** Same lead sentence for a workload group. */
+export function groupActivitySummary(detail: GroupDetail): string {
+  const count = `${detail.process_count} ${detail.process_count === 1 ? "process" : "processes"}`;
+  const primary: string[] = [];
+  const secondary: string[] = [];
+  if (groupMetricCanDisplay(detail.quality.cpu, detail.coverage.cpu)) {
+    primary.push(`${formatPercent(detail.cpu_percent)} of one core`);
+  }
+  if (groupMetricCanDisplay(detail.quality.memory, detail.coverage.memory)) {
+    primary.push(`${formatBytes(detail.memory_bytes)} of memory`);
+  }
+  if (groupMetricCanDisplay(detail.quality.io, detail.coverage.io) && detail.io_bps > 0) {
+    secondary.push(`disk ${formatRate(detail.io_bps)}`);
+  }
+  if (
+    groupMetricCanDisplay(detail.quality.network, detail.coverage.network) &&
+    detail.network_bps > 0
+  ) {
+    secondary.push(`network ${formatRate(detail.network_bps)}`);
+  }
+  const summary = joinActivitySummary(primary, secondary);
+  if (summary) return `${count} using ${summary}.`;
+
+  const limitations = [
+    groupMetricLimitation(detail.quality.cpu, detail.coverage.cpu),
+    groupMetricLimitation(detail.quality.memory, detail.coverage.memory),
+    groupMetricLimitation(detail.quality.io, detail.coverage.io),
+    groupMetricLimitation(detail.quality.network, detail.coverage.network),
+  ];
+  if (limitations.some((limitation) => limitation === "pending")) {
+    return "Measurements are pending for this workload group.";
+  }
+  return "Measurements are unavailable for this workload group.";
 }
 
 export function processTrustLabel(process: ProcessSample): string {
@@ -296,7 +374,8 @@ function groupHighFinding(
   coverage: MetricCoverage,
 ): string {
   if (metric.quality === "partial" || coverage.available < coverage.total) {
-    return `${message} Coverage is limited to ${coverage.available} of ${coverage.total} processes.`;
+    const trimmed = message.endsWith(".") ? message.slice(0, -1) : message;
+    return `${trimmed} (partial: ${coverage.available} of ${coverage.total} processes reported).`;
   }
   return message;
 }
@@ -345,7 +424,7 @@ export function groupFindingLabel(detail: GroupDetail): string {
     return "Network aggregate activity is unavailable for this group.";
   }
   if (networkLimitation === "limited") {
-    return "Network aggregate activity is limited by process telemetry coverage.";
+    return "Network aggregate activity is partial — some processes didn't report.";
   }
 
   const otherLimitations = [
@@ -361,7 +440,7 @@ export function groupFindingLabel(detail: GroupDetail): string {
     if (otherLimitations.every((limitation) => limitation === "unavailable")) {
       return "Some aggregate activity is unavailable for this workload group.";
     }
-    return "Some aggregate activity is limited by process telemetry coverage.";
+    return "Some aggregate activity is partial — some processes didn't report.";
   }
 
   return "Aggregate measurements are available for this sample.";

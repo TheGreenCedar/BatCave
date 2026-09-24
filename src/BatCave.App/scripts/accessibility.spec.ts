@@ -150,8 +150,8 @@ test("enhanced explanations are an explicit local opt-in with a deterministic fa
 }) => {
   await openFixture(page, "settings");
   const dialog = page.getByRole("dialog", { name: "Settings" });
-  await expect(dialog.getByText("Not available on this system.")).toBeVisible();
-  await dialog.getByText("What this would do").click();
+  await expect(dialog.getByText("Enhanced explanations — not available on this Mac")).toBeVisible();
+  await dialog.getByText("Enhanced explanations — not available on this Mac").click();
   const toggle = dialog.getByRole("switch", {
     name: "Use local AI to choose explanations",
   });

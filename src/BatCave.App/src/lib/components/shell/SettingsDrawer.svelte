@@ -245,14 +245,10 @@
       </section>
 
       <section class="settings-section narrative-settings">
-        <div class="settings-section-heading">
-          <h3>Enhanced explanations</h3>
-          <p>Let a local model choose which measured activity to explain. BatCave supplies the facts and wording.</p>
-        </div>
         {#if narrativeCapability.availability === "unsupported"}
-          <p class="setting-note">Not available on this system.</p>
-          <details class="technical-disclosure">
-            <summary>What this would do</summary>
+          <details class="technical-disclosure narrative-unavailable">
+            <summary>Enhanced explanations — not available on this {presentation.platformName === "macOS" ? "Mac" : "system"}</summary>
+            <p class="setting-note">Let a local model choose which measured activity to explain. BatCave supplies the facts and wording.</p>
             <label class="setting-row narrative-toggle">
               <span>
                 <strong>Use local AI to choose explanations</strong>
@@ -272,6 +268,10 @@
             {@render narrativeProviderCard()}
           </details>
         {:else}
+          <div class="settings-section-heading">
+            <h3>Enhanced explanations</h3>
+            <p>Let a local model choose which measured activity to explain. BatCave supplies the facts and wording.</p>
+          </div>
           <label class="setting-row narrative-toggle">
             <span>
               <strong>Use local AI to choose explanations</strong>

@@ -28,6 +28,29 @@
       ) * 1.05
     );
   }
+
+  // Collapsed rows rescale CPU to the observed peak so quiet series stay readable.
+  function sparkCeilingFor(samples: WorkloadHistoryPoint[], metric: HistoryMetric): number {
+    const peak = Math.max(0, ...samples.map((point) => point[metric].value ?? 0));
+    return metric === "cpu" ? Math.max(10, peak * 1.2) : Math.max(1, peak) * 1.05;
+  }
+
+  function peakLabel(samples: WorkloadHistoryPoint[], metric: HistoryMetric): string {
+    const values = samples.flatMap((point) => (point[metric].value === null ? [] : [point[metric].value ?? 0]));
+    return values.length ? `peak ${formatValue(metric, Math.max(...values))}` : "";
+  }
+
+  function sampleCountLabel(shown: number, retained: number): string {
+    return retained > shown
+      ? `${shown} of ${retained} ${retained === 1 ? "sample" : "samples"}`
+      : `${shown} ${shown === 1 ? "sample" : "samples"}`;
+  }
+
+  function windowSpanLabel(first: number, last: number): string {
+    const spanMs = Math.max(0, last - first);
+    if (spanMs < 90_000) return `last ${Math.max(1, Math.round(spanMs / 1000))} s`;
+    return `last ${Math.round(spanMs / 60_000)} min`;
+  }
   function strokeFor(theme: ChartPalette, metric: HistoryMetric): string {
     return metric === "cpu"
       ? theme.cpuStroke
@@ -110,17 +133,19 @@
   <div class="history-heading">
     <h3>History</h3>
     <small
-      >{retainedPoints > points.length
-        ? `${points.length} of ${retainedPoints} samples`
-        : `${points.length} samples`}</small
+      >{sampleCountLabel(points.length, retainedPoints)}{points.length > 1
+        ? ` · ${windowSpanLabel(firstTime, lastTime)}`
+        : ""}</small
     >
   </div>
+  <p class="history-hint">Select a row to expand.</p>
   {#if historyTruncated}<p class="history-limit">
       Earlier samples are outside this retained window.
     </p>{/if}
   {#each metrics as metric (metric.key)}
     {@const stroke = strokeFor(activeTheme, metric.key)}
     {@const ceiling = ceilingFor(points, metric.key)}
+    {@const sparkCeiling = sparkCeilingFor(points, metric.key)}
     <button
       type="button"
       class="history-row"
@@ -128,17 +153,21 @@
       aria-label={`${metric.label} history`}
       onclick={() => toggleMetric(metric.key)}
     >
-      <span class="history-row-label">{metric.label}</span>
+      <span class="history-row-label" title={metric.label}>{metric.label}</span>
       <svg class="history-sparkline" viewBox="0 0 600 40" aria-hidden="true">
         <path
-          d={chartPath(points, metric.key, firstTime, span, ceiling, 34, 30)}
+          d={chartPath(points, metric.key, firstTime, span, sparkCeiling, 36, 32)}
           fill="none"
           {stroke}
           stroke-width="1.5"
           vector-effect="non-scaling-stroke"
         />
       </svg>
-      <span class="history-row-value">{formatLatest(points, metric.key)}</span>
+      <span class="history-row-value"
+        >{formatLatest(points, metric.key)}<small class="history-row-peak"
+          >{peakLabel(points, metric.key)}</small
+        ></span
+      >
     </button>
     {#if expanded === metric.key}
       <div class="history-detail">
@@ -236,22 +265,39 @@
     cursor: pointer;
   }
   .history-row-label {
-    flex: 0 0 110px;
+    flex: 0 1 110px;
+    min-width: 4.5rem;
+    overflow: hidden;
     color: var(--text-soft);
     font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .history-sparkline {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-width: 0;
-    height: 36px;
+    height: 40px;
     display: block;
   }
   .history-row-value {
     flex: 0 0 auto;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     font-variant-numeric: tabular-nums;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-family: var(--font-ui);
+    font-size: var(--text-sm);
     text-align: right;
+    white-space: nowrap;
+  }
+  .history-row-peak {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+  .history-hint {
+    margin: 0 0 4px;
+    color: var(--text-subtle);
+    font-size: var(--text-xs);
   }
   .history-detail svg {
     width: 100%;

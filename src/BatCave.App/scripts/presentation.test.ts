@@ -21,6 +21,8 @@ import {
   metricQualityShortLabel,
   nextProcessMetricHistory,
   processActivityLabel,
+  processActivitySummary,
+  groupActivitySummary,
   processBytesLabel,
   processFindingLabel,
   processPrivateMemoryValue,
@@ -934,14 +936,14 @@ test("group findings include native network activity and explicit network limita
   partial.coverage.network = { available: 1, total: 2 };
   assert.equal(
     groupFindingLabel(partial),
-    "Aggregate network traffic is 2.0 MB/s. Coverage is limited to 1 of 2 processes.",
+    "Aggregate network traffic is 2.0 MB/s (partial: 1 of 2 processes reported).",
   );
 
   const partialLow = structuredClone(partial);
   partialLow.network_bps = 0;
   assert.equal(
     groupFindingLabel(partialLow),
-    "Network aggregate activity is limited by process telemetry coverage.",
+    "Network aggregate activity is partial — some processes didn't report.",
   );
 
   const estimated = structuredClone(nativeHigh);
@@ -1195,3 +1197,79 @@ function groupRow(
     attention_label: "Normal",
   };
 }
+
+test("processActivitySummary composes a sentence from displayable metrics only", () => {
+  const busy = process({
+    cpu_percent: 21,
+    memory_bytes: 1.2 * 1024 * 1024 * 1024,
+    quality: {
+      cpu: { quality: "native", source: "direct_api" },
+      memory: { quality: "native", source: "direct_api" },
+      io: { quality: "native", source: "direct_api" },
+      network: { quality: "unavailable", source: "direct_api" },
+    },
+  });
+  assert.equal(
+    processActivitySummary(busy, 1.9 * 1024 * 1024, 0, "Windows"),
+    "Using 21% of one core and 1.2 GB of memory; disk 1.9 MB/s.",
+  );
+
+  const networked = process({ cpu_percent: 0, memory_bytes: 0 });
+  assert.equal(
+    processActivitySummary(networked, 0, 2 * 1024 * 1024, "Windows"),
+    "Using 0% of one core and 0 B of memory; network 2.0 MB/s.",
+  );
+});
+
+test("processActivitySummary reports held, denied, and unavailable workloads", () => {
+  const held = process({
+    quality: { cpu: { quality: "held", source: "procfs" } },
+  });
+  assert.equal(
+    processActivitySummary(held, 0, 0, "Linux"),
+    "Measurements are pending for this workload.",
+  );
+
+  const denied = process({
+    access_state: "denied",
+    quality: {
+      cpu: { quality: "unavailable", source: "direct_api" },
+      memory: { quality: "unavailable", source: "direct_api" },
+      io: { quality: "unavailable", source: "direct_api" },
+      network: { quality: "unavailable", source: "direct_api" },
+    },
+  });
+  assert.equal(
+    processActivitySummary(denied, 0, 0, "macOS"),
+    "macOS doesn't allow BatCave to read this process's activity.",
+  );
+  assert.equal(
+    processActivitySummary(denied, 0, 0, "Windows"),
+    "Windows doesn't allow BatCave to read this process's activity.",
+  );
+
+  const unknown = process({ access_state: "full", quality: undefined });
+  assert.equal(
+    processActivitySummary(unknown, 0, 0, "macOS"),
+    "Measurements are unavailable for this workload.",
+  );
+});
+
+test("groupActivitySummary leads with the process count and stays honest", () => {
+  const detail = groupRow(process(), 12).detail;
+  if (detail.kind !== "group") assert.fail("expected group detail");
+  detail.cpu_percent = 23;
+  detail.memory_bytes = 2.3 * 1024 * 1024 * 1024;
+  assert.equal(
+    groupActivitySummary(detail),
+    "12 processes using 23% of one core and 2.3 GB of memory.",
+  );
+
+  const held = groupRow(process(), 3).detail;
+  if (held.kind !== "group") assert.fail("expected group detail");
+  held.quality.cpu = { quality: "held", source: "process_aggregate" };
+  held.quality.memory = { quality: "held", source: "process_aggregate" };
+  held.quality.io = { quality: "held", source: "process_aggregate" };
+  held.quality.network = { quality: "held", source: "process_aggregate" };
+  assert.equal(groupActivitySummary(held), "Measurements are pending for this workload group.");
+});

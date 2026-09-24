@@ -5,6 +5,7 @@
   import {
     displayProcessMetricValue,
     processActivityLabel,
+    processActivitySummary,
     processFindingLabel,
   } from "../../format";
   import {
@@ -112,7 +113,7 @@
     <section class="current-activity" aria-labelledby="current-activity-title">
       <div>
         <span>{current ? "Current activity" : "Last recorded activity"}</span>
-        <h3 id="current-activity-title">{accent}</h3>
+        <h3 id="current-activity-title">{processActivitySummary(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess), presentation.platformName)}</h3>
       </div>
       <div>
         <span class="status-caption">Status</span>
