@@ -3377,10 +3377,12 @@ fn process_network_rate(process: &ProcessSample) -> u64 {
 }
 
 fn summarize_process_contributors(processes: &[ProcessSample]) -> ProcessContributorSummary {
-    let cpu = top_process_contributor(processes, |process| process.cpu_percent, cpu_quality);
-    let memory = top_process_contributor(processes, |process| process.memory_bytes, memory_quality);
-    let io = top_process_contributor(processes, process_io_rate, io_quality);
-    let network = top_process_contributor(processes, process_network_rate, network_quality);
+    let cpu = top_process_contributor(processes, |process| process.cpu_percent, cpu_quality, "CPU");
+    let memory =
+        top_process_contributor(processes, |process| process.memory_bytes, memory_quality, "memory");
+    let io = top_process_contributor(processes, process_io_rate, io_quality, "I/O");
+    let network =
+        top_process_contributor(processes, process_network_rate, network_quality, "network");
 
     ProcessContributorSummary {
         cpu: cpu.name,
@@ -3440,6 +3442,7 @@ fn top_process_contributor<T>(
     processes: &[ProcessSample],
     metric: impl Fn(&ProcessSample) -> T,
     quality: ProcessQualityAccessor,
+    metric_label: &'static str,
 ) -> ProcessContributor
 where
     T: Copy + Default + PartialOrd,
@@ -3470,15 +3473,24 @@ where
         });
 
     if let Some(process) = winner.filter(|process| metric(process) > T::default()) {
-        if !coverage_is_publishable {
-            return ProcessContributor {
-                name: None,
-                identity: None,
-                coverage,
-                quality: coverage_quality,
-                ambiguous: false,
-            };
-        }
+        // Publish the measured winner even under incomplete coverage; withheld names
+        // made the Overview card permanently empty on platforms where denied or
+        // first-sample processes are honestly Unavailable/Held.
+        let quality = if coverage_is_publishable {
+            coverage_quality
+        } else {
+            Some(MetricQualityInfo {
+                quality: MetricQuality::Partial,
+                source: Some(MetricSource::ProcessAggregate),
+                updated_at_ms: None,
+                age_ms: None,
+                limitation_code: Some(MetricLimitationCode::GroupPartialCoverage),
+                message: Some(format!(
+                    "{} of {} processes report {metric_label}; unmeasured processes could be higher.",
+                    coverage.available, coverage.total,
+                )),
+            })
+        };
         return ProcessContributor {
             name: Some(process.name.clone()),
             identity: Some(ProcessContributorIdentity {
@@ -3486,7 +3498,7 @@ where
                 start_time_ms: process.start_time_ms,
             }),
             coverage,
-            quality: coverage_quality,
+            quality,
             ambiguous: processes
                 .iter()
                 .filter(|candidate| candidate.name == process.name)
@@ -5293,8 +5305,15 @@ mod tests {
 
         let selected = summarize_process_contributors(&[unavailable_high.clone(), estimated_lower]);
 
-        assert_eq!(selected.cpu, None);
-        assert_eq!(selected.cpu_identity, None);
+        // Incomplete coverage no longer withholds the measured winner.
+        assert_eq!(selected.cpu.as_deref(), Some("EstimatedLower"));
+        assert_eq!(
+            selected.cpu_identity,
+            Some(ProcessContributorIdentity {
+                pid: "20".to_string(),
+                start_time_ms: 1_700_000_000_000,
+            })
+        );
         assert_eq!(
             selected.cpu_coverage,
             Some(MetricCoverage {
@@ -5302,9 +5321,15 @@ mod tests {
                 total: 2
             })
         );
+        let selected_quality = selected.cpu_quality.as_ref().expect("quality");
+        assert_eq!(selected_quality.quality, MetricQuality::Partial);
         assert_eq!(
-            selected.cpu_quality.as_ref().map(|quality| quality.quality),
-            Some(MetricQuality::Unavailable)
+            selected_quality.limitation_code,
+            Some(MetricLimitationCode::GroupPartialCoverage)
+        );
+        assert_eq!(
+            selected_quality.message.as_deref(),
+            Some("1 of 2 processes report CPU; unmeasured processes could be higher.")
         );
 
         let mut native_positive = sample("21", "NativePositive", 25.0);
@@ -5312,13 +5337,19 @@ mod tests {
         let mut held_placeholder = sample("22", "HeldPlaceholder", 0.0);
         held_placeholder.quality = quality(MetricQuality::Held);
         let blocked_positive = summarize_process_contributors(&[native_positive, held_placeholder]);
-        assert_eq!(blocked_positive.cpu, None);
+        assert_eq!(blocked_positive.cpu.as_deref(), Some("NativePositive"));
         assert_eq!(
-            blocked_positive
-                .cpu_quality
-                .as_ref()
-                .map(|quality| quality.quality),
-            Some(MetricQuality::Held)
+            blocked_positive.cpu_coverage,
+            Some(MetricCoverage {
+                available: 1,
+                total: 2
+            })
+        );
+        let blocked_quality = blocked_positive.cpu_quality.as_ref().expect("quality");
+        assert_eq!(blocked_quality.quality, MetricQuality::Partial);
+        assert_eq!(
+            blocked_quality.limitation_code,
+            Some(MetricLimitationCode::GroupPartialCoverage)
         );
 
         let unavailable = summarize_process_contributors(&[unavailable_high.clone()]);

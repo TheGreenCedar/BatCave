@@ -261,7 +261,9 @@ function contributorValueLabel(
   coverage: MetricCoverage,
   contributorNameAmbiguous: boolean,
 ): string {
-  const qualitySuffix = `${contributorQualitySuffix(quality)}${contributorCoverageSuffix(coverage)}`;
+  const coverageSuffix = contributorCoverageSuffix(coverage);
+  // The coverage suffix already conveys partial attribution; don't repeat it.
+  const qualitySuffix = coverageSuffix === "" ? contributorQualitySuffix(quality) : coverageSuffix;
   if (contributorNameAmbiguous) {
     return `Contributor name is ambiguous across the full process sample${qualitySuffix}`;
   }
@@ -298,7 +300,7 @@ function contributorQualitySuffix(quality: MetricQualityInfo | undefined): strin
 
 function contributorCoverageSuffix(coverage: MetricCoverage): string {
   if (coverage.available >= coverage.total) return "";
-  return ` · ${coverage.available}/${coverage.total} processes sampled`;
+  return ` · measured in ${coverage.available} of ${coverage.total} processes`;
 }
 
 export function displayProcessName(name: string): string {

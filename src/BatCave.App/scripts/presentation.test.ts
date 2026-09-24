@@ -230,6 +230,30 @@ test("contributor quality gates publication and limits overview confidence", () 
   assert.equal(unavailableBrief.confidence, "Limited");
 });
 
+test("partial contributor coverage keeps the winner and reports measured coverage", () => {
+  const snapshot = resourceSnapshot("Measured worker");
+  snapshot.total_process_count = 3;
+  snapshot.system.process_count = 3;
+  snapshot.process_contributors.cpu_quality = {
+    quality: "partial",
+    source: "process_aggregate",
+    limitation_code: "group_partial_coverage",
+    message: "2 of 3 processes report CPU; unmeasured processes could be higher.",
+  };
+  snapshot.process_contributors.cpu_coverage = { available: 2, total: 3 };
+
+  const brief = buildResourceBrief(
+    snapshot,
+    "cpu",
+    { memoryPercent: 20, diskRate: 0, networkRate: 0 },
+    "live",
+  );
+
+  assert.equal(brief.leadingWorkload, "Measured worker");
+  assert.equal(brief.contributorStatusLabel, "40% of one core · measured in 2 of 3 processes");
+  assert.equal(brief.confidence, "Limited");
+});
+
 test("backend contributor identity disambiguates duplicate display names", () => {
   const snapshot = resourceSnapshot("worker");
   snapshot.process_contributors.cpu_name_ambiguous = true;

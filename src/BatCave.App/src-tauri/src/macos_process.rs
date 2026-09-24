@@ -365,6 +365,7 @@ pub struct MacosProcessCollector {
     exe_cache: HashMap<GenerationKey, String>,
     cpu_baselines: HashMap<GenerationKey, (u64, Instant)>,
     timebase: Option<(u64, u64)>,
+    previous_sample_started_ms: Option<u64>,
 }
 
 impl MacosProcessCollector {
@@ -389,6 +390,7 @@ impl MacosProcessCollector {
         let Ok(identities) = probes.list_processes() else {
             return (Vec::new(), collection);
         };
+        let previous_sample_started_ms = self.previous_sample_started_ms.replace(sample_started_ms);
         // A zero start timestamp disables the "born after sampling began" filter.
         let cutoff = if sample_started_ms == 0 {
             u64::MAX
@@ -398,9 +400,16 @@ impl MacosProcessCollector {
         let mut seen = HashSet::with_capacity(identities.len());
         let mut processes = Vec::with_capacity(identities.len());
         for identity in identities {
-            if let Some(process) =
-                self.collect_process(identity, probes, cutoff, clock, &mut seen, &mut collection)
-            {
+            if let Some(process) = self.collect_process(
+                identity,
+                probes,
+                cutoff,
+                sample_started_ms,
+                previous_sample_started_ms,
+                clock,
+                &mut seen,
+                &mut collection,
+            ) {
                 processes.push(process);
             }
         }
@@ -409,11 +418,14 @@ impl MacosProcessCollector {
         (processes, collection)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn collect_process(
         &mut self,
         before: ProcessIdentity,
         probes: &impl MacosProcessProbes,
         cutoff: u64,
+        sample_started_ms: u64,
+        previous_sample_started_ms: Option<u64>,
         clock: &dyn Fn() -> Instant,
         seen: &mut HashSet<GenerationKey>,
         collection: &mut MacosProcessCollection,
@@ -458,6 +470,8 @@ impl MacosProcessCollector {
                 descriptors,
                 probes,
                 clock,
+                sample_started_ms,
+                previous_sample_started_ms,
             ),
             Ok(_) | Err(ProcessProbeFailure::Exited) => {
                 collection.exited_count += 1;
@@ -488,6 +502,8 @@ impl MacosProcessCollector {
         descriptors: ProcessProbeResult<u32>,
         probes: &impl MacosProcessProbes,
         clock: &dyn Fn() -> Instant,
+        sample_started_ms: u64,
+        previous_sample_started_ms: Option<u64>,
     ) -> ProcessSample {
         // The access state is derived from the three metric-bearing probes
         // (task_info, rusage, file_descriptor_count). thread_status only refines the
@@ -530,11 +546,24 @@ impl MacosProcessCollector {
                         }
                         MetricQualityInfo::new(MetricQuality::Native, MetricSource::Libproc)
                     }
-                    None => MetricQualityInfo::new(MetricQuality::Held, MetricSource::Libproc)
-                        .with_limitation(
-                            MetricLimitationCode::PendingBaseline,
-                            "Waiting for a second CPU sample.",
-                        ),
+                    None => {
+                        // No baseline: if the process was born between collections,
+                        // average its lifetime CPU instead of holding for a tick.
+                        let born_since_last_collection = previous_sample_started_ms
+                            .is_some_and(|previous| generation.1 >= previous);
+                        let age_ms = sample_started_ms.saturating_sub(generation.1);
+                        if born_since_last_collection && age_ms >= 250 {
+                            cpu_percent =
+                                round1(cpu_ns as f64 / (age_ms as f64 * 1e6) * 100.0);
+                            MetricQualityInfo::new(MetricQuality::Native, MetricSource::Libproc)
+                        } else {
+                            MetricQualityInfo::new(MetricQuality::Held, MetricSource::Libproc)
+                                .with_limitation(
+                                    MetricLimitationCode::PendingBaseline,
+                                    "Waiting for a second CPU sample.",
+                                )
+                        }
+                    }
                 });
             }
             Err(failure) => {
@@ -1126,6 +1155,72 @@ mod tests {
         );
     }
 
+    fn born_identity(pid: u32, seconds: u64, microseconds: u64) -> ProcessIdentity {
+        ProcessIdentity {
+            seconds,
+            microseconds,
+            ..identity(pid)
+        }
+    }
+
+    #[test]
+    fn process_born_between_collections_reports_lifetime_average_cpu() {
+        let mut collector = collector();
+        let mut probes = FixtureProbes::full();
+        // First collection sees no processes but establishes the previous tick.
+        probes.identities = Vec::new();
+        collector.collect_with_probes(&probes, 10_000, &clock_at(Instant::now()));
+
+        // Born at 10_500, sampled at 11_000: 500 ms old.
+        // 6_000_000 mach units * (125/3) = 250_000_000 ns = 50% of one core over 500 ms.
+        probes.identities = vec![born_identity(42, 10, 500_000)];
+        probes.task = Ok(ProcTaskInfo {
+            total_user: 6_000_000,
+            thread_count: 4,
+            ..ProcTaskInfo::default()
+        });
+        let (processes, _) =
+            collector.collect_with_probes(&probes, 11_000, &clock_at(Instant::now()));
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].cpu_percent, 50.0);
+        let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
+        assert_eq!(cpu.quality, MetricQuality::Native);
+        assert_eq!(cpu.source, Some(MetricSource::Libproc));
+    }
+
+    #[test]
+    fn process_younger_than_250ms_stays_held() {
+        let mut collector = collector();
+        let mut probes = FixtureProbes::full();
+        probes.identities = Vec::new();
+        collector.collect_with_probes(&probes, 10_000, &clock_at(Instant::now()));
+
+        // Born at 10_900, sampled at 11_000: only 100 ms old.
+        probes.identities = vec![born_identity(42, 10, 900_000)];
+        let (processes, _) =
+            collector.collect_with_probes(&probes, 11_000, &clock_at(Instant::now()));
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].cpu_percent, 0.0);
+        let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
+        assert_eq!(cpu.quality, MetricQuality::Held);
+        assert_eq!(
+            cpu.limitation_code,
+            Some(MetricLimitationCode::PendingBaseline)
+        );
+    }
+
+    #[test]
+    fn process_present_before_first_collection_stays_held() {
+        let mut collector = collector();
+        let probes = FixtureProbes::full();
+        // Identity fixture starts at 1_123 ms, well before the first sample.
+        let (processes, _) =
+            collector.collect_with_probes(&probes, 10_000, &clock_at(Instant::now()));
+        assert_eq!(processes.len(), 1);
+        let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
+        assert_eq!(cpu.quality, MetricQuality::Held);
+    }
+
     #[test]
     fn second_sample_reports_native_cpu_percent_from_mach_units() {
         let mut collector = collector();
@@ -1484,13 +1579,23 @@ mod tests {
     #[test]
     #[ignore]
     fn live_collect_reports_accurate_cpu_and_identity() {
-        use std::process::{Command, Stdio};
-        let mut child = Command::new("yes")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn yes");
-        let child_pid = child.id() as c_int;
+        use std::process::{Child, Command, Stdio};
+        // Kill the busy child even when an assertion below panics.
+        struct KillOnDrop(Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = KillOnDrop(
+            Command::new("yes")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn yes"),
+        );
+        let child_pid = child.0.id() as c_int;
         std::thread::sleep(Duration::from_millis(300));
 
         let mut collector = MacosProcessCollector::new();
@@ -1568,8 +1673,6 @@ mod tests {
             mismatches.len() <= 4,
             "too many name mismatches: {mismatches:?}"
         );
-
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(child);
     }
 }
