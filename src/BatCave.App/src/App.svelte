@@ -578,6 +578,8 @@
         scheduler: {
           setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
           clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
+          setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
+          clearInterval: (intervalId) => window.clearInterval(intervalId),
         },
         visibility: documentVisibility(),
       });

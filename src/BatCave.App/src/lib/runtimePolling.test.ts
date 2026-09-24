@@ -8,6 +8,7 @@ import { startRuntimePolling, type RuntimeVisibility } from "./runtimePolling.ts
 class FakeScheduler {
   #nextId = 1;
   #timers = new Map<number, { callback: () => void; delayMs: number }>();
+  #intervals = new Map<number, { callback: () => void; intervalMs: number }>();
 
   setTimeout = (callback: () => void, delayMs: number): number => {
     const id = this.#nextId++;
@@ -18,6 +19,24 @@ class FakeScheduler {
   clearTimeout = (timeoutId: number): void => {
     this.#timers.delete(timeoutId);
   };
+
+  setInterval = (callback: () => void, intervalMs: number): number => {
+    const id = this.#nextId++;
+    this.#intervals.set(id, { callback, intervalMs });
+    return id;
+  };
+
+  clearInterval = (intervalId: number): void => {
+    this.#intervals.delete(intervalId);
+  };
+
+  get intervalCount(): number {
+    return this.#intervals.size;
+  }
+
+  tickIntervals(): void {
+    for (const interval of this.#intervals.values()) interval.callback();
+  }
 
   get pending(): number {
     return this.#timers.size;
@@ -207,4 +226,77 @@ test("dispose clears pending timers and unsubscribes visibility", async () => {
   assert.equal(scheduler.pending, 0);
   visibility.emit(false);
   assert.equal(scheduler.pending, 0, "no restart after dispose");
+});
+
+test("watchdog restarts polling when visibility flips without an event", async () => {
+  const scheduler = new FakeScheduler();
+  const visibility = new FakeVisibility();
+  visibility.hidden = true;
+  let polls = 0;
+  const stop = startRuntimePolling({
+    initialDelayMs: 120,
+    intervalMs: () => 500,
+    poll: async () => {
+      polls += 1;
+    },
+    scheduler,
+    visibility,
+  });
+
+  assert.equal(scheduler.pending, 0, "hidden at start schedules nothing");
+  assert.equal(scheduler.intervalCount, 1, "watchdog armed");
+
+  // The page became visible without delivering a visibilitychange event.
+  visibility.hidden = false;
+  scheduler.tickIntervals();
+  assert.deepEqual(scheduler.pendingDelays(), [0]);
+
+  scheduler.runNext();
+  await flush();
+  assert.equal(polls, 1);
+  stop();
+});
+
+test("watchdog never starts a second concurrent loop", async () => {
+  const scheduler = new FakeScheduler();
+  const visibility = new FakeVisibility();
+  let polls = 0;
+  const stop = startRuntimePolling({
+    initialDelayMs: 0,
+    intervalMs: () => 500,
+    poll: async () => {
+      polls += 1;
+    },
+    scheduler,
+    visibility,
+  });
+
+  // The initial poll timer is already pending; the watchdog must not add another.
+  assert.equal(scheduler.pending, 1);
+  scheduler.tickIntervals();
+  assert.equal(scheduler.pending, 1, "watchdog dedupes against a pending poll");
+
+  scheduler.runNext();
+  await flush();
+  assert.equal(polls, 1);
+  assert.equal(scheduler.pending, 1, "interval timer pending after the poll");
+  scheduler.tickIntervals();
+  assert.equal(scheduler.pending, 1, "watchdog dedupes against the interval timer");
+  stop();
+});
+
+test("dispose clears the watchdog", () => {
+  const scheduler = new FakeScheduler();
+  const visibility = new FakeVisibility();
+  const stop = startRuntimePolling({
+    initialDelayMs: 0,
+    intervalMs: () => 500,
+    poll: async () => {},
+    scheduler,
+    visibility,
+  });
+
+  assert.equal(scheduler.intervalCount, 1);
+  stop();
+  assert.equal(scheduler.intervalCount, 0, "watchdog cleared on dispose");
 });

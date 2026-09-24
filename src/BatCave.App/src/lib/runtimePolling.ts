@@ -1,7 +1,11 @@
 export interface PollScheduler {
   setTimeout(callback: () => void, delayMs: number): number;
   clearTimeout(timeoutId: number): void;
+  setInterval(callback: () => void, intervalMs: number): number;
+  clearInterval(intervalId: number): void;
 }
+
+const WATCHDOG_INTERVAL_MS = 5_000;
 
 export interface RuntimeVisibility {
   isHidden(): boolean;
@@ -57,11 +61,16 @@ export function startRuntimePolling(options: RuntimePollingOptions): () => void 
     }
   });
 
+  // Safety net: visibilitychange is not guaranteed on unlock/un-occlusion, so a
+  // low-frequency watchdog re-arms the loop when nothing is pending or running.
+  const watchdogId = options.scheduler.setInterval(() => schedule(0), WATCHDOG_INTERVAL_MS);
+
   schedule(options.initialDelayMs);
 
   return () => {
     disposed = true;
     clearPending();
+    options.scheduler.clearInterval(watchdogId);
     unsubscribe?.();
   };
 }
@@ -71,7 +80,13 @@ export function documentVisibility(): RuntimeVisibility {
     isHidden: () => document.visibilityState === "hidden",
     subscribe: (callback) => {
       document.addEventListener("visibilitychange", callback);
-      return () => document.removeEventListener("visibilitychange", callback);
+      window.addEventListener("focus", callback);
+      window.addEventListener("pageshow", callback);
+      return () => {
+        document.removeEventListener("visibilitychange", callback);
+        window.removeEventListener("focus", callback);
+        window.removeEventListener("pageshow", callback);
+      };
     },
   };
 }

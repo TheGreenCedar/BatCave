@@ -89,6 +89,19 @@ class ManualScheduler implements PollScheduler {
     this.cleared.push(timeoutId);
   }
 
+  readonly intervals: Array<{ id: number; callback: () => void; intervalMs: number }> = [];
+  readonly clearedIntervals: number[] = [];
+
+  setInterval(callback: () => void, intervalMs: number): number {
+    const id = this.nextId++;
+    this.intervals.push({ id, callback, intervalMs });
+    return id;
+  }
+
+  clearInterval(intervalId: number): void {
+    this.clearedIntervals.push(intervalId);
+  }
+
   async runNext(): Promise<void> {
     const task = this.scheduled.shift();
     assert.ok(task);
@@ -117,7 +130,9 @@ test("runtime polling reads the current cadence only after each poll completes",
   assert.equal(scheduler.scheduled[0]?.delayMs, 2_000);
 
   stop();
-  assert.deepEqual(scheduler.cleared, [2]);
+  assert.deepEqual(scheduler.cleared, [3]);
+  assert.equal(scheduler.intervals.length, 1, "watchdog armed");
+  assert.equal(scheduler.clearedIntervals.length, 1, "watchdog cleared on dispose");
 });
 
 test("runtime polling does not reschedule after disposal during an in-flight poll", async () => {
