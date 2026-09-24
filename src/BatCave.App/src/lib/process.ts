@@ -117,8 +117,8 @@ export const sortOptions: SortOption[] = [
  */
 export function rankingWindowNote(sampleIntervalMs: number): string {
   return sampleIntervalMs === 1000
-    ? "Sorted by the last 5 seconds' average; values show the latest sample."
-    : "Sorted by an average of the last 5 samples; values show the latest sample.";
+    ? "Sorted by the last 5 seconds' average; new processes join the ranking after 3 seconds. Values show the latest sample."
+    : "Sorted by an average of the last 5 samples; new processes join the ranking after 3 samples. Values show the latest sample.";
 }
 
 export const processColumns: ProcessColumn[] = [

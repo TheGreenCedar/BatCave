@@ -2926,6 +2926,9 @@ struct ProcessIdentity {
 }
 
 const RANKING_WINDOW_SAMPLES: usize = 5;
+// Generations with fewer samples than this rank zero: transient processes join
+// the ordering only after they have persisted, instead of popping into view.
+const RANKING_MIN_SAMPLES: usize = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct ProcessRankingValues {
@@ -2951,6 +2954,9 @@ fn ranking_values_for(history: &RankingHistory, process: &ProcessSample) -> Proc
             network_bps: process_network_rate(process),
         };
     };
+    if ring.cpu_percent.len() < RANKING_MIN_SAMPLES {
+        return ProcessRankingValues::default();
+    }
     let window = RANKING_WINDOW_SAMPLES as f64;
     ProcessRankingValues {
         cpu_percent: ring.cpu_percent.iter().sum::<f64>() / window,
@@ -8603,7 +8609,8 @@ mod tests {
         );
 
         assert_eq!(group_ranking_cpu(&store, "10"), 20.0);
-        assert_eq!(group_ranking_cpu(&store, "20"), 13.0 / 5.0);
+        // Younger than RANKING_MIN_SAMPLES: the transient spike ranks zero.
+        assert_eq!(group_ranking_cpu(&store, "20"), 0.0);
         let names = store
             .snapshot
             .processes
@@ -8611,6 +8618,54 @@ mod tests {
             .map(|process| process.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names, ["Steady", "Spike"]);
+    }
+
+    #[test]
+    fn young_generations_rank_below_steady_idle_processes() {
+        let base_dir = runtime_test_dir("ranking-min-samples");
+        let mut store = RuntimeStore::from_base_dir(base_dir);
+        for tick in 0..RANKING_MIN_SAMPLES as u64 {
+            feed_processes(
+                &mut store,
+                vec![sample("10", "Idle", 1.0)],
+                10_000 + tick * 1_000,
+            );
+        }
+        // A 50% burst on its first and second sample still ranks below the
+        // steady 1% process until the third sample arrives.
+        feed_processes(
+            &mut store,
+            vec![sample("10", "Idle", 1.0), sample("20", "Burst", 50.0)],
+            20_000,
+        );
+        feed_processes(
+            &mut store,
+            vec![sample("10", "Idle", 1.0), sample("20", "Burst", 50.0)],
+            21_000,
+        );
+        assert_eq!(group_ranking_cpu(&store, "20"), 0.0);
+        let names = store
+            .snapshot
+            .processes
+            .iter()
+            .map(|process| process.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Idle", "Burst"]);
+    }
+
+    #[test]
+    fn generations_rank_by_their_average_from_the_third_sample() {
+        let base_dir = runtime_test_dir("ranking-min-samples-join");
+        let mut store = RuntimeStore::from_base_dir(base_dir);
+        for (tick, cpu) in [50.0_f64, 50.0, 50.0].iter().enumerate() {
+            feed_processes(
+                &mut store,
+                vec![sample("20", "Burst", *cpu)],
+                10_000 + tick as u64 * 1_000,
+            );
+        }
+        // Three samples in: the ring is complete enough to rank by its average.
+        assert_eq!(group_ranking_cpu(&store, "20"), 30.0);
     }
 
     #[test]
@@ -8645,15 +8700,23 @@ mod tests {
         assert!(store
             .ranking_history
             .contains_key(&("10".to_string(), 1_700_000_000_000)));
-        // A restarted pid is a new generation and starts its own ring.
+        // A restarted pid is a new generation and starts its own ring, so it
+        // ranks zero until it has persisted for RANKING_MIN_SAMPLES.
         let mut restarted = sample("20", "B", 5.0);
         restarted.start_time_ms = 1_800_000_000_000;
         feed_processes(
             &mut store,
-            vec![sample("10", "A", 5.0), restarted],
+            vec![sample("10", "A", 5.0), restarted.clone()],
             12_000,
         );
-        assert_eq!(group_ranking_cpu(&store, "20"), 1.0);
+        assert_eq!(group_ranking_cpu(&store, "20"), 0.0);
+        feed_processes(
+            &mut store,
+            vec![sample("10", "A", 5.0), restarted.clone()],
+            13_000,
+        );
+        feed_processes(&mut store, vec![sample("10", "A", 5.0), restarted], 14_000);
+        assert_eq!(group_ranking_cpu(&store, "20"), 3.0);
     }
 
     #[test]
