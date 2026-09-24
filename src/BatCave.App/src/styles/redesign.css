@@ -3570,28 +3570,37 @@ button:disabled {
 }
 
 .current-activity {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+  display: block;
   border-block: 1px solid var(--border-soft);
   padding: 15px 0;
 }
 
-.current-activity span {
+.current-activity > span {
   color: var(--text-muted);
   font-size: var(--text-xs);
 }
 
 .current-activity h3 {
   margin: 5px 0 0;
+  /* Reserve two lines so an added clause never moves the history section. */
+  min-height: calc(2 * 1.45em);
   color: var(--text);
   font-size: var(--text-sm);
+  line-height: 1.45;
 }
 
 .current-activity small {
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+.activity-status-line {
+  display: block;
+  margin-top: 6px;
+}
+
+.status-caption {
+  color: var(--text-muted);
 }
 
 .insight-copy {

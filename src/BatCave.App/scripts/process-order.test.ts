@@ -9,8 +9,6 @@ import {
   selectedWorkloadDetail,
   shouldHoldProcessOrder,
   settleProcessRanking,
-  throttleProcessRanking,
-  EXPLORE_REORDER_INTERVAL_MS,
   advanceProcessRanking,
   rankingNearTie,
   ProcessInteraction,
@@ -419,37 +417,12 @@ test("held ranking still appends new incoming rows after ghosts", () => {
   assert.deepEqual([...held.exitedKeys], ["process:2:0"]);
 });
 
-test("throttleProcessRanking holds the order inside the reorder interval", () => {
+test("non-interacting updates adopt the incoming order every tick", () => {
+  // The backend order is already smoothed, so no throttle or settle applies here.
   const current = [row("1", 10), row("2", 9), row("3", 8)];
   const incoming = [row("3", 90), row("1", 9), row("2", 8)];
-  const settled = throttleProcessRanking(current, incoming, 2_000, 1_000);
-  assert.deepEqual(settled.rows.map(processViewRowKey), current.map(processViewRowKey));
-  // Values stay live: the held row is the fresh incoming object.
-  assert.equal(settled.rows[0], incoming[1]);
-  assert.equal(settled.settledAt, 1_000);
-});
-
-test("throttleProcessRanking reorders once the interval elapses", () => {
-  const current = [row("1", 10), row("2", 9), row("3", 8)];
-  const incoming = [row("3", 90), row("1", 9), row("2", 8)];
-  const settled = throttleProcessRanking(
-    current,
-    incoming,
-    1_000 + EXPLORE_REORDER_INTERVAL_MS,
-    1_000,
-  );
-  assert.deepEqual(settled.rows.map(processViewRowKey), incoming.map(processViewRowKey));
-  assert.equal(settled.settledAt, 6_000);
-});
-
-test("throttleProcessRanking inserts and removes rows without reordering", () => {
-  const current = [row("1", 10), row("2", 9), row("3", 8)];
-  const incoming = [row("3", 90), row("4", 50), row("1", 9)];
-  const settled = throttleProcessRanking(current, incoming, 2_000, 1_000);
-  assert.deepEqual(settled.rows.map(processViewRowKey), [
-    "process:1:0",
-    "process:4:0",
-    "process:3:0",
-  ]);
-  assert.equal(settled.settledAt, 1_000);
+  const adopted = advanceProcessRanking(current, incoming, false);
+  assert.deepEqual(adopted.rows, incoming);
+  assert.equal(adopted.updateAvailable, false);
+  assert.equal(adopted.exitedKeys.size, 0);
 });

@@ -1102,6 +1102,9 @@ struct RuntimeStore {
     // previous_processes changes (see set_previous_processes / rebuild_process_views).
     process_groups: Vec<ProcessAppGroup>,
     full_view_rows: Vec<ProcessViewRow>,
+    // Per-generation ring of recent values used only for ranking; displayed values
+    // stay instantaneous so transient processes cannot jump the list on one tick.
+    ranking_history: RankingHistory,
     system_history: Arc<Mutex<VecDeque<SystemHistoryPoint>>>,
     live_process_snapshot: bool,
     tick_p95: P95Window,
@@ -1332,7 +1335,7 @@ impl RuntimeStore {
         };
         let health_window = metric_window(settings.metric_window_seconds);
         let durable_query = settings.query.clone();
-        let process_groups = build_process_groups(&warm_cache.rows);
+        let process_groups = build_process_groups(&warm_cache.rows, &RankingHistory::new());
         let full_view_rows = emit_process_view(&process_groups, &full_view_query());
         let snapshot = build_snapshot(
             publication_seq,
@@ -1349,7 +1352,7 @@ impl RuntimeStore {
             &warm_cache.rows,
             &process_groups,
             &full_view_rows,
-            shape_rows(&warm_cache.rows, &settings.query),
+            shape_rows_with_history(&warm_cache.rows, &RankingHistory::new(), &settings.query),
             warnings.iter().cloned().collect(),
         );
 
@@ -1367,6 +1370,7 @@ impl RuntimeStore {
             previous_processes: warm_cache.rows,
             process_groups,
             full_view_rows,
+            ranking_history: RankingHistory::new(),
             system_history: Arc::new(Mutex::new(VecDeque::new())),
             live_process_snapshot: false,
             tick_p95: P95Window::new(health_window),
@@ -1567,6 +1571,7 @@ impl RuntimeStore {
             hold_process_rates(sample_processes)
         };
         add_process_memory_accounting(&mut system, &processes);
+        self.update_ranking_history(&processes);
         self.set_previous_processes(processes);
         self.live_process_snapshot = process_rows_fresh;
         self.previous_totals = Some(TelemetryTotals::from_system(&system, source_sample_ts_ms));
@@ -1575,7 +1580,8 @@ impl RuntimeStore {
         self.sampled_at_ms = Some(completed_at_ms);
 
         let sort_started = Instant::now();
-        let rows = shape_rows(&self.previous_processes, &self.settings.query);
+        let rows =
+            shape_rows_with_history(&self.previous_processes, &self.ranking_history, &self.settings.query);
         let sort_ms = sort_started.elapsed().as_secs_f64() * 1000.0;
         self.sort_p95.add(sort_ms);
 
@@ -1632,8 +1638,52 @@ impl RuntimeStore {
     }
 
     fn rebuild_process_views(&mut self) {
-        self.process_groups = build_process_groups(&self.previous_processes);
+        self.process_groups =
+            build_process_groups(&self.previous_processes, &self.ranking_history);
         self.full_view_rows = emit_process_view(&self.process_groups, &full_view_query());
+    }
+
+    // One entry per live generation; missing early samples count as zero so a
+    // first-seen process ranks by value/RANKING_WINDOW_SAMPLES, and generations
+    // absent from this sample are evicted.
+    fn update_ranking_history(&mut self, processes: &[ProcessSample]) {
+        let mut seen = HashSet::with_capacity(processes.len());
+        for process in processes {
+            let key = (process.pid.clone(), process.start_time_ms);
+            seen.insert(key.clone());
+            let ring = self.ranking_history.entry(key).or_default();
+            ring.cpu_percent.push_back(
+                if contributor_quality_is_publishable(cpu_quality(process)) {
+                    process.cpu_percent
+                } else {
+                    0.0
+                },
+            );
+            ring.io_bps.push_back(
+                if contributor_quality_is_publishable(io_quality(process)) {
+                    process_io_rate(process)
+                } else {
+                    0
+                },
+            );
+            ring.network_bps.push_back(
+                if contributor_quality_is_publishable(network_quality(process)) {
+                    process_network_rate(process)
+                } else {
+                    0
+                },
+            );
+            while ring.cpu_percent.len() > RANKING_WINDOW_SAMPLES {
+                ring.cpu_percent.pop_front();
+            }
+            while ring.io_bps.len() > RANKING_WINDOW_SAMPLES {
+                ring.io_bps.pop_front();
+            }
+            while ring.network_bps.len() > RANKING_WINDOW_SAMPLES {
+                ring.network_bps.pop_front();
+            }
+        }
+        self.ranking_history.retain(|key, _| seen.contains(key));
     }
 
     fn set_previous_processes(&mut self, processes: Vec<ProcessSample>) {
@@ -1660,6 +1710,7 @@ impl RuntimeStore {
             .flatten();
         if previous_binding != next_binding {
             self.previous_totals = None;
+            self.ranking_history.clear();
             self.set_previous_processes(Vec::new());
             self.live_process_snapshot = false;
         }
@@ -1690,7 +1741,8 @@ impl RuntimeStore {
 
         let app_metrics = current_app_metrics(&self.previous_processes);
         let health = self.build_health(0, app_metrics.cpu_percent, app_metrics.rss_bytes);
-        let rows = shape_rows(&self.previous_processes, &self.settings.query);
+        let rows =
+            shape_rows_with_history(&self.previous_processes, &self.ranking_history, &self.settings.query);
         self.snapshot = build_snapshot(
             self.publication_seq,
             self.clock.now_ms(),
@@ -2387,7 +2439,7 @@ fn build_snapshot(
         process_contributors: summarize_process_contributors(all_processes),
         processes,
         process_view_rows,
-        overview_rows: shape_overview_rows(full_view_rows),
+        overview_rows: shape_overview_rows(full_view_rows, &ranking_by_workload(process_groups)),
         total_process_count: all_processes.len(),
         warnings,
     };
@@ -2396,7 +2448,10 @@ fn build_snapshot(
 }
 
 // Operates on the already-shaped full view; rows are cloned only when selected.
-fn shape_overview_rows(rows: &[ProcessViewRow]) -> Vec<ProcessViewRow> {
+fn shape_overview_rows(
+    rows: &[ProcessViewRow],
+    ranking: &HashMap<String, ProcessRankingValues>,
+) -> Vec<ProcessViewRow> {
     let mut selected_keys = HashSet::new();
     let row_key = |row: &ProcessViewRow| match row {
         ProcessViewRow::Group { detail, .. } => detail.group_key.clone(),
@@ -2454,19 +2509,24 @@ fn shape_overview_rows(rows: &[ProcessViewRow]) -> Vec<ProcessViewRow> {
                 })
             })
             .collect::<Vec<_>>();
-        let value = |row: &ProcessViewRow| match row {
-            ProcessViewRow::Group { detail, .. } => match column {
-                SortColumn::CpuPct => detail.cpu_percent,
-                SortColumn::MemoryBytes => detail.memory_bytes as f64,
-                SortColumn::IoBps => detail.io_bps as f64,
-                _ => detail.network_bps as f64,
-            },
-            ProcessViewRow::Process { detail, .. } => match column {
-                SortColumn::CpuPct => detail.process.cpu_percent,
-                SortColumn::MemoryBytes => detail.process.memory_bytes as f64,
-                SortColumn::IoBps => detail.io_bps as f64,
-                _ => detail.network_bps as f64,
-            },
+        let value = |row: &ProcessViewRow| {
+            let smoothed = ranking.get(&row_workload_id(row));
+            match row {
+                ProcessViewRow::Group { detail, .. } => match column {
+                    SortColumn::CpuPct => smoothed.map_or(detail.cpu_percent, |v| v.cpu_percent),
+                    SortColumn::MemoryBytes => detail.memory_bytes as f64,
+                    SortColumn::IoBps => smoothed.map_or(detail.io_bps as f64, |v| v.io_bps as f64),
+                    _ => smoothed.map_or(detail.network_bps as f64, |v| v.network_bps as f64),
+                },
+                ProcessViewRow::Process { detail, .. } => match column {
+                    SortColumn::CpuPct => {
+                        smoothed.map_or(detail.process.cpu_percent, |v| v.cpu_percent)
+                    }
+                    SortColumn::MemoryBytes => detail.process.memory_bytes as f64,
+                    SortColumn::IoBps => smoothed.map_or(detail.io_bps as f64, |v| v.io_bps as f64),
+                    _ => smoothed.map_or(detail.network_bps as f64, |v| v.network_bps as f64),
+                },
+            }
         };
         ranked.sort_by(|left, right| {
             value(right)
@@ -2807,13 +2867,33 @@ fn derive_iokit_disk_rates(
     }
 }
 
+fn row_workload_id(row: &ProcessViewRow) -> String {
+    match row {
+        ProcessViewRow::Group { detail, .. } => detail.workload_id.clone(),
+        ProcessViewRow::Process { detail, .. } => detail.workload_id.clone(),
+    }
+}
+
+#[cfg(test)]
 fn shape_rows(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessSample> {
-    let mut rows = rank_processes(processes, query);
+    shape_rows_with_history(processes, &RankingHistory::new(), query)
+}
+
+fn shape_rows_with_history(
+    processes: &[ProcessSample],
+    history: &RankingHistory,
+    query: &RuntimeQuery,
+) -> Vec<ProcessSample> {
+    let mut rows = rank_processes(processes, history, query);
     rows.truncate(query.limit.max(1));
     rows
 }
 
-fn rank_processes(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessSample> {
+fn rank_processes(
+    processes: &[ProcessSample],
+    history: &RankingHistory,
+    query: &RuntimeQuery,
+) -> Vec<ProcessSample> {
     let needle = query.filter_text.trim().to_lowercase();
     let mut rows = processes
         .iter()
@@ -2827,7 +2907,15 @@ fn rank_processes(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<Proc
         .cloned()
         .collect::<Vec<_>>();
 
-    rows.sort_by(|left, right| compare_process(left, right, query));
+    rows.sort_by(|left, right| {
+        compare_process(
+            left,
+            &ranking_values_for(history, left),
+            right,
+            &ranking_values_for(history, right),
+            query,
+        )
+    });
     rows
 }
 
@@ -2835,6 +2923,51 @@ fn rank_processes(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<Proc
 struct ProcessIdentity {
     icon_kind: &'static str,
     category: &'static str,
+}
+
+const RANKING_WINDOW_SAMPLES: usize = 5;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ProcessRankingValues {
+    cpu_percent: f64,
+    io_bps: u64,
+    network_bps: u64,
+}
+
+#[derive(Debug, Default)]
+struct RankingRing {
+    cpu_percent: VecDeque<f64>,
+    io_bps: VecDeque<u64>,
+    network_bps: VecDeque<u64>,
+}
+
+type RankingHistory = HashMap<(String, u64), RankingRing>;
+
+fn ranking_values_for(history: &RankingHistory, process: &ProcessSample) -> ProcessRankingValues {
+    let Some(ring) = history.get(&(process.pid.clone(), process.start_time_ms)) else {
+        return ProcessRankingValues {
+            cpu_percent: process.cpu_percent,
+            io_bps: process_io_rate(process),
+            network_bps: process_network_rate(process),
+        };
+    };
+    let window = RANKING_WINDOW_SAMPLES as f64;
+    ProcessRankingValues {
+        cpu_percent: ring.cpu_percent.iter().sum::<f64>() / window,
+        io_bps: ring.io_bps.iter().sum::<u64>() / RANKING_WINDOW_SAMPLES as u64,
+        network_bps: ring.network_bps.iter().sum::<u64>() / RANKING_WINDOW_SAMPLES as u64,
+    }
+}
+
+fn ranking_by_workload(groups: &[ProcessAppGroup]) -> HashMap<String, ProcessRankingValues> {
+    let mut ranking = HashMap::new();
+    for group in groups {
+        ranking.insert(group_workload_id(&group.key), group.ranking);
+        for (index, process) in group.processes.iter().enumerate() {
+            ranking.insert(process_workload_id(process), group.member_ranking[index]);
+        }
+    }
+    ranking
 }
 
 #[derive(Debug, Clone)]
@@ -2850,11 +2983,22 @@ struct ProcessAppGroup {
     io_bps: u64,
     network_bps: u64,
     threads: u64,
+    // Sum of member smoothed values; parallel to `processes` for member ordering.
+    ranking: ProcessRankingValues,
+    member_ranking: Vec<ProcessRankingValues>,
 }
 
 #[cfg(test)]
 pub(crate) fn shape_full_process_view(processes: &[ProcessSample]) -> Vec<ProcessViewRow> {
-    emit_process_view(&build_process_groups(processes), &full_view_query())
+    shape_full_process_view_with_history(processes, &RankingHistory::new())
+}
+
+#[cfg(test)]
+fn shape_full_process_view_with_history(
+    processes: &[ProcessSample],
+    history: &RankingHistory,
+) -> Vec<ProcessViewRow> {
+    emit_process_view(&build_process_groups(processes, history), &full_view_query())
 }
 
 fn full_view_query() -> RuntimeQuery {
@@ -2877,11 +3021,23 @@ fn query_is_full_view(query: &RuntimeQuery, group_count: usize) -> bool {
 
 #[cfg(test)]
 fn shape_process_view(processes: &[ProcessSample], query: &RuntimeQuery) -> Vec<ProcessViewRow> {
-    emit_process_view(&build_process_groups(processes), query)
+    shape_process_view_with_history(processes, &RankingHistory::new(), query)
+}
+
+#[cfg(test)]
+fn shape_process_view_with_history(
+    processes: &[ProcessSample],
+    history: &RankingHistory,
+    query: &RuntimeQuery,
+) -> Vec<ProcessViewRow> {
+    emit_process_view(&build_process_groups(processes, history), query)
 }
 
 // Query-independent phase: workload membership plus group aggregation.
-fn build_process_groups(processes: &[ProcessSample]) -> Vec<ProcessAppGroup> {
+fn build_process_groups(
+    processes: &[ProcessSample],
+    history: &RankingHistory,
+) -> Vec<ProcessAppGroup> {
     let memberships = crate::workload_identity::workload_memberships(processes);
     let mut groups = Vec::<ProcessAppGroup>::new();
     let mut group_indexes = HashMap::<String, usize>::new();
@@ -2908,6 +3064,8 @@ fn build_process_groups(processes: &[ProcessSample]) -> Vec<ProcessAppGroup> {
                 io_bps: 0,
                 network_bps: 0,
                 threads: 0,
+                ranking: ProcessRankingValues::default(),
+                member_ranking: Vec::new(),
             });
             index
         };
@@ -2930,6 +3088,14 @@ fn build_process_groups(processes: &[ProcessSample]) -> Vec<ProcessAppGroup> {
         if group_metric_has_observed_value(process, GroupMetric::Threads) {
             group.threads = group.threads.saturating_add(process.threads as u64);
         }
+        let member_ranking = ranking_values_for(history, process);
+        group.ranking.cpu_percent += member_ranking.cpu_percent;
+        group.ranking.io_bps = group.ranking.io_bps.saturating_add(member_ranking.io_bps);
+        group.ranking.network_bps = group
+            .ranking
+            .network_bps
+            .saturating_add(member_ranking.network_bps);
+        group.member_ranking.push(member_ranking);
         group.processes.push(process.clone());
     }
 
@@ -2985,7 +3151,13 @@ fn emit_process_view(groups: &[ProcessAppGroup], query: &RuntimeQuery) -> Vec<Pr
 
         let mut member_order = (0..group.processes.len()).collect::<Vec<_>>();
         member_order.sort_by(|left, right| {
-            compare_process(&group.processes[*left], &group.processes[*right], query)
+            compare_process(
+                &group.processes[*left],
+                &group.member_ranking[*left],
+                &group.processes[*right],
+                &group.member_ranking[*right],
+                query,
+            )
         });
         for member_index in member_order {
             let process = &group.processes[member_index];
@@ -3224,25 +3396,28 @@ fn group_workload_id(group_key: &str) -> String {
     format!("group:{group_key}")
 }
 
-fn compare_process(left: &ProcessSample, right: &ProcessSample, query: &RuntimeQuery) -> Ordering {
+fn compare_process(
+    left: &ProcessSample,
+    left_ranking: &ProcessRankingValues,
+    right: &ProcessSample,
+    right_ranking: &ProcessRankingValues,
+    query: &RuntimeQuery,
+) -> Ordering {
     let ordering = match query.sort_column {
         SortColumn::Name => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
         SortColumn::Pid => numeric_pid(&left.pid).cmp(&numeric_pid(&right.pid)),
         SortColumn::MemoryBytes => left.memory_bytes.cmp(&right.memory_bytes),
-        SortColumn::IoBps => left
-            .io_read_bps
-            .saturating_add(left.io_write_bps)
-            .cmp(&right.io_read_bps.saturating_add(right.io_write_bps)),
-        SortColumn::NetworkBps => process_network_rate(left).cmp(&process_network_rate(right)),
+        SortColumn::IoBps => left_ranking.io_bps.cmp(&right_ranking.io_bps),
+        SortColumn::NetworkBps => left_ranking.network_bps.cmp(&right_ranking.network_bps),
         SortColumn::Threads => left.threads.cmp(&right.threads),
         SortColumn::Handles => left.handles.cmp(&right.handles),
         SortColumn::StartTimeMs => left.start_time_ms.cmp(&right.start_time_ms),
-        SortColumn::Attention => process_attention_score(left)
-            .partial_cmp(&process_attention_score(right))
+        SortColumn::Attention => process_attention_score(left, left_ranking)
+            .partial_cmp(&process_attention_score(right, right_ranking))
             .unwrap_or(Ordering::Equal),
-        SortColumn::CpuPct => left
+        SortColumn::CpuPct => left_ranking
             .cpu_percent
-            .partial_cmp(&right.cpu_percent)
+            .partial_cmp(&right_ranking.cpu_percent)
             .unwrap_or(Ordering::Equal),
     };
 
@@ -3270,10 +3445,8 @@ fn compare_process_group(
         SortColumn::MemoryBytes => {
             group_memory_sort_value(left).cmp(&group_memory_sort_value(right))
         }
-        SortColumn::IoBps => group_io_sort_value(left).cmp(&group_io_sort_value(right)),
-        SortColumn::NetworkBps => {
-            group_network_sort_value(left).cmp(&group_network_sort_value(right))
-        }
+        SortColumn::IoBps => left.ranking.io_bps.cmp(&right.ranking.io_bps),
+        SortColumn::NetworkBps => left.ranking.network_bps.cmp(&right.ranking.network_bps),
         SortColumn::Threads => group_threads_sort_value(left).cmp(&group_threads_sort_value(right)),
         SortColumn::Handles => left
             .presentation_process
@@ -3286,8 +3459,10 @@ fn compare_process_group(
         SortColumn::Attention => group_attention_score(left)
             .partial_cmp(&group_attention_score(right))
             .unwrap_or(Ordering::Equal),
-        SortColumn::CpuPct => group_cpu_sort_value(left)
-            .partial_cmp(&group_cpu_sort_value(right))
+        SortColumn::CpuPct => left
+            .ranking
+            .cpu_percent
+            .partial_cmp(&right.ranking.cpu_percent)
             .unwrap_or(Ordering::Equal),
     };
 
@@ -3309,36 +3484,12 @@ fn compare_process_group(
         })
 }
 
-fn group_cpu_sort_value(group: &ProcessAppGroup) -> f64 {
-    group
-        .processes
-        .first()
-        .filter(|_| group.processes.len() == 1)
-        .map_or(group.cpu_percent, |process| process.cpu_percent)
-}
-
 fn group_memory_sort_value(group: &ProcessAppGroup) -> u64 {
     group
         .processes
         .first()
         .filter(|_| group.processes.len() == 1)
         .map_or(group.memory_bytes, |process| process.memory_bytes)
-}
-
-fn group_io_sort_value(group: &ProcessAppGroup) -> u64 {
-    group
-        .processes
-        .first()
-        .filter(|_| group.processes.len() == 1)
-        .map_or(group.io_bps, process_io_rate)
-}
-
-fn group_network_sort_value(group: &ProcessAppGroup) -> u64 {
-    group
-        .processes
-        .first()
-        .filter(|_| group.processes.len() == 1)
-        .map_or(group.network_bps, process_network_rate)
 }
 
 fn group_threads_sort_value(group: &ProcessAppGroup) -> u64 {
@@ -4085,26 +4236,27 @@ fn push_startup_warning(
     }
 }
 
-fn process_attention_score(process: &ProcessSample) -> f64 {
-    let mut score = process.cpu_percent * 3.0;
+fn process_attention_score(process: &ProcessSample, ranking: &ProcessRankingValues) -> f64 {
+    let mut score = ranking.cpu_percent * 3.0;
     score += (process.memory_bytes as f64 / (128.0 * 1024.0 * 1024.0)).min(20.0);
-    let io_bps = process_io_rate(process);
-    score += (io_bps as f64 / (512.0 * 1024.0)).min(20.0);
-    let network_bps = process_network_rate(process);
-    score += (network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
+    score += (ranking.io_bps as f64 / (512.0 * 1024.0)).min(20.0);
+    score += (ranking.network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
 
     score
 }
 
 fn group_attention_score(group: &ProcessAppGroup) -> f64 {
-    if let [process] = group.processes.as_slice() {
-        return process_attention_score(process);
+    if let ([process], [ranking]) = (
+        group.processes.as_slice(),
+        group.member_ranking.as_slice(),
+    ) {
+        return process_attention_score(process, ranking);
     }
 
-    let mut score = group.cpu_percent * 3.0;
+    let mut score = group.ranking.cpu_percent * 3.0;
     score += (group.memory_bytes as f64 / (128.0 * 1024.0 * 1024.0)).min(20.0);
-    score += (group.io_bps as f64 / (512.0 * 1024.0)).min(20.0);
-    score += (group.network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
+    score += (group.ranking.io_bps as f64 / (512.0 * 1024.0)).min(20.0);
+    score += (group.ranking.network_bps as f64 / (1024.0 * 1024.0)).min(20.0);
 
     score
 }
@@ -5249,8 +5401,8 @@ mod tests {
             None,
             empty_system(),
             &all_processes,
-            &build_process_groups(&all_processes),
-            &emit_process_view(&build_process_groups(&all_processes), &full_view_query()),
+            &build_process_groups(&all_processes, &RankingHistory::new()),
+            &emit_process_view(&build_process_groups(&all_processes, &RankingHistory::new()), &full_view_query()),
             visible_processes,
             Vec::new(),
         );
@@ -5523,8 +5675,8 @@ mod tests {
             None,
             empty_system(),
             &all_processes,
-            &build_process_groups(&all_processes),
-            &emit_process_view(&build_process_groups(&all_processes), &full_view_query()),
+            &build_process_groups(&all_processes, &RankingHistory::new()),
+            &emit_process_view(&build_process_groups(&all_processes, &RankingHistory::new()), &full_view_query()),
             visible_processes,
             Vec::new(),
         );
@@ -6867,7 +7019,7 @@ mod tests {
         let busy = sample("20", "Busy", 5.0);
 
         assert!(
-            process_attention_score(&denied) < process_attention_score(&busy),
+            attention_score_of(&denied) < attention_score_of(&busy),
             "a denied idle process must not outrank real activity"
         );
     }
@@ -6879,7 +7031,7 @@ mod tests {
         network_busy.network_received_bps = Some(8 * 1024 * 1024);
         network_busy.network_transmitted_bps = Some(2 * 1024 * 1024);
 
-        assert!(process_attention_score(&network_busy) > process_attention_score(&quiet));
+        assert!(attention_score_of(&network_busy) > attention_score_of(&quiet));
     }
 
     #[test]
@@ -7163,8 +7315,8 @@ mod tests {
             Some(store.persistence.health()),
             empty_system(),
             &all_processes,
-            &build_process_groups(&all_processes),
-            &emit_process_view(&build_process_groups(&all_processes), &full_view_query()),
+            &build_process_groups(&all_processes, &RankingHistory::new()),
+            &emit_process_view(&build_process_groups(&all_processes, &RankingHistory::new()), &full_view_query()),
             vec![trusted],
             Vec::new(),
         );
@@ -8267,7 +8419,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         processes.push(sample("6", "measured", 1.0));
-        let rows = shape_overview_rows(&shape_full_process_view(&processes));
+        let rows = overview_rows_ranked(&processes, &RankingHistory::new());
         assert!(rows.iter().any(
             |row| matches!(row, ProcessViewRow::Process { detail, .. } if detail.process.pid == "6")
         ));
@@ -8308,6 +8460,9 @@ mod tests {
         processes.push(sample("302", "worker", 42.0));
 
         let mut store = RuntimeStore::new();
+        // One recorded sample per generation, so the cached views sort by the
+        // smoothed ranking values the references below reproduce.
+        store.update_ranking_history(&processes);
         store.set_previous_processes(processes.clone());
 
         let focus_modes = [
@@ -8365,14 +8520,19 @@ mod tests {
                             let context = format!("query {query:?}");
                             assert_eq!(
                                 serde_json::to_value(&snapshot.process_view_rows).unwrap(),
-                                serde_json::to_value(shape_process_view(&processes, &query))
-                                    .unwrap(),
+                                serde_json::to_value(shape_process_view_with_history(
+                                    &processes,
+                                    &store.ranking_history,
+                                    &query
+                                ))
+                                .unwrap(),
                                 "process_view_rows diverged for {context}"
                             );
                             assert_eq!(
                                 serde_json::to_value(&snapshot.overview_rows).unwrap(),
-                                serde_json::to_value(shape_overview_rows(
-                                    &shape_full_process_view(&processes)
+                                serde_json::to_value(overview_rows_ranked(
+                                    &processes,
+                                    &store.ranking_history
                                 ))
                                 .unwrap(),
                                 "overview_rows diverged for {context}"
@@ -8382,6 +8542,152 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn attention_score_of(process: &ProcessSample) -> f64 {
+        process_attention_score(process, &ranking_values_for(&RankingHistory::new(), process))
+    }
+
+    fn overview_rows_ranked(
+        processes: &[ProcessSample],
+        history: &RankingHistory,
+    ) -> Vec<ProcessViewRow> {
+        let groups = build_process_groups(processes, history);
+        shape_overview_rows(
+            &emit_process_view(&groups, &full_view_query()),
+            &ranking_by_workload(&groups),
+        )
+    }
+
+    fn feed_processes(store: &mut RuntimeStore, processes: Vec<ProcessSample>, ts_ms: u64) {
+        store.apply_raw_sample(
+            crate::telemetry::TelemetrySample {
+                latency_ms: 0,
+                collector_state: RuntimeCollectorState::Healthy,
+                system: empty_system(),
+                processes,
+                warnings: Vec::new(),
+                collector_service: None,
+                source_provenance: None,
+                standard_fallback_process_etw_disabled: false,
+            },
+            0.0,
+            ts_ms,
+        );
+    }
+
+    fn group_ranking_cpu(store: &RuntimeStore, pid: &str) -> f64 {
+        store
+            .process_groups
+            .iter()
+            .find(|group| group.presentation_process.pid == pid)
+            .map(|group| group.ranking.cpu_percent)
+            .expect("group for pid")
+    }
+
+    #[test]
+    fn steady_process_outranks_a_transient_first_sample() {
+        let base_dir = runtime_test_dir("ranking-steady-vs-transient");
+        let mut store = RuntimeStore::from_base_dir(base_dir);
+        for tick in 0..RANKING_WINDOW_SAMPLES as u64 {
+            feed_processes(
+                &mut store,
+                vec![sample("10", "Steady", 20.0)],
+                10_000 + tick * 1_000,
+            );
+        }
+        feed_processes(
+            &mut store,
+            vec![sample("10", "Steady", 20.0), sample("20", "Spike", 13.0)],
+            20_000,
+        );
+
+        assert_eq!(group_ranking_cpu(&store, "10"), 20.0);
+        assert_eq!(group_ranking_cpu(&store, "20"), 13.0 / 5.0);
+        let names = store
+            .snapshot
+            .processes
+            .iter()
+            .map(|process| process.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Steady", "Spike"]);
+    }
+
+    #[test]
+    fn ranking_uses_the_five_sample_average() {
+        let base_dir = runtime_test_dir("ranking-window-average");
+        let mut store = RuntimeStore::from_base_dir(base_dir);
+        for (tick, cpu) in [10.0_f64, 20.0, 30.0, 40.0, 50.0].iter().enumerate() {
+            feed_processes(
+                &mut store,
+                vec![sample("10", "Worker", *cpu)],
+                10_000 + tick as u64 * 1_000,
+            );
+        }
+        assert_eq!(group_ranking_cpu(&store, "10"), 30.0);
+        // A sixth sample evicts the oldest value.
+        feed_processes(&mut store, vec![sample("10", "Worker", 0.0)], 20_000);
+        assert_eq!(group_ranking_cpu(&store, "10"), 28.0);
+    }
+
+    #[test]
+    fn vanished_generations_are_evicted_from_ranking_history() {
+        let base_dir = runtime_test_dir("ranking-evict");
+        let mut store = RuntimeStore::from_base_dir(base_dir);
+        feed_processes(
+            &mut store,
+            vec![sample("10", "A", 5.0), sample("20", "B", 5.0)],
+            10_000,
+        );
+        assert_eq!(store.ranking_history.len(), 2);
+        feed_processes(&mut store, vec![sample("10", "A", 5.0)], 11_000);
+        assert_eq!(store.ranking_history.len(), 1);
+        assert!(store
+            .ranking_history
+            .contains_key(&("10".to_string(), 1_700_000_000_000)));
+        // A restarted pid is a new generation and starts its own ring.
+        let mut restarted = sample("20", "B", 5.0);
+        restarted.start_time_ms = 1_800_000_000_000;
+        feed_processes(
+            &mut store,
+            vec![sample("10", "A", 5.0), restarted],
+            12_000,
+        );
+        assert_eq!(group_ranking_cpu(&store, "20"), 1.0);
+    }
+
+    #[test]
+    fn group_ranking_sums_member_smoothed_values() {
+        let base_dir = runtime_test_dir("ranking-group-sum");
+        let mut store = RuntimeStore::from_base_dir(base_dir);
+        let parent = || {
+            let mut process = sample("100", "app", 20.0);
+            process.exe = "/opt/app/app".to_string();
+            process
+        };
+        let child = |cpu: f64| {
+            let mut process = sample("101", "app", cpu);
+            process.parent_pid = Some("100".to_string());
+            process.exe = "/opt/app/app".to_string();
+            process.start_time_ms = 1_700_000_001_000;
+            process
+        };
+        for tick in 0..RANKING_WINDOW_SAMPLES as u64 {
+            feed_processes(
+                &mut store,
+                vec![parent(), child(10.0)],
+                10_000 + tick * 1_000,
+            );
+        }
+        // Parent ranks at 20 after a full window; the child spikes to 90 on its
+        // sixth sample and contributes (10*4 + 90)/5 = 26 to the group ranking.
+        feed_processes(&mut store, vec![parent(), child(90.0)], 20_000);
+        let group = store
+            .process_groups
+            .iter()
+            .find(|group| group.processes.len() > 1)
+            .expect("grouped app");
+        assert_eq!(group.ranking.cpu_percent, 46.0);
     }
 
     fn sample(pid: &str, name: &str, cpu: f64) -> ProcessSample {

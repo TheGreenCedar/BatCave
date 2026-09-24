@@ -111,6 +111,16 @@ export const sortOptions: SortOption[] = [
   { value: "name", label: "Name", description: "Alphabetical by workload name" },
 ];
 
+/**
+ * Ranking sorts by a 5-sample moving average computed in the runtime; the
+ * displayed cell values remain the latest sample.
+ */
+export function rankingWindowNote(sampleIntervalMs: number): string {
+  return sampleIntervalMs === 1000
+    ? "Sorted by the last 5 seconds' average; values show the latest sample."
+    : "Sorted by an average of the last 5 samples; values show the latest sample.";
+}
+
 export const processColumns: ProcessColumn[] = [
   { key: "name", label: "Workload", description: "App or process name" },
   { key: "attention", label: "Status" },
@@ -581,42 +591,6 @@ export function settleProcessRanking(
     }
   }
   return { rows, settledAt: lastSettledAt };
-}
-
-export const EXPLORE_REORDER_INTERVAL_MS = 5_000;
-
-/**
- * Reorders rows at most once per interval. Between reorders the current order
- * is kept with fresh row objects: values stay live, new rows insert at their
- * incoming position, and vanished rows drop out.
- */
-export function throttleProcessRanking(
-  current: ProcessViewRow[],
-  incoming: ProcessViewRow[],
-  now: number,
-  lastReorderedAt: number,
-  intervalMs = EXPLORE_REORDER_INTERVAL_MS,
-): RankingSettle {
-  if (current.length === 0 || now - lastReorderedAt >= intervalMs) {
-    return { rows: incoming, settledAt: now };
-  }
-  const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row]));
-  const currentKeys = new Set(current.map(processViewRowKey));
-  const survivors = current.flatMap((row) => {
-    const next = incomingByKey.get(processViewRowKey(row));
-    return next ? [next] : [];
-  });
-  if (survivors.length === 0) {
-    return { rows: incoming, settledAt: now };
-  }
-  const rows = [...survivors];
-  for (let index = 0; index < incoming.length; index += 1) {
-    const row = incoming[index];
-    if (!currentKeys.has(processViewRowKey(row))) {
-      rows.splice(Math.min(index, rows.length), 0, row);
-    }
-  }
-  return { rows, settledAt: lastReorderedAt };
 }
 
 /** Two ranked values count as a near-tie within an absolute floor or 15% of the larger value. */

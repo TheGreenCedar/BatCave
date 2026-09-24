@@ -111,15 +111,12 @@
     </div>
 
     <section class="current-activity" aria-labelledby="current-activity-title">
-      <div>
-        <span>{current ? "Current activity" : "Last recorded activity"}</span>
-        <h3 id="current-activity-title">{processActivitySummary(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess), presentation.platformName)}</h3>
-      </div>
-      <div>
-        <span class="status-caption">Status</span>
-        <small>{processStatusLabel(selectedProcess.status)}</small>
-      </div>
+      <span>{current ? "Current activity" : "Last recorded activity"}</span>
+      <h3 id="current-activity-title">{processActivitySummary(selectedProcess, processReadWriteIoRate(), processNetworkRate(selectedProcess), presentation.platformName)}</h3>
+      <small class="activity-status-line"><span class="status-caption">Status</span> {processStatusLabel(selectedProcess.status)}</small>
     </section>
+
+    {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
     {#if hasNotableFinding(selectedProcess)}
       <div class="insight-block">
@@ -129,8 +126,6 @@
         {/if}
       </div>
     {/if}
-
-    {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
 <details class="technical-disclosure inspector-technical">
       <summary>Technical details</summary>

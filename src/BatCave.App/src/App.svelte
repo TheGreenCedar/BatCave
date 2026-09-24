@@ -87,8 +87,7 @@
     sortKeyForColumn,
     sortOptions,
     shouldHoldProcessOrder,
-    throttleProcessRanking,
-    EXPLORE_REORDER_INTERVAL_MS,
+    rankingWindowNote,
     type FocusMode,
     type SortKey,
   } from "./lib/process";
@@ -258,7 +257,6 @@
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
-  let rankingSettledAt = 0;
   let runtimeQueryRequestSeq = 0;
   let runtimeCadenceRequestSeq = 0;
   let pendingCadenceRequestSeq = 0;
@@ -335,11 +333,20 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
+  $: rankingNote = rankingWindowNote(snapshot.settings.sample_interval_ms);
   $: visibleProcessColumns = processColumns
     .filter((column) => column.key !== "attention")
-    .map((column) =>
-      column.key === "memory" ? { ...column, description: presentation.memoryLabel } : column,
-    );
+    .map((column) => {
+      const base =
+        column.key === "memory" ? presentation.memoryLabel : (column.description ?? "");
+      const smoothed = column.key === "cpu" || column.key === "io" || column.key === "network";
+      return { ...column, description: smoothed ? `${base} ${rankingNote}` : base };
+    });
+  $: rankedSortOptions = sortOptions.map((option) =>
+    option.value === "cpu" || option.value === "io" || option.value === "network"
+      ? { ...option, description: `${option.description} ${rankingNote}` }
+      : option,
+  );
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
@@ -1821,17 +1828,8 @@
       rankingUpdateAvailable = ranking.updateAvailable;
       pendingProcessRows = incoming;
     } else {
-      const settled = forceRankingRefresh
-        ? { rows: incoming, settledAt: Date.now() }
-        : throttleProcessRanking(
-            displayProcessRows,
-            incoming,
-            Date.now(),
-            rankingSettledAt,
-            EXPLORE_REORDER_INTERVAL_MS,
-          );
-      displayProcessRows = settled.rows;
-      rankingSettledAt = settled.settledAt;
+      // Not interacting: adopt the incoming (backend-smoothed) order every tick.
+      displayProcessRows = incoming;
       rankingUpdateAvailable = false;
       pendingProcessRows = null;
       exitedRowKeys = new Set();
@@ -1846,7 +1844,6 @@
   function applyPendingRanking(): void {
     if (pendingProcessRows !== null) {
       displayProcessRows = pendingProcessRows;
-      rankingSettledAt = Date.now();
     }
     pendingProcessRows = null;
     rankingUpdateAvailable = false;
@@ -2119,7 +2116,7 @@
           commandError={commandErrorSurface === "workload" ? commandError : ""}
           {rankingUpdateAvailable}
           {focusOptions}
-          {sortOptions}
+          sortOptions={rankedSortOptions}
           mutationsDisabled={protocolMismatch !== null}
           onFocus={setFocusMode}
           onSort={setSortKey}

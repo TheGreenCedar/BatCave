@@ -61,17 +61,15 @@
   </div>
 
   <section class="current-activity" aria-labelledby="group-current-activity-title">
-    <div>
-      <span>{current ? "Current activity" : "Last recorded activity"}</span>
-      <h3 id="group-current-activity-title">{groupActivitySummary(detail)}</h3>
-    </div>
+    <span>{current ? "Current activity" : "Last recorded activity"}</span>
+    <h3 id="group-current-activity-title">{groupActivitySummary(detail)}</h3>
   </section>
+
+  {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
   {#if hasNotableActivity()}
     <p class="insight-copy"><strong>Worth noting:</strong> {groupFindingLabel(detail)}</p>
   {/if}
-
-  {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
   {#if copyStatus}
     <p

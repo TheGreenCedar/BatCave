@@ -139,9 +139,9 @@
     >
   </div>
   <p class="history-hint">Select a row to expand.</p>
-  {#if historyTruncated}<p class="history-limit">
-      Earlier samples are outside this retained window.
-    </p>{/if}
+  <p class="history-limit" aria-hidden={!historyTruncated}>
+    {historyTruncated ? "Earlier samples are outside this retained window." : " "}
+  </p>
   {#each metrics as metric (metric.key)}
     {@const stroke = strokeFor(activeTheme, metric.key)}
     {@const ceiling = ceilingFor(points, metric.key)}
