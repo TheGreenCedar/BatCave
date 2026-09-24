@@ -37,12 +37,12 @@ use crate::{
         RuntimeHealthReason, RuntimePersistence, RuntimePersistenceState, RuntimePlatform,
         RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeQuery, RuntimeSettings,
         RuntimeSnapshot, RuntimeUiPreferences, RuntimeWarning, SortColumn, SortDirection,
-        SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
+        SystemHistoryPoint, SystemMemoryAccounting, SystemMetricsSnapshot, WarmCache,
     },
     persistence::{
         DiagnosticWriteOutcome, JsonMigration, RuntimePersistenceCoordinator, UserStorageComponent,
     },
-    runtime_health::evaluate_snapshot_health,
+    runtime_health::{evaluate_snapshot_health, evaluated_health},
     runtime_provenance::RuntimeProvenance,
     telemetry::{now_ms, TelemetrySampleProvenance},
 };
@@ -53,6 +53,8 @@ const SETTINGS_FILE: &str = "settings.json";
 const WARM_CACHE_FILE: &str = "warm-cache.json";
 const MAX_WARNINGS: usize = 16;
 const WARM_CACHE_WRITE_INTERVAL_TICKS: u64 = 60;
+/// Matches the largest historyPointOptions value the frontend can request.
+const SYSTEM_HISTORY_CAPACITY: usize = 360;
 const APP_CPU_DEGRADE_PCT: f64 = 25.0;
 const APP_RSS_DEGRADE_BYTES: u64 = 350 * 1024 * 1024;
 const ATTENTION_CPU_PERCENT: f64 = 10.0;
@@ -71,6 +73,7 @@ type SnapshotReply = mpsc::Sender<Result<Arc<RuntimeSnapshot>, String>>;
 
 struct PublishedRuntime {
     workload_archive: Arc<Mutex<crate::workload_history::WorkloadArchive>>,
+    system_history: Arc<Mutex<VecDeque<SystemHistoryPoint>>>,
     snapshot: Arc<RuntimeSnapshot>,
     process_exe_authoritative: bool,
 }
@@ -192,6 +195,7 @@ impl RuntimeState {
             workload_archive: Arc::new(Mutex::new(
                 crate::workload_history::WorkloadArchive::default(),
             )),
+            system_history: Arc::clone(&store.system_history),
             process_exe_authoritative: store.live_process_snapshot,
         }));
         let refresh_gate = Arc::new(RefreshGate::default());
@@ -261,6 +265,24 @@ impl RuntimeState {
 
     pub fn snapshot(&self) -> Result<RuntimeSnapshot, String> {
         self.published_snapshot()
+    }
+
+    pub fn system_history(&self, after_sample_seq: u64) -> Result<Vec<SystemHistoryPoint>, String> {
+        let history = {
+            let published = self
+                .published
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(&published.system_history)
+        };
+        let history = history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(history
+            .iter()
+            .filter(|point| point.sample_seq > after_sample_seq)
+            .cloned()
+            .collect())
     }
 
     pub fn workload_inspection(
@@ -462,17 +484,23 @@ impl RuntimeState {
         Ok(snapshot)
     }
 
-    /// Same semantics as `published_snapshot`, but shared: the health evaluation is
-    /// applied to the stored snapshot in place (cloning only if it is shared), so
-    /// hot read paths do not deep-clone the process table.
+    /// Shared read of the published snapshot. Freshness is evaluated by the caller
+    /// (see `published_snapshot_envelope`); the stored snapshot is never mutated.
     pub fn published_snapshot_arc(&self) -> Result<Arc<RuntimeSnapshot>, String> {
-        let mut published = self
+        let published = self
             .published
-            .write()
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let snapshot = Arc::make_mut(&mut published.snapshot);
-        evaluate_snapshot_health(snapshot, self.clock.now_ms());
         Ok(Arc::clone(&published.snapshot))
+    }
+
+    /// Same wire output as `encode_snapshot(published_snapshot())`: read-time health
+    /// is evaluated at the runtime clock, without cloning the snapshot.
+    pub fn published_snapshot_envelope(&self) -> Result<crate::protocol::ProtocolEnvelope, String> {
+        let snapshot = self.published_snapshot_arc()?;
+        let evaluated_at_ms = self.clock.now_ms();
+        let health = evaluated_health(&snapshot, evaluated_at_ms);
+        crate::protocol::encode_snapshot_ref_with_health(&snapshot, health, evaluated_at_ms)
     }
 }
 
@@ -1072,6 +1100,7 @@ struct RuntimeStore {
     // previous_processes changes (see set_previous_processes / rebuild_process_views).
     process_groups: Vec<ProcessAppGroup>,
     full_view_rows: Vec<ProcessViewRow>,
+    system_history: Arc<Mutex<VecDeque<SystemHistoryPoint>>>,
     live_process_snapshot: bool,
     tick_p95: P95Window,
     sort_p95: P95Window,
@@ -1336,6 +1365,7 @@ impl RuntimeStore {
             previous_processes: warm_cache.rows,
             process_groups,
             full_view_rows,
+            system_history: Arc::new(Mutex::new(VecDeque::new())),
             live_process_snapshot: false,
             tick_p95: P95Window::new(health_window),
             sort_p95: P95Window::new(health_window),
@@ -1563,6 +1593,20 @@ impl RuntimeStore {
             app_metrics.cpu_percent,
             app_metrics.rss_bytes,
         );
+        {
+            let mut history = self
+                .system_history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.push_back(SystemHistoryPoint {
+                sample_seq: self.sample_seq,
+                sampled_at_ms: completed_at_ms,
+                system: system.clone(),
+            });
+            while history.len() > SYSTEM_HISTORY_CAPACITY {
+                history.pop_front();
+            }
+        }
         self.snapshot = build_snapshot(
             self.publication_seq,
             self.clock.now_ms(),
@@ -4366,6 +4410,91 @@ mod tests {
     }
 
     #[test]
+    fn system_history_ring_retains_latest_points_and_filters_after_seq() {
+        let (collector, _) =
+            FakeCollector::new((0..SYSTEM_HISTORY_CAPACITY + 2).map(|_| FakeOutcome::Sample));
+        let (state, base_dir) = state_with_collector("system-history-ring", collector, false);
+        for _ in 0..SYSTEM_HISTORY_CAPACITY + 2 {
+            state.refresh_now().unwrap();
+        }
+
+        let all = state.system_history(0).unwrap();
+        assert_eq!(all.len(), SYSTEM_HISTORY_CAPACITY);
+        assert_eq!(all.first().unwrap().sample_seq, 3);
+        assert_eq!(
+            all.last().unwrap().sample_seq,
+            (SYSTEM_HISTORY_CAPACITY + 2) as u64
+        );
+        assert!(all
+            .windows(2)
+            .all(|pair| pair[0].sample_seq < pair[1].sample_seq));
+        assert_eq!(
+            serde_json::to_value(&all.last().unwrap().system).unwrap(),
+            serde_json::to_value(state.snapshot().unwrap().system).unwrap(),
+            "the ring stores the exact system value published in the snapshot"
+        );
+
+        let filtered = state
+            .system_history((SYSTEM_HISTORY_CAPACITY - 1) as u64)
+            .unwrap();
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|point| point.sample_seq)
+                .collect::<Vec<_>>(),
+            vec![
+                SYSTEM_HISTORY_CAPACITY as u64,
+                (SYSTEM_HISTORY_CAPACITY + 1) as u64,
+                (SYSTEM_HISTORY_CAPACITY + 2) as u64,
+            ]
+        );
+        assert!(state.system_history(999).unwrap().is_empty());
+
+        state.shutdown().unwrap();
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn unchanged_source_does_not_push_system_history() {
+        let base_dir = runtime_test_dir("system-history-unchanged");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let service_sample = |source_sample_seq, sampled_at_ms| crate::telemetry::TelemetrySample {
+            latency_ms: 0,
+            collector_state: RuntimeCollectorState::Healthy,
+            system: empty_system(),
+            processes: Vec::new(),
+            warnings: Vec::new(),
+            collector_service: None,
+            source_provenance: Some(crate::telemetry::TelemetrySampleProvenance {
+                source_instance_id: "service-instance-1".to_string(),
+                source_sample_seq,
+                sampled_at_ms,
+            }),
+            standard_fallback_process_etw_disabled: false,
+        };
+
+        store.apply_raw_sample(service_sample(1, 10_000), 0.0, 10_000);
+        store.apply_raw_sample(service_sample(1, 10_000), 0.0, 10_500);
+        {
+            let history = store.system_history.lock().unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].sample_seq, 1);
+            assert_eq!(history[0].sampled_at_ms, 10_000);
+            assert_eq!(
+                serde_json::to_value(&history[0].system).unwrap(),
+                serde_json::to_value(&store.snapshot.system).unwrap()
+            );
+        }
+
+        store.apply_raw_sample(service_sample(2, 11_000), 0.0, 11_000);
+        let history = store.system_history.lock().unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].sample_seq, 2);
+        drop(history);
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
     fn inspection_rechecks_publication_after_waiting_without_blocking_snapshot_readers() {
         let snapshot = crate::protocol::test_runtime_snapshot();
         let archive = Arc::new(Mutex::new(
@@ -4388,6 +4517,7 @@ mod tests {
             snapshot: Arc::new(snapshot.clone()),
             process_exe_authoritative: true,
             workload_archive: Arc::clone(&archive),
+            system_history: Arc::new(Mutex::new(VecDeque::new())),
         }));
         let mut held_archive = archive.lock().unwrap();
         let waiter_published = Arc::clone(&published);
@@ -4435,6 +4565,7 @@ mod tests {
             workload_archive: Arc::new(Mutex::new(
                 crate::workload_history::WorkloadArchive::default(),
             )),
+            system_history: Arc::clone(&store.system_history),
             process_exe_authoritative: false,
         }));
         let mut last_collector_revision = 0;

@@ -3,7 +3,9 @@ pub(crate) mod encode;
 pub(crate) mod types;
 mod validate;
 
-pub use encode::{encode_snapshot, encode_snapshot_ref};
+#[cfg(test)]
+pub(crate) use encode::encode_snapshot_ref;
+pub use encode::{encode_snapshot, encode_snapshot_ref_with_health};
 pub(crate) use types::RuntimeReleaseIdentityV4;
 pub use types::{
     ProcessFocusModeV4, ProtocolEnvelope, RuntimeQueryInputV4, RuntimeUiPreferencesV4,
@@ -108,6 +110,21 @@ mod tests {
                 .expect("ref envelope serializes"),
                 serde_json::to_value(encode_snapshot(snapshot.clone()).expect("owned encode"))
                     .expect("owned envelope serializes"),
+            );
+
+            // The read path evaluates freshness at the runtime clock without
+            // mutating the published snapshot; it must match the old
+            // clone-evaluate-encode flow, including once the sample is stale.
+            let now = snapshot.published_at_ms + 30_000;
+            let health = crate::runtime_health::evaluated_health(&snapshot, now);
+            let via_ref = super::encode::encode_snapshot_ref_with_health(&snapshot, health, now)
+                .expect("ref+health encode");
+            let mut owned = snapshot.clone();
+            crate::runtime_health::evaluate_snapshot_health(&mut owned, now);
+            let via_owned = encode_snapshot(owned).expect("owned encode after eval");
+            assert_eq!(
+                serde_json::to_value(via_ref).unwrap(),
+                serde_json::to_value(via_owned).unwrap()
             );
         }
     }

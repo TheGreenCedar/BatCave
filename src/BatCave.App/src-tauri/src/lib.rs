@@ -93,8 +93,15 @@ fn run_cli(args: &[String]) -> Option<i32> {
 
 #[tauri::command(async)]
 fn get_snapshot(state: tauri::State<'_, RuntimeState>) -> Result<ProtocolEnvelope, String> {
-    let snapshot = state.published_snapshot_arc()?;
-    protocol::encode_snapshot_ref(&snapshot)
+    state.published_snapshot_envelope()
+}
+
+#[tauri::command(async)]
+fn get_system_history(
+    state: tauri::State<'_, RuntimeState>,
+    after_sample_seq: u64,
+) -> Result<Vec<crate::contracts::SystemHistoryPoint>, String> {
+    state.system_history(after_sample_seq)
 }
 
 #[tauri::command(async)]
@@ -344,6 +351,7 @@ pub fn run() -> Result<(), String> {
         })
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
+            get_system_history,
             get_workload_inspection,
             acknowledge_workload_inspection,
             desktop_probe_enabled,

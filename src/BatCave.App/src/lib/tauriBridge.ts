@@ -1,5 +1,11 @@
 import type { RuntimeQueryInputV4, RuntimeUiPreferencesV4 } from "./generated/runtime-protocol-v4";
-import type { RuntimeSnapshot } from "./types";
+import type {
+  MetricQuality,
+  RuntimeSnapshot,
+  SystemHistoryPoint,
+  SystemMemoryAccounting,
+  SystemMetricsSnapshot,
+} from "./types";
 import type { ResolvedThemeName } from "./themes";
 import {
   defaultNarrativeCapability,
@@ -265,6 +271,187 @@ export async function cancelNarrativeModelDownload(
   invoke: RuntimeInvoke,
 ): Promise<NarrativeCapability> {
   return decodeNarrativeCapability(await invoke<unknown>("cancel_narrative_model_download"));
+}
+
+export async function readSystemHistory(
+  invoke: RuntimeInvoke,
+  afterSampleSeq: number,
+): Promise<SystemHistoryPoint[]> {
+  const value = await invoke<unknown>("get_system_history", { afterSampleSeq });
+  return decodeSystemHistoryPoints(value);
+}
+
+export function decodeSystemHistoryPoints(value: unknown): SystemHistoryPoint[] {
+  if (!Array.isArray(value)) {
+    throw new Error("System history response was not recognized.");
+  }
+  return value.map(decodeSystemHistoryPoint);
+}
+
+const METRIC_QUALITIES: readonly MetricQuality[] = [
+  "native",
+  "estimated",
+  "held",
+  "partial",
+  "unavailable",
+];
+
+const SYSTEM_NUMBER_FIELDS = [
+  "cpu_percent",
+  "kernel_cpu_percent",
+  "memory_used_bytes",
+  "memory_total_bytes",
+  "process_count",
+  "disk_read_total_bytes",
+  "disk_write_total_bytes",
+  "disk_read_bps",
+  "disk_write_bps",
+  "network_received_total_bytes",
+  "network_transmitted_total_bytes",
+  "network_received_bps",
+  "network_transmitted_bps",
+] as const;
+
+const SYSTEM_OPTIONAL_NUMBER_FIELDS = [
+  "memory_available_bytes",
+  "swap_used_bytes",
+  "swap_total_bytes",
+] as const;
+
+const ACCOUNTING_REQUIRED_FIELDS = [
+  "process_working_set_bytes",
+  "process_private_bytes",
+  "denied_process_count",
+  "partial_process_count",
+] as const;
+
+const ACCOUNTING_OPTIONAL_FIELDS = [
+  "commit_used_bytes",
+  "commit_limit_bytes",
+  "system_cache_bytes",
+  "kernel_total_bytes",
+  "kernel_paged_pool_bytes",
+  "kernel_nonpaged_pool_bytes",
+] as const;
+
+function decodeSystemHistoryPoint(value: unknown): SystemHistoryPoint {
+  if (
+    !isRecord(value) ||
+    !isFiniteNumber(value.sample_seq) ||
+    !isFiniteNumber(value.sampled_at_ms)
+  ) {
+    throw new Error("System history point was not recognized.");
+  }
+  return {
+    sample_seq: value.sample_seq,
+    sampled_at_ms: value.sampled_at_ms,
+    system: decodeSystemMetrics(value.system),
+  };
+}
+
+function decodeSystemMetrics(value: unknown): SystemMetricsSnapshot {
+  if (!isRecord(value)) {
+    throw new Error("System history metrics were not recognized.");
+  }
+  const system: Record<string, unknown> = {};
+  for (const field of SYSTEM_NUMBER_FIELDS) {
+    if (!isFiniteNumber(value[field])) {
+      throw new Error(`System history metric ${field} was not recognized.`);
+    }
+    system[field] = value[field];
+  }
+  for (const field of SYSTEM_OPTIONAL_NUMBER_FIELDS) {
+    const fieldValue = value[field];
+    if (fieldValue !== undefined) {
+      if (!isFiniteNumber(fieldValue)) {
+        throw new Error(`System history metric ${field} was not recognized.`);
+      }
+      system[field] = fieldValue;
+    }
+  }
+  const logicalCpu = value.logical_cpu_percent;
+  if (!Array.isArray(logicalCpu) || !logicalCpu.every(isFiniteNumber)) {
+    throw new Error("System history metric logical_cpu_percent was not recognized.");
+  }
+  system.logical_cpu_percent = logicalCpu;
+  if (value.quality !== undefined) {
+    system.quality = decodeMetricQualityMap(value.quality, "quality");
+  }
+  if (value.memory_accounting !== undefined) {
+    system.memory_accounting = decodeMemoryAccounting(value.memory_accounting);
+  }
+  return system as unknown as SystemMetricsSnapshot;
+}
+
+function decodeMetricQualityMap(
+  value: unknown,
+  label: string,
+): NonNullable<SystemMetricsSnapshot["quality"]> {
+  if (!isRecord(value)) {
+    throw new Error(`System history ${label} was not recognized.`);
+  }
+  const decoded: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === undefined) continue;
+    if (!isRecord(entry) || !METRIC_QUALITIES.includes(entry.quality as MetricQuality)) {
+      throw new Error(`System history ${label}.${key} was not recognized.`);
+    }
+    decoded[key] = entry;
+  }
+  return decoded as NonNullable<SystemMetricsSnapshot["quality"]>;
+}
+
+function decodeMemoryAccounting(value: unknown): SystemMemoryAccounting {
+  if (!isRecord(value)) {
+    throw new Error("System history memory_accounting was not recognized.");
+  }
+  const accounting: Record<string, unknown> = {};
+  for (const field of ACCOUNTING_REQUIRED_FIELDS) {
+    if (!isFiniteNumber(value[field])) {
+      throw new Error(`System history memory_accounting.${field} was not recognized.`);
+    }
+    accounting[field] = value[field];
+  }
+  for (const field of ACCOUNTING_OPTIONAL_FIELDS) {
+    const fieldValue = value[field];
+    if (fieldValue !== undefined) {
+      if (!isFiniteNumber(fieldValue)) {
+        throw new Error(`System history memory_accounting.${field} was not recognized.`);
+      }
+      accounting[field] = fieldValue;
+    }
+  }
+  if (value.quality !== undefined) {
+    accounting.quality = decodeMetricQualityMap(value.quality, "memory_accounting.quality");
+  }
+  if (value.kernel_pool_tags !== undefined) {
+    const tags = value.kernel_pool_tags;
+    if (
+      !Array.isArray(tags) ||
+      !tags.every(
+        (tag) =>
+          isRecord(tag) &&
+          typeof tag.tag === "string" &&
+          (tag.kind === "paged" || tag.kind === "nonpaged") &&
+          isFiniteNumber(tag.bytes) &&
+          isFiniteNumber(tag.allocations) &&
+          isFiniteNumber(tag.frees) &&
+          (tag.driver_candidates === undefined ||
+            (Array.isArray(tag.driver_candidates) &&
+              tag.driver_candidates.every((name) => typeof name === "string"))) &&
+          (tag.driver_candidates_pending === undefined ||
+            typeof tag.driver_candidates_pending === "boolean"),
+      )
+    ) {
+      throw new Error("System history memory_accounting.kernel_pool_tags was not recognized.");
+    }
+    accounting.kernel_pool_tags = tags;
+  }
+  return accounting as unknown as SystemMemoryAccounting;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 export function commandErrorMessage(error: unknown, fallback: string): string {

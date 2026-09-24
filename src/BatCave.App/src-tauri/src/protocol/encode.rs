@@ -13,10 +13,11 @@ use crate::contracts::{
     AccessState, GroupDetail, KernelPoolKind, MetricLimitationCode, MetricQuality,
     MetricQualityInfo, MetricSource, ProcessContributorIdentity, ProcessDetail, ProcessFocusMode,
     ProcessSample, ProcessViewRow, RuntimeAdminModeState, RuntimeCollectorState,
-    RuntimeEngineState, RuntimeInstallKind, RuntimePersistence, RuntimePersistenceDurability,
-    RuntimePersistenceKind, RuntimePersistenceOperation, RuntimePersistenceOwner,
-    RuntimePersistencePermissionState, RuntimePersistenceState, RuntimePlatform,
-    RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, SortColumn, SortDirection,
+    RuntimeEngineState, RuntimeHealth, RuntimeInstallKind, RuntimePersistence,
+    RuntimePersistenceDurability, RuntimePersistenceKind, RuntimePersistenceOperation,
+    RuntimePersistenceOwner, RuntimePersistencePermissionState, RuntimePersistenceState,
+    RuntimePlatform, RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, SortColumn,
+    SortDirection,
 };
 
 pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, String> {
@@ -36,6 +37,23 @@ pub fn encode_snapshot_ref(snapshot: &RuntimeSnapshot) -> Result<ProtocolEnvelop
         evaluated_at_ms,
         target_architecture(),
         super::release_identity(),
+        None,
+    )
+}
+
+/// Encode against a caller-evaluated health (e.g. a read-time freshness check on a
+/// shared snapshot) without mutating or cloning the snapshot itself.
+pub fn encode_snapshot_ref_with_health(
+    snapshot: &RuntimeSnapshot,
+    health: RuntimeHealth,
+    evaluated_at_ms: u64,
+) -> Result<ProtocolEnvelope, String> {
+    encode_snapshot_with_identity(
+        snapshot,
+        evaluated_at_ms,
+        target_architecture(),
+        super::release_identity(),
+        Some(health),
     )
 }
 
@@ -53,6 +71,7 @@ pub(super) fn encode_snapshot_at(
             app_version: "development".to_string(),
             source_commit_sha: None,
         },
+        None,
     )
 }
 
@@ -61,6 +80,7 @@ fn encode_snapshot_with_identity(
     evaluated_at_ms: u64,
     architecture: RuntimeArchitectureV4,
     release_identity: RuntimeReleaseIdentityV4,
+    health_override: Option<RuntimeHealth>,
 ) -> Result<ProtocolEnvelope, String> {
     ensure_js_safe(snapshot.publication_seq)?;
     ensure_js_safe(snapshot.published_at_ms)?;
@@ -76,7 +96,8 @@ fn encode_snapshot_with_identity(
         }
     }
 
-    let health = crate::runtime_health::evaluated_health(snapshot, evaluated_at_ms);
+    let health = health_override
+        .unwrap_or_else(|| crate::runtime_health::evaluated_health(snapshot, evaluated_at_ms));
     let mut catalog = CatalogBuilder::new(snapshot.settings.sample_interval_ms)?;
     let system = encode_system(snapshot, &mut catalog)?;
     let workloads = encode_workloads(

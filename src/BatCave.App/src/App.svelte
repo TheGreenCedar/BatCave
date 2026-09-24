@@ -100,15 +100,17 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
-  import { startRuntimePolling } from "./lib/runtimePolling";
+  import { documentVisibility, startRuntimePolling } from "./lib/runtimePolling";
   import { observeDesktopPublication } from "./lib/desktopProbe";
   import {
     boundedPercent,
     combineSeries,
     emptyTrendState,
     maxRate,
+    historyGapPoints,
     nextSystemHistory,
     percentage,
+    replaySystemHistory,
     trimSystemHistory,
   } from "./lib/telemetryHistory";
   import { AcceptedRuntimeControls } from "./lib/runtimeControls";
@@ -146,6 +148,7 @@
     observeAcceptedRuntimePublication,
     ProtocolMismatchError,
     readNativeSnapshot,
+    readSystemHistory,
     refreshRuntime,
     runtimeMutationAllowed,
     setRuntimePaused,
@@ -226,6 +229,7 @@
   let synchronizedThemeName: ResolvedThemeName | null = null;
   let historyPointLimit: HistoryPointLimit = 72;
   let history = emptyTrendState();
+  let lastHistorySampleSeq = 0;
   let inspection: WorkloadInspection | null = null;
   let inspectionLoading = false;
   let inspectionError = "";
@@ -565,6 +569,7 @@
         poll: async () => {
           if (shouldPollRuntime(isPaused, hasTauriRuntime())) {
             const next = await readSnapshot();
+            await backfillHistoryGap(next);
             ingest(next);
           }
         },
@@ -572,6 +577,7 @@
           setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
           clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
         },
+        visibility: documentVisibility(),
       });
     }
 
@@ -1490,7 +1496,26 @@
 
 
     history = nextSystemHistory(history, next, historyPointLimit);
+    lastHistorySampleSeq = next.sample_seq;
     dropStaleNarratives();
+  }
+
+  async function backfillHistoryGap(next: RuntimeSnapshot): Promise<void> {
+    if (runtimeMode() !== "native") return;
+    const last = lastHistorySampleSeq;
+    if (last <= 0 || next.sample_seq <= last + 1) return;
+    try {
+      const points = await readSystemHistory(invoke, last);
+      const retained = historyGapPoints(points, last, next.sample_seq);
+      if (!retained.length) return;
+      history = replaySystemHistory(history, retained, historyPointLimit);
+      lastHistorySampleSeq = Math.max(
+        lastHistorySampleSeq,
+        retained[retained.length - 1].sample_seq,
+      );
+    } catch {
+      // Backfill is best-effort; the live snapshot still appends on its own.
+    }
   }
 
   function hydrateRuntimeControls(next: RuntimeSnapshot): void {
@@ -1808,7 +1833,12 @@
     }
   }
 
-  function resetHistory(): void { history = emptyTrendState(); }
+  function resetHistory(): void {
+    history = emptyTrendState();
+    // Keep tracking the newest accepted sample so the next poll does not
+    // backfill points the user just cleared.
+    lastHistorySampleSeq = snapshot.sample_seq;
+  }
   function trimHistory(): void { history = trimSystemHistory(history, historyPointLimit); }
 
   async function refreshInspection(stableId: string, pointLimit: HistoryPointLimit, publication: number, visible: boolean): Promise<void> {

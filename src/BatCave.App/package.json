@@ -21,6 +21,9 @@
     "test:overview": "node --test scripts/overview.test.ts",
     "test:themes": "node --test scripts/theme-preferences.test.ts",
     "test:chart-motion": "node --test src/lib/chartMotion.test.ts",
+    "test:telemetry-history": "node --test src/lib/telemetryHistory.test.ts",
+    "test:runtime-polling": "node --test src/lib/runtimePolling.test.ts",
+    "test:tauri-bridge": "node --test src/lib/tauriBridge.test.ts",
     "test:narratives": "node --test src/lib/narratives.test.ts",
     "test:narrative-package": "node --test scripts/narrative-package-contract.test.mjs",
     "test:runtime-contract": "node --test scripts/runtime-contract.test.ts",
@@ -35,7 +38,7 @@
     "verify:windows-installer-generated": "node scripts/windows-installer-generated-contract.mjs",
     "benchmark:protocol-payload": "node scripts/protocol-payload-guardrail.ts",
     "verify": "npm run check && npm run format:check",
-    "check": "npm run test:postcss-security && npm run test:process-order && npm run test:process-icons && npm run test:presentation && npm run test:overview && npm run test:workload-inspection && npm run test:themes && npm run test:chart-motion && npm run test:narratives && npm run test:narrative-package && npm run test:runtime-contract && npm run test:browser-fixture && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:app-lifecycles && npm run test:windows-service-installer && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
+    "check": "npm run test:postcss-security && npm run test:process-order && npm run test:process-icons && npm run test:presentation && npm run test:overview && npm run test:workload-inspection && npm run test:themes && npm run test:chart-motion && npm run test:telemetry-history && npm run test:runtime-polling && npm run test:tauri-bridge && npm run test:narratives && npm run test:narrative-package && npm run test:runtime-contract && npm run test:browser-fixture && npm run test:runtime-protocol && npm run test:protocol-payload && npm run test:update-lifecycle && npm run test:app-lifecycles && npm run test:windows-service-installer && npm run test:accessibility-fixtures && npm run smoke:bridge && npm run build && npm run typecheck && npm run lint",
     "tauri": "tauri",
     "test:postcss-security": "node --test scripts/postcss-security.test.mjs"
   },
