@@ -3125,7 +3125,8 @@ button:disabled {
 .overview-contributor {
   align-content: start;
   justify-self: start;
-  width: fit-content;
+  grid-column: 1 / -1;
+  width: 360px;
   max-width: 100%;
 }
 
@@ -3996,7 +3997,11 @@ button:disabled {
   overflow: hidden;
 }
 
-.overview-contributor small,
+.overview-contributor small {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
 .overview-workload-name strong {
   white-space: nowrap;
   overflow: hidden;
