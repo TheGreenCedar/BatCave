@@ -14,7 +14,12 @@
     privilegedSourceLabel,
     processElevationLabel,
   } from "../../environmentPresentation";
-  import { formatBytes, metricQualityLabel, qualityGuidance } from "../../format";
+  import {
+    formatBytes,
+    metricQualityLabel,
+    qualityGuidance,
+    qualityGuidanceEntries,
+  } from "../../format";
   import { platformPresentation } from "../../platformPresentation";
   import type { RuntimeSnapshot, SystemMetricQuality } from "../../types";
 
@@ -33,7 +38,8 @@
     snapshot.environment.admin_mode_available,
   );
   $: guidance = qualityGuidance(systemQuality);
-  $: hasQualityLimitations = guidance.length > 0;
+  $: guidanceEntries = qualityGuidanceEntries(systemQuality);
+  $: hasQualityLimitations = guidanceEntries.length > 0;
   $: hasActiveLimitations = issues.length > 0 || hasQualityLimitations;
   $: presentation = platformPresentation(snapshot.environment);
   $: overviewLabel = diagnosticOverviewLabel(
@@ -41,7 +47,7 @@
     snapshot.admin_mode.state,
     snapshot.health.degraded,
     issues.length,
-    guidance.length,
+    guidanceEntries.length,
   );
 
   let dialog: HTMLDialogElement | null = null;
@@ -166,17 +172,17 @@
           </section>
         {/if}
 
-        {#if guidance.length > 0}
+        {#if guidanceEntries.length > 0}
           <section class="diagnostic-section" aria-labelledby="quality-limitations-title">
             <div class="drawer-section-title">
               <h3 id="quality-limitations-title">Data limitations</h3>
-              <span>{guidance.length}</span>
+              <span>{guidanceEntries.length}</span>
             </div>
             <div class="diagnostic-list">
-              {#each guidance as item}
+              {#each guidanceEntries as entry}
                 <article class="diagnostic-issue">
-                  <h4>Metric coverage</h4>
-                  <p>{item}</p>
+                  <h4>{entry.metrics}</h4>
+                  <p>{entry.message}{entry.consequence ? ` ${entry.consequence}` : ""}</p>
                 </article>
               {/each}
             </div>

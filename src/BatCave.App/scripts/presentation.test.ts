@@ -210,7 +210,7 @@ test("contributor quality gates publication and limits overview confidence", () 
     "live",
   );
   assert.equal(estimatedBrief.leadingWorkload, "Estimated worker");
-  assert.match(estimatedBrief.contributorStatusLabel, /Estimated attribution/);
+  assert.equal(estimatedBrief.contributorStatusLabel, "40% of one core");
   assert.equal(estimatedBrief.confidence, "Limited");
 
   const unavailable = resourceSnapshot("Blocked worker");
@@ -548,7 +548,7 @@ test("compact metric quality labels keep the full source-aware label available",
   const qualities: Array<[MetricQualityInfo["quality"], string]> = [
     ["native", "Native"],
     ["partial", "Partial"],
-    ["estimated", "Estimated"],
+    ["estimated", "Native"],
     ["held", "Held"],
     ["unavailable", "Unavailable"],
   ];
@@ -559,6 +559,10 @@ test("compact metric quality labels keep the full source-aware label available",
 
   const partial: MetricQualityInfo = { quality: "partial", source: "process_aggregate" };
   assert.equal(metricQualityLabel(partial, "Aggregate"), "Partial / process aggregate");
+  assert.equal(
+    metricQualityLabel({ quality: "estimated", source: "sysinfo" }, "x"),
+    "Estimated / sysinfo",
+  );
   assert.equal(metricQualityShortLabel(partial, "Aggregate"), "Partial");
   assert.equal(metricQualityShortLabel(undefined, "Aggregate"), "Aggregate");
   assert.equal(
@@ -892,10 +896,7 @@ test("group metric values require publishable coverage", () => {
     displayGroupMetricValue(10, unknown, { available: 1, total: 2 }, String),
     "10 · 1/2 · limited",
   );
-  assert.equal(
-    displayGroupMetricValue(10, estimated, { available: 2, total: 2 }, String),
-    "10 · estimated",
-  );
+  assert.equal(displayGroupMetricValue(10, estimated, { available: 2, total: 2 }, String), "10");
   assert.equal(displayGroupMetricValue(0, held, { available: 0, total: 2 }, String), "Pending");
   assert.equal(
     displayGroupMetricValue(0, unavailable, { available: 0, total: 2 }, String),
@@ -945,10 +946,7 @@ test("group findings include native network activity and explicit network limita
 
   const estimated = structuredClone(nativeHigh);
   estimated.quality.network = { quality: "estimated", source: "process_aggregate" };
-  assert.equal(
-    groupFindingLabel(estimated),
-    "Aggregate network traffic is 2.0 MB/s. This aggregate is estimated.",
-  );
+  assert.equal(groupFindingLabel(estimated), "Aggregate network traffic is 2.0 MB/s.");
 });
 
 test("group inspection actions expose exact selection state on desktop and mobile", () => {

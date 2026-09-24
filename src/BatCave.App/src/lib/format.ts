@@ -69,11 +69,10 @@ export function metricQualityShortLabel(
 
   switch (metric.quality) {
     case "native":
+    case "estimated":
       return "Native";
     case "partial":
       return "Partial";
-    case "estimated":
-      return "Estimated";
     case "held":
       return "Held";
     case "unavailable":
@@ -141,11 +140,7 @@ export function nextProcessMetricHistory(
 }
 
 function observationQualifier(quality: MetricQualityInfo | undefined): string {
-  return quality?.quality === "estimated"
-    ? ", estimated"
-    : quality?.quality === "partial"
-      ? ", limited coverage"
-      : "";
+  return quality?.quality === "partial" ? ", limited coverage" : "";
 }
 
 export function processFindingLabel(
@@ -271,7 +266,7 @@ export function displayGroupMetricValue<T>(
   if (metric.quality === "partial" || coverage.available < coverage.total) {
     return `${formatted} · ${coverage.available}/${coverage.total} · limited`;
   }
-  return metric.quality === "estimated" ? `${formatted} · estimated` : formatted;
+  return formatted;
 }
 
 function groupMetricIsComplete(
@@ -303,7 +298,7 @@ function groupHighFinding(
   if (metric.quality === "partial" || coverage.available < coverage.total) {
     return `${message} Coverage is limited to ${coverage.available} of ${coverage.total} processes.`;
   }
-  return metric.quality === "estimated" ? `${message} This aggregate is estimated.` : message;
+  return message;
 }
 
 export function groupFindingLabel(detail: GroupDetail): string {
@@ -394,6 +389,48 @@ export function metricQualityAction(metric: MetricQualityInfo | undefined): stri
   }
 
   return "";
+}
+
+export interface QualityGuidanceEntry {
+  metrics: string;
+  message: string;
+  consequence: string;
+}
+
+export function qualityGuidanceEntries(quality: SystemMetricQuality): QualityGuidanceEntry[] {
+  const metrics: [string, MetricQualityInfo | undefined][] = [
+    ["Machine CPU", quality.cpu],
+    ["Kernel CPU", quality.kernel_cpu],
+    ["Peak logical core", quality.logical_cpu],
+    ["Memory", quality.memory],
+    ["Swap", quality.swap],
+    ["Disk read/write", quality.disk],
+    ["Network", quality.network],
+  ];
+  const entries: QualityGuidanceEntry[] = [];
+
+  for (const [label, metric] of metrics) {
+    const message = metricQualityAction(metric);
+    if (!message) continue;
+    const consequence =
+      metric?.quality === "held"
+        ? "Shown as Pending until a sample arrives."
+        : metric?.quality === "partial"
+          ? "Shown with a Limited badge."
+          : metric?.quality === "unavailable"
+            ? "Shown as Unavailable."
+            : "";
+    const existing = entries.find(
+      (entry) => entry.message === message && entry.consequence === consequence,
+    );
+    if (existing) {
+      existing.metrics = `${existing.metrics}, ${label}`;
+    } else {
+      entries.push({ metrics: label, message, consequence });
+    }
+  }
+
+  return entries;
 }
 
 export function qualityGuidance(quality: SystemMetricQuality): string[] {

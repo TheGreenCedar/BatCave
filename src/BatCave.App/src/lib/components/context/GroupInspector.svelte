@@ -1,15 +1,11 @@
 <script lang="ts">
   import Copy from "phosphor-svelte/lib/Copy";
-  import {
-    displayGroupMetricValue,
-    formatBytes,
-    formatPercent,
-    formatRate,
-    groupFindingLabel,
-    metricQualityLabel,
-  } from "../../format";
+  import InspectionChart from "../../InspectionChart.svelte";
+  import { groupFindingLabel } from "../../format";
   import type { ProcessIconKind } from "../../process";
-  import type { GroupDetail, MetricCoverage } from "../../types";
+  import type { ChartPalette } from "../../themes";
+  import type { GroupDetail } from "../../types";
+  import type { WorkloadInspection } from "../../workloadInspection";
   import ProcessIcon from "../processes/ProcessIcon.svelte";
 
   // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
@@ -21,24 +17,14 @@
   export let iconSrc: string | undefined = undefined;
   export let iconMatched = false;
   export let onCopy: () => void;
+  export let inspection: WorkloadInspection | null = null;
+  // oxlint-disable-next-line no-unassigned-vars -- Svelte assigns this required component prop.
+  export let activeTheme: ChartPalette;
 
   $: copyFailed = copyStatus !== "" && copyStatus !== "Workload summary copied.";
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
-  }
-
-  function coverageLabel(coverage: MetricCoverage): string {
-    return `${coverage.available} of ${coverage.total}`;
-  }
-
-  function networkLabel(): string {
-    return displayGroupMetricValue(
-      detail.network_bps,
-      detail.quality.network,
-      detail.coverage.network,
-      formatRate,
-    );
   }
 
   function hasNotableActivity(): boolean {
@@ -85,29 +71,7 @@
     <p class="insight-copy"><strong>Worth noting:</strong> {groupFindingLabel(detail)}</p>
   {/if}
 
-  <section class="key-metrics" aria-labelledby="group-key-metrics-title">
-    <h3 id="group-key-metrics-title">Aggregate metrics</h3>
-    <dl>
-      <div class="metric-cpu"><dt>CPU <small>One-core equivalent</small></dt><dd>{displayGroupMetricValue(detail.cpu_percent, detail.quality.cpu, detail.coverage.cpu, formatPercent)}</dd></div>
-      <div class="metric-memory"><dt>Memory <small>Bytes</small></dt><dd>{displayGroupMetricValue(detail.memory_bytes, detail.quality.memory, detail.coverage.memory, formatBytes)}</dd></div>
-      <div class="metric-disk"><dt>Read/write I/O <small>Bytes/s</small></dt><dd>{displayGroupMetricValue(detail.io_bps, detail.quality.io, detail.coverage.io, formatRate)}</dd></div>
-      <div class="metric-network"><dt>Network <small>Bytes/s</small></dt><dd>{networkLabel()}</dd></div>
-    </dl>
-  </section>
-
-<details class="technical-disclosure inspector-technical">
-    <summary>Technical details</summary>
-    <dl class="key-value-grid technical-grid">
-      <div><dt>Processes</dt><dd>{detail.process_count}</dd></div>
-      <div><dt>Total threads</dt><dd>{displayGroupMetricValue(detail.threads, detail.quality.threads, detail.coverage.threads, String)}</dd></div>
-      <div><dt>CPU</dt><dd>{metricQualityLabel(detail.quality.cpu, "Aggregate")} · {coverageLabel(detail.coverage.cpu)}</dd></div>
-      <div><dt>Memory</dt><dd>{metricQualityLabel(detail.quality.memory, "Aggregate")} · {coverageLabel(detail.coverage.memory)}</dd></div>
-      <div><dt>Read/write I/O</dt><dd>{metricQualityLabel(detail.quality.io, "Aggregate")} · {coverageLabel(detail.coverage.io)}</dd></div>
-      <div><dt>Other I/O</dt><dd>{metricQualityLabel(detail.quality.other_io, "Unavailable")} · {coverageLabel(detail.coverage.other_io)}</dd></div>
-      <div><dt>Network</dt><dd>{metricQualityLabel(detail.quality.network, "Aggregate")} · {coverageLabel(detail.coverage.network)}</dd></div>
-      <div><dt>Thread coverage</dt><dd>{metricQualityLabel(detail.quality.threads, "Aggregate")} · {coverageLabel(detail.coverage.threads)}</dd></div>
-    </dl>
-  </details>
+  {#if inspection}<InspectionChart points={inspection.history} retainedPoints={inspection.retained_points} historyTruncated={inspection.history_truncated} {activeTheme} />{/if}
 
   {#if copyStatus}
     <p

@@ -292,7 +292,6 @@ function contributorQualityIsPublishable(quality: MetricQualityInfo | undefined)
 
 function contributorQualitySuffix(quality: MetricQualityInfo | undefined): string {
   if (!quality) return " · Attribution quality not reported";
-  if (quality.quality === "estimated") return " · Estimated attribution";
   if (quality.quality === "partial") return " · Partial attribution";
   return "";
 }

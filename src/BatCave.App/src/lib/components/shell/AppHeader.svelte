@@ -27,6 +27,7 @@
     <button
       type="button"
       data-view="overview"
+      title="Overview (1)"
       class:active={activeView === "overview"}
       aria-current={activeView === "overview" ? "page" : undefined}
       onclick={() => onNavigate("overview")}
@@ -34,6 +35,7 @@
     <button
       type="button"
       data-view="explore"
+      title="Explore (2)"
       class:active={activeView === "explore"}
       aria-current={activeView === "explore" ? "page" : undefined}
       onclick={() => onNavigate("explore")}
@@ -52,6 +54,7 @@
         class:warning={healthTone === "warning"}
         class:danger={healthTone === "danger"}
         type="button"
+        title={`${pollState === "fixture" ? "Layout fixture" : healthLabel} — open diagnostics`}
         aria-label={`${pollState === "fixture" ? "Layout fixture" : healthLabel}. Open diagnostics.`}
         onclick={onOpenDiagnostics}
       >
@@ -60,7 +63,13 @@
       </button>
     {/if}
     <span class="header-divider" aria-hidden="true"></span>
-    <button class="settings-action" type="button" onclick={onOpenSettings}>
+    <button
+      class="settings-action"
+      type="button"
+      title="Settings"
+      aria-label="Settings"
+      onclick={onOpenSettings}
+    >
       <GearSix size={20} weight="regular" aria-hidden="true" />
       <span>Settings</span>
     </button>
