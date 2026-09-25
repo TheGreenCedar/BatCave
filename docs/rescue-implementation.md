@@ -25,7 +25,7 @@ BatCave must identify the right workload, preserve the evidence needed to inspec
 
 Work began at source commit `31a4382e7e9228ce7198e6b11dfcc726a01cbcdd` on `codex/rescue-developer-triage`. The earlier native audit inspected an installed app reporting rc.4, not a byte-matched build of this branch. The existing untracked `work/` directory is outside the change.
 
-The runtime, inspection, presentation, persistence, AI explanation, and Windows launch changes are implemented. Desktop protocol v4 carries runtime-owned freshness and reasons plus query-independent Overview workloads. Collector-service IPC stays at v1. The declared package version remains `0.2.0-rc.5`.
+The runtime, inspection, presentation, persistence, AI explanation, and Windows launch changes are implemented. Desktop protocol v4 carries runtime-owned freshness and reasons plus query-independent Overview workloads. Collector-service IPC stays at v1. The declared package version is `0.2.0`.
 
 The first native performance run exposed unnecessary hidden-inspector reads. Overview and closed detail panes now suspend those reads; reopening fetches current evidence, and late replies still return their memory credits. Explore mounts only the active desktop table or mobile cards, preserving group expansion and keyboard focus across resizing. History allocation grows to at most 360 slots per identity instead of reserving 512, and row shaping moves already-owned processes without an extra clone. Focused lifecycle, archive, wire, and runtime tests pass; native savings require the next candidate measurement.
 
