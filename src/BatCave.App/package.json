@@ -53,7 +53,7 @@
     "@playwright/test": "1.63.0",
     "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tauri-apps/cli": "2.11.4",
-    "@types/node": "24.13.3",
+    "@types/node": "26.6.2",
     "oxfmt": "0.70.0",
     "oxlint": "1.85.0",
     "postcss": "8.5.28",
