@@ -75,19 +75,20 @@
   </div>
 
   <div class="ranking-slot">
-    {#if rankingUpdateAvailable}
-      <button
-        class="ranking-update"
-        type="button"
-        aria-label="New ranking available. Order is held while you browse — click to update."
-        title="New ranking available. Order is held while you browse — click to update."
-        disabled={mutationsDisabled}
-        onclick={applyRanking}
-      >
-        <ArrowClockwise size={16} weight="bold" aria-hidden="true" />
-        <span>Update order</span>
-      </button>
-    {/if}
+    <button
+      class="ranking-update"
+      class:ranking-update-idle={!rankingUpdateAvailable}
+      type="button"
+      aria-label="New ranking available. Order is held while you browse — click to update."
+      title="New ranking available. Order is held while you browse — click to update."
+      aria-hidden={!rankingUpdateAvailable}
+      tabindex={rankingUpdateAvailable ? 0 : -1}
+      disabled={mutationsDisabled || !rankingUpdateAvailable}
+      onclick={applyRanking}
+    >
+      <ArrowClockwise size={16} weight="bold" aria-hidden="true" />
+      <span>Update order</span>
+    </button>
   </div>
 
   {#if commandError}

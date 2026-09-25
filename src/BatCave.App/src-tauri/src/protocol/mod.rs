@@ -971,11 +971,7 @@ mod tests {
         held.name = "newborn-agent".to_string();
         held.exe = "/usr/libexec/newborn-agent".to_string();
         held.parent_pid = None;
-        held
-            .quality
-            .as_mut()
-            .expect("fixture quality")
-            .cpu = Some(
+        held.quality.as_mut().expect("fixture quality").cpu = Some(
             quality(MetricQuality::Held, MetricSource::Libproc).with_limitation(
                 MetricLimitationCode::PendingBaseline,
                 "Waiting for a second CPU sample.",

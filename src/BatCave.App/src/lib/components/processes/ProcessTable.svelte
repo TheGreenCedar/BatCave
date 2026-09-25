@@ -153,7 +153,13 @@
   aria-label="Ranked apps and processes"
   onpointerenter={() => setInteraction("pointer", true)}
   onpointerleave={() => setInteraction("pointer", false)}
-  onfocusin={() => setInteraction("focus", true)}
+  onfocusin={(event) => {
+    // Only keyboard focus holds the order; a clicked row keeps focus and would
+    // otherwise freeze the ranking until focus moves elsewhere.
+    if (event.target instanceof Element && event.target.matches(":focus-visible")) {
+      setInteraction("focus", true);
+    }
+  }}
   onfocusout={handleFocusOut}
 >
   <table class="attention-table" class:without-network={!columns.some((column) => column.key === "network")}>

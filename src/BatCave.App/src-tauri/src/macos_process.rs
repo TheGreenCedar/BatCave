@@ -553,8 +553,7 @@ impl MacosProcessCollector {
                             .is_some_and(|previous| generation.1 >= previous);
                         let age_ms = sample_started_ms.saturating_sub(generation.1);
                         if born_since_last_collection && age_ms >= 250 {
-                            cpu_percent =
-                                round1(cpu_ns as f64 / (age_ms as f64 * 1e6) * 100.0);
+                            cpu_percent = round1(cpu_ns as f64 / (age_ms as f64 * 1e6) * 100.0);
                             MetricQualityInfo::new(MetricQuality::Native, MetricSource::Libproc)
                         } else {
                             MetricQualityInfo::new(MetricQuality::Held, MetricSource::Libproc)

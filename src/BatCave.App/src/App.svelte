@@ -306,7 +306,11 @@
     row.kind === "process" ? [row.detail.process] : [],
   );
   $: selectedRow = inspection?.stable_id === selectedWorkloadId ? inspection.row : null;
-  $: inspectionCurrent = inspection?.stable_id === selectedWorkloadId && inspection.status === "current" && inspection.sample_seq === snapshot.sample_seq && collectionState === "live" && !inspectionLoading && !inspectionError;
+  // A background refresh of the same workload must not flip the pane to
+  // "last recorded" for the one tick the inspection lags the snapshot.
+  $: inspectionCurrent = inspection?.stable_id === selectedWorkloadId && inspection.status === "current" && inspection.sample_seq + 1 >= snapshot.sample_seq && collectionState === "live" && !inspectionError;
+  // Only a first load for a newly selected workload shows the loading notice.
+  $: inspectionFirstLoad = inspectionLoading && inspection?.stable_id !== selectedWorkloadId;
   $: void refreshInspection(
     selectedWorkloadId,
     historyPointLimit,
@@ -2156,7 +2160,7 @@
             {selectedWorkloadIconSrc}
             {selectedWorkloadIconMatched}
             {inspection}
-            {inspectionLoading}
+            inspectionLoading={inspectionFirstLoad}
             {inspectionError}
             {inspectionCurrent}
             {processReadRate}

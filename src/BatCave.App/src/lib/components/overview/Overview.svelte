@@ -203,12 +203,19 @@
         <h3 id="leading-workloads-heading">Leading workloads</h3>
         <p>Sorted by {status.primaryResource === "disk" ? "process read/write I/O" : status.primaryResource === "cpu" ? "CPU use per core" : status.primaryResource === "memory" ? "resident memory" : "process network traffic"} across the sample.</p>
       </div>
-      {#if orderUpdateAvailable}
-        <span class="overview-order-held">
-          Order paused
-          <button type="button" onclick={applyOrderUpdate}>Update</button>
-        </span>
-      {/if}
+      <span
+        class="overview-order-held"
+        class:overview-order-held-idle={!orderUpdateAvailable}
+        aria-hidden={!orderUpdateAvailable}
+      >
+        Order paused
+        <button
+          type="button"
+          tabindex={orderUpdateAvailable ? 0 : -1}
+          disabled={!orderUpdateAvailable}
+          onclick={applyOrderUpdate}
+        >Update</button>
+      </span>
       <button type="button" onclick={onOpenExplore}>View all in Explore</button>
     </header>
     <div class="overview-workload-list" role="group" aria-label="Leading workloads"

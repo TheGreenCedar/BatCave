@@ -4,6 +4,7 @@ use std::{
     io,
     mem::size_of,
     ptr,
+    time::Instant,
 };
 
 use crate::contracts::{
@@ -105,9 +106,22 @@ enum HostDiskCollection {
     },
 }
 
+const NETWORK_BASELINE_PENDING: &str =
+    "Waiting for a second interface-counter sample before network rates are available.";
+const NETWORK_BASELINE_RESET: &str =
+    "Kernel interface counters regressed; waiting for a stable network baseline.";
+
+#[derive(Debug, Clone, Copy)]
+struct NetworkBaseline {
+    received: u64,
+    transmitted: u64,
+    sampled_at: Instant,
+}
+
 #[derive(Debug, Default)]
 pub struct MacosSystemCollector {
     last_disk_device_ids: Option<Vec<u64>>,
+    last_network: Option<NetworkBaseline>,
 }
 
 impl MacosSystemCollector {
@@ -117,6 +131,86 @@ impl MacosSystemCollector {
 
     pub fn enrich(&mut self, snapshot: &mut SystemMetricsSnapshot, _processes: &[ProcessSample]) {
         self.enrich_with_disk_collection(snapshot, collect_host_disk());
+    }
+
+    pub fn apply_network_rates(
+        &mut self,
+        snapshot: &mut SystemMetricsSnapshot,
+        warnings: &mut Vec<String>,
+    ) {
+        self.apply_interface_totals(snapshot, interface_byte_totals(), Instant::now(), warnings);
+    }
+
+    fn apply_interface_totals(
+        &mut self,
+        snapshot: &mut SystemMetricsSnapshot,
+        totals: io::Result<(u64, u64)>,
+        sampled_at: Instant,
+        warnings: &mut Vec<String>,
+    ) {
+        snapshot.network_received_bps = 0;
+        snapshot.network_transmitted_bps = 0;
+
+        let quality = match totals {
+            Ok((received, transmitted)) => {
+                snapshot.network_received_total_bytes = received;
+                snapshot.network_transmitted_total_bytes = transmitted;
+                let previous = self.last_network.replace(NetworkBaseline {
+                    received,
+                    transmitted,
+                    sampled_at,
+                });
+                match previous {
+                    None => MetricQualityInfo::new(
+                        MetricQuality::Held,
+                        MetricSource::InterfaceAggregate,
+                    )
+                    .with_limitation(
+                        MetricLimitationCode::PendingBaseline,
+                        NETWORK_BASELINE_PENDING,
+                    ),
+                    Some(previous)
+                        if received < previous.received || transmitted < previous.transmitted =>
+                    {
+                        MetricQualityInfo::new(
+                            MetricQuality::Held,
+                            MetricSource::InterfaceAggregate,
+                        )
+                        .with_limitation(
+                            MetricLimitationCode::PendingBaseline,
+                            NETWORK_BASELINE_RESET,
+                        )
+                    }
+                    Some(previous) => {
+                        let elapsed = sampled_at
+                            .duration_since(previous.sampled_at)
+                            .as_secs_f64()
+                            .max(0.001);
+                        snapshot.network_received_bps =
+                            ((received - previous.received) as f64 / elapsed).round() as u64;
+                        snapshot.network_transmitted_bps =
+                            ((transmitted - previous.transmitted) as f64 / elapsed).round() as u64;
+                        MetricQualityInfo::new(
+                            MetricQuality::Native,
+                            MetricSource::InterfaceAggregate,
+                        )
+                    }
+                }
+            }
+            Err(error) => {
+                warnings.push(format!("macos_interface_totals_failed:{error}"));
+                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::InterfaceAggregate)
+                    .with_limitation(
+                        MetricLimitationCode::CollectorFailure,
+                        "Kernel interface byte totals could not be read.",
+                    )
+            }
+        };
+
+        snapshot
+            .quality
+            .get_or_insert_with(SystemMetricQuality::default)
+            .network = Some(quality);
     }
 
     fn enrich_with_disk_collection(
@@ -266,12 +360,19 @@ fn interface_indices_from_route_dump(buffer: &[u8]) -> Vec<u16> {
         }
         let msg_type = buffer[offset + 3];
         if i32::from(msg_type) == libc::RTM_IFINFO2 && msglen >= size_of::<libc::if_msghdr2>() {
-            let index = u16::from_ne_bytes(
-                buffer[offset + 12..offset + 14]
+            let flags = i32::from_ne_bytes(
+                buffer[offset + 8..offset + 12]
                     .try_into()
                     .unwrap_or_default(),
             );
-            indices.push(index);
+            if flags & libc::IFF_LOOPBACK == 0 {
+                let index = u16::from_ne_bytes(
+                    buffer[offset + 12..offset + 14]
+                        .try_into()
+                        .unwrap_or_default(),
+                );
+                indices.push(index);
+            }
         }
         offset += msglen;
     }
@@ -694,12 +795,13 @@ mod tests {
         );
     }
 
-    fn route_record(msg_type: u8, index: u16, tail: &[u8]) -> Vec<u8> {
+    fn route_record(msg_type: u8, index: u16, flags: i32, tail: &[u8]) -> Vec<u8> {
         let mut record = Vec::new();
         if i32::from(msg_type) == libc::RTM_IFINFO2 {
             let mut header: libc::if_msghdr2 = unsafe { std::mem::zeroed() };
             header.ifm_msglen = (size_of::<libc::if_msghdr2>() + tail.len()) as u16;
             header.ifm_type = msg_type;
+            header.ifm_flags = flags;
             header.ifm_index = index;
             record.extend_from_slice(unsafe {
                 std::slice::from_raw_parts(
@@ -726,10 +828,17 @@ mod tests {
     fn route_dump_walker_extracts_ifinfo2_indices() {
         let mut buffer = Vec::new();
         // A non-IFINFO2 record first: the walker must skip it.
-        buffer.extend_from_slice(&route_record(libc::RTM_NEWADDR as u8, 0, &[0; 24]));
-        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 4, &[]));
-        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 9, &[0; 40]));
-        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 12, &[0; 8]));
+        buffer.extend_from_slice(&route_record(libc::RTM_NEWADDR as u8, 0, 0, &[0; 24]));
+        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 4, 0, &[]));
+        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 9, 0, &[0; 40]));
+        // A loopback interface record is skipped.
+        buffer.extend_from_slice(&route_record(
+            libc::RTM_IFINFO2 as u8,
+            1,
+            libc::IFF_LOOPBACK | libc::IFF_UP | libc::IFF_RUNNING,
+            &[],
+        ));
+        buffer.extend_from_slice(&route_record(libc::RTM_IFINFO2 as u8, 12, 0, &[0; 8]));
         // Trailing garbage shorter than a header is ignored.
         buffer.extend_from_slice(&[0xff, 0x00]);
 
@@ -738,13 +847,115 @@ mod tests {
     }
 
     #[test]
+    fn network_rates_are_derived_from_interface_total_deltas() {
+        let mut collector = MacosSystemCollector::new();
+        let t0 = Instant::now();
+
+        let mut first = system();
+        collector.apply_interface_totals(&mut first, Ok((1_000, 500)), t0, &mut Vec::new());
+        assert_eq!(first.network_received_total_bytes, 1_000);
+        assert_eq!(first.network_transmitted_total_bytes, 500);
+        assert_eq!(first.network_received_bps, 0);
+        assert_eq!(first.network_transmitted_bps, 0);
+        let first_network = first.quality.unwrap().network.unwrap();
+        assert_eq!(first_network.quality, MetricQuality::Held);
+        assert_eq!(first_network.source, Some(MetricSource::InterfaceAggregate));
+        assert_eq!(
+            first_network.limitation_code,
+            Some(MetricLimitationCode::PendingBaseline)
+        );
+
+        let mut second = system();
+        collector.apply_interface_totals(
+            &mut second,
+            Ok((3_000, 1_500)),
+            t0 + std::time::Duration::from_secs(2),
+            &mut Vec::new(),
+        );
+        assert_eq!(second.network_received_bps, 1_000);
+        assert_eq!(second.network_transmitted_bps, 500);
+        let second_network = second.quality.unwrap().network.unwrap();
+        assert_eq!(second_network.quality, MetricQuality::Native);
+        assert_eq!(
+            second_network.source,
+            Some(MetricSource::InterfaceAggregate)
+        );
+    }
+
+    #[test]
+    fn network_counter_regressions_hold_and_rebaseline() {
+        let mut collector = MacosSystemCollector::new();
+        let t0 = Instant::now();
+        let mut first = system();
+        collector.apply_interface_totals(&mut first, Ok((1_000, 500)), t0, &mut Vec::new());
+
+        let mut reset = system();
+        collector.apply_interface_totals(
+            &mut reset,
+            Ok((200, 600)),
+            t0 + std::time::Duration::from_secs(1),
+            &mut Vec::new(),
+        );
+        assert_eq!(reset.network_received_bps, 0);
+        assert_eq!(reset.network_transmitted_bps, 0);
+        assert_eq!(
+            reset.quality.unwrap().network.unwrap().quality,
+            MetricQuality::Held
+        );
+
+        let mut recovered = system();
+        collector.apply_interface_totals(
+            &mut recovered,
+            Ok((700, 1_100)),
+            t0 + std::time::Duration::from_secs(2),
+            &mut Vec::new(),
+        );
+        assert_eq!(recovered.network_received_bps, 500);
+        assert_eq!(recovered.network_transmitted_bps, 500);
+        assert_eq!(
+            recovered.quality.unwrap().network.unwrap().quality,
+            MetricQuality::Native
+        );
+    }
+
+    #[test]
+    fn network_read_failures_stay_unavailable_with_a_warning() {
+        let mut collector = MacosSystemCollector::new();
+        let mut warnings = Vec::new();
+        let mut snapshot = system();
+        collector.apply_interface_totals(
+            &mut snapshot,
+            Err(io::Error::other("fixture failure")),
+            Instant::now(),
+            &mut warnings,
+        );
+
+        assert_eq!(snapshot.network_received_bps, 0);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("macos_interface_totals_failed"));
+        let network = snapshot.quality.unwrap().network.unwrap();
+        assert_eq!(network.quality, MetricQuality::Unavailable);
+        assert_eq!(network.source, Some(MetricSource::InterfaceAggregate));
+        assert_eq!(
+            network.limitation_code,
+            Some(MetricLimitationCode::CollectorFailure)
+        );
+    }
+
+    #[test]
     #[ignore = "live host check: compares against sysinfo Networks totals"]
     fn live_interface_totals_match_sysinfo_networks() {
         let (rx, tx) = interface_byte_totals().expect("interface totals read");
         let networks = sysinfo::Networks::new_with_refreshed_list();
-        let (sys_rx, sys_tx) = networks.iter().fold((0_u64, 0_u64), |(r, t), (_, data)| {
-            (r + data.total_received(), t + data.total_transmitted())
-        });
+        let (sys_rx, sys_tx) = networks
+            .iter()
+            .fold((0_u64, 0_u64), |(r, t), (name, data)| {
+                if name == "lo0" {
+                    (r, t)
+                } else {
+                    (r + data.total_received(), t + data.total_transmitted())
+                }
+            });
         println!("native rx={rx} tx={tx}; sysinfo rx={sys_rx} tx={sys_tx}");
         assert!(rx.abs_diff(sys_rx) <= 1024 * 1024, "rx {rx} vs {sys_rx}");
         assert!(tx.abs_diff(sys_tx) <= 1024 * 1024, "tx {tx} vs {sys_tx}");

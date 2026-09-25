@@ -574,24 +574,9 @@ fn collect_system_snapshot(
         let _ = logical_cpu_percent;
         let mut snapshot = sysinfo_snapshot;
         collector.macos_system.enrich(&mut snapshot, processes);
-        let network_quality = match crate::macos_system::interface_byte_totals() {
-            Ok((received, transmitted)) => {
-                snapshot.network_received_total_bytes = received;
-                snapshot.network_transmitted_total_bytes = transmitted;
-                MetricQualityInfo::new(MetricQuality::Native, MetricSource::InterfaceAggregate)
-            }
-            Err(error) => {
-                warnings.push(format!("macos_interface_totals_failed:{error}"));
-                MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::InterfaceAggregate)
-                    .with_limitation(
-                        MetricLimitationCode::CollectorFailure,
-                        "Kernel interface byte totals could not be read.",
-                    )
-            }
-        };
-        if let Some(quality) = snapshot.quality.as_mut() {
-            quality.network = Some(network_quality);
-        }
+        collector
+            .macos_system
+            .apply_network_rates(&mut snapshot, warnings);
         Ok(snapshot)
     }
 

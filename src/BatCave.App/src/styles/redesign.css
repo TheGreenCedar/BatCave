@@ -682,6 +682,10 @@
   background: var(--accent);
 }
 
+.ranking-update-idle {
+  visibility: hidden;
+}
+
 .ranking-slot {
   min-width: 150px;
   flex: 0 0 auto;
@@ -4047,6 +4051,10 @@ button:disabled {
 
 .overview-order-held button:hover {
   text-decoration: underline;
+}
+
+.overview-order-held-idle {
+  visibility: hidden;
 }
 
 .overview-workload-list

@@ -82,7 +82,7 @@ export const focusOptions: FocusOption[] = [
   {
     value: "attention",
     label: "Busy now",
-    description: "Apps with notable CPU, memory, I/O, or network use, or limited access",
+    description: "Apps with notable CPU, memory, I/O, or network use",
   },
   {
     value: "io",
@@ -112,13 +112,13 @@ export const sortOptions: SortOption[] = [
 ];
 
 /**
- * Ranking sorts by a 5-sample moving average computed in the runtime; the
- * displayed cell values remain the latest sample.
+ * Ranking sorts by a 5-sample moving average computed in the runtime, and the
+ * emitted rows display those same averages.
  */
 export function rankingWindowNote(sampleIntervalMs: number): string {
   return sampleIntervalMs === 1000
-    ? "Sorted by the last 5 seconds' average; new processes join the ranking after 3 seconds. Values show the latest sample."
-    : "Sorted by an average of the last 5 samples; new processes join the ranking after 3 samples. Values show the latest sample.";
+    ? "CPU, disk and network show 5-second averages; new processes join the ranking after 3 seconds."
+    : "CPU, disk and network show averages of the last 5 samples; new processes join the ranking after 3 samples.";
 }
 
 export const processColumns: ProcessColumn[] = [
@@ -317,8 +317,7 @@ export function processNeedsAttention(process: ProcessSample): boolean {
     process.cpu_percent >= attentionCpuPercent ||
     process.memory_bytes >= attentionMemoryBytes ||
     rawProcessIoRate(process) >= attentionIoBps ||
-    rawProcessNetworkRate(process) >= attentionNetworkBps ||
-    process.access_state !== "full"
+    rawProcessNetworkRate(process) >= attentionNetworkBps
   );
 }
 

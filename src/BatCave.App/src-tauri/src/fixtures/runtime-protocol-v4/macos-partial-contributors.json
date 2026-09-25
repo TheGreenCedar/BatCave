@@ -340,141 +340,6 @@
           "interval_ms": null,
           "network_scope": null,
           "source": "sysinfo"
-        },
-        {
-          "id": 30,
-          "semantic": "cpu_usage",
-          "scope": "process",
-          "unit": "percent_one_core",
-          "interval_ms": 1000,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 31,
-          "semantic": "kernel_cpu_usage",
-          "scope": "process",
-          "unit": "percent_one_core",
-          "interval_ms": 1000,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 32,
-          "semantic": "resident_memory",
-          "scope": "process",
-          "unit": "bytes",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 33,
-          "semantic": "private_memory",
-          "scope": "process",
-          "unit": "bytes",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 34,
-          "semantic": "virtual_memory",
-          "scope": "process",
-          "unit": "bytes",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 35,
-          "semantic": "read_io_total",
-          "scope": "process",
-          "unit": "bytes",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 36,
-          "semantic": "write_io_total",
-          "scope": "process",
-          "unit": "bytes",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 37,
-          "semantic": "other_io_total",
-          "scope": "process",
-          "unit": "bytes",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 38,
-          "semantic": "read_io_rate",
-          "scope": "process",
-          "unit": "bytes_per_second",
-          "interval_ms": 1000,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 39,
-          "semantic": "write_io_rate",
-          "scope": "process",
-          "unit": "bytes_per_second",
-          "interval_ms": 1000,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 40,
-          "semantic": "other_io_rate",
-          "scope": "process",
-          "unit": "bytes_per_second",
-          "interval_ms": 1000,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 41,
-          "semantic": "network_receive_rate",
-          "scope": "process",
-          "unit": "bytes_per_second",
-          "interval_ms": 1000,
-          "network_scope": "ip_socket_payload",
-          "source": "libproc"
-        },
-        {
-          "id": 42,
-          "semantic": "network_transmit_rate",
-          "scope": "process",
-          "unit": "bytes_per_second",
-          "interval_ms": 1000,
-          "network_scope": "ip_socket_payload",
-          "source": "libproc"
-        },
-        {
-          "id": 43,
-          "semantic": "thread_count",
-          "scope": "process",
-          "unit": "count",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
-        },
-        {
-          "id": 44,
-          "semantic": "handle_count",
-          "scope": "process",
-          "unit": "count",
-          "interval_ms": null,
-          "network_scope": null,
-          "source": "libproc"
         }
       ],
       "quality_codes": [
@@ -496,10 +361,6 @@
         {
           "code": "pending_baseline",
           "message": "Waiting for a stable IOKit physical-device baseline after storage topology changed."
-        },
-        {
-          "code": "access_denied",
-          "message": "macOS denied access to this process."
         },
         {
           "code": "group_partial_coverage",
@@ -765,274 +626,8 @@
           }
         ]
       },
-      "workloads": [
-        {
-          "kind": "process",
-          "detail": {
-            "stable_id": "process:7777:1699999999002",
-            "identity_stability": "stable",
-            "pid": "7777",
-            "parent_pid": null,
-            "parent_process_id": null,
-            "start_time_ms": 1699999999002,
-            "display_name": "denied-daemon",
-            "executable": "/usr/libexec/denied-daemon",
-            "status": "run",
-            "access_state": "denied",
-            "presentation": {
-              "group_id": null,
-              "group_key": "scope:58d33ac6fb7be86a16eddd1f28eac467fe653863f2f1970414b1fa695be765b8",
-              "group_label": "denied-daemon",
-              "group_category": "Processes",
-              "group_count": 1,
-              "icon_kind": "process",
-              "is_child": false,
-              "is_grouped": false
-            },
-            "metrics": [
-              [
-                30,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                31,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                32,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                33,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                34,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                35,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                36,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                37,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                38,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                39,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                40,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                41,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                42,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                43,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                44,
-                null,
-                4,
-                null,
-                3
-              ]
-            ]
-          }
-        }
-      ],
-      "overview_workloads": [
-        {
-          "kind": "process",
-          "detail": {
-            "stable_id": "process:7777:1699999999002",
-            "identity_stability": "stable",
-            "pid": "7777",
-            "parent_pid": null,
-            "parent_process_id": null,
-            "start_time_ms": 1699999999002,
-            "display_name": "denied-daemon",
-            "executable": "/usr/libexec/denied-daemon",
-            "status": "run",
-            "access_state": "denied",
-            "presentation": {
-              "group_id": null,
-              "group_key": "scope:58d33ac6fb7be86a16eddd1f28eac467fe653863f2f1970414b1fa695be765b8",
-              "group_label": "denied-daemon",
-              "group_category": "Processes",
-              "group_count": 1,
-              "icon_kind": "process",
-              "is_child": false,
-              "is_grouped": false
-            },
-            "metrics": [
-              [
-                30,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                31,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                32,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                33,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                34,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                35,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                36,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                37,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                38,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                39,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                40,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                41,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                42,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                43,
-                null,
-                4,
-                null,
-                3
-              ],
-              [
-                44,
-                null,
-                4,
-                null,
-                3
-              ]
-            ]
-          }
-        }
-      ],
+      "workloads": [],
+      "overview_workloads": [],
       "contributors": [
         {
           "metric": "cpu",
@@ -1043,7 +638,7 @@
           "total_contributors": 4,
           "quality_code": 3,
           "source": "process_aggregate",
-          "limitation_index": 4
+          "limitation_index": 3
         },
         {
           "metric": "memory",
@@ -1054,7 +649,7 @@
           "total_contributors": 4,
           "quality_code": 3,
           "source": "process_aggregate",
-          "limitation_index": 5
+          "limitation_index": 4
         },
         {
           "metric": "io",
@@ -1065,7 +660,7 @@
           "total_contributors": 4,
           "quality_code": 3,
           "source": "process_aggregate",
-          "limitation_index": 6
+          "limitation_index": 5
         },
         {
           "metric": "network",
@@ -1076,11 +671,11 @@
           "total_contributors": 4,
           "quality_code": 4,
           "source": "libproc",
-          "limitation_index": 7
+          "limitation_index": 6
         }
       ],
       "total_process_count": 4,
-      "visible_process_count": 1,
+      "visible_process_count": 0,
       "warnings": [
         {
           "key": "collector.example",
