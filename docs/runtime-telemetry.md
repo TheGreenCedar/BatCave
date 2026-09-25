@@ -23,7 +23,7 @@ Svelte cockpit
           -> ETW per-process network attribution
           -> Linux /proc and /sys telemetry
           -> Linux optional bpftrace/eBPF network attribution
-          -> macOS sysinfo, libproc, NStat, and deduplicated IOKit telemetry
+          -> macOS kernel process table, libproc, NStat, and deduplicated IOKit telemetry
           -> installed Windows collector service with standard-access fallback
           -> Rust benchmark CLI
 ```
@@ -94,10 +94,11 @@ Shutdown reaps the child and joins the reader. A killed child, pipe EOF or error
 
 ### macOS
 
-- Sysinfo aggregate CPU, logical CPU, available/used memory, swap, and interface network counters.
-- Local libproc enrichment for resident memory, physical footprint, virtual memory, process read/write totals, thread count, and file-descriptor count when process access allows.
+- Sysinfo aggregate CPU, logical CPU, available/used memory, and swap.
+- Process identity (PID, parent, start time, status) from one `KERN_PROC_ALL` sysctl per tick; executable paths are resolved once per process generation with `proc_pidpath`.
+- One libproc pass per process for CPU time, resident memory, physical footprint, virtual memory, read/write totals, thread count, and file-descriptor count when access allows. Process CPU is the task-time delta between samples; a process with no baseline is `held`, except one born between samples, which reports its average since birth.
 - IOKit `IOBlockStorageDriver` byte counters aggregated once per physical registry entry. Disk-image paths are excluded; incomplete physical coverage is unavailable, and topology changes establish a new rate baseline. Process read/write I/O is never substituted for system disk telemetry.
-- The sysinfo interface aggregate includes `lo0`; protocol v4 labels its scope `all_interface_aggregate` rather than non-loopback.
+- Host network totals come from one `NET_RT_IFLIST2` route-table walk plus one `IFMIB_IFDATA` read per non-loopback interface; the collector derives rates and holds the first sample and counter regressions.
 - Per-process TCP, UDP, and QUIC network attribution comes from one long-lived XNU NStat control socket. Absolute source counters are baselined and differenced on a dedicated reader thread, including final close updates for short-lived flows. Each collector session checks the consumed NStat revision-9 fields against four local TCP/UDP flows before publishing rates. It verifies socket endpoints, the current process identity from libproc, and exact payload counters; these probe flows are excluded from app rates. Compatible aligned descriptor tails can grow without an OS-version allowlist. Unknown message types, unrequested extensions, malformed prefixes, or a failed six-second qualification window make attribution unavailable and trigger a bounded retry. Subscriptions include zero-byte counters because XNU can report intentionally filtered closing updates as dropped data. It needs neither root nor a private entitlement. Privileged collection remains unavailable.
 
 ### Fallbacks
@@ -148,7 +149,7 @@ Examples:
 - macOS per-process network attribution is `held/nstat` during its initial baseline, `native/nstat` after a complete interval, `partial/nstat` on detected counter loss, and `unavailable/nstat` if the private protocol is unavailable or no longer matches its qualified layout.
 - Linux process `/proc` parsers remain manual after the bounded [`procfs` parity decision](decisions/0002-linux-procfs-parser-parity.md). Required malformed counters fail instead of becoming measured zero; a crate replacement requires native dual-reader parity first.
 - macOS physical-disk quality is `held/iokit` while a device identity baseline is pending, `native/iokit` for a complete stable device set, and `unavailable/iokit` when complete host coverage cannot be proven.
-- macOS libproc failures retain the sysinfo process row and classify exit, access denial, unsupported fields, and collector failures separately. Exit drops ordinary churn; independently successful fields remain publishable.
+- macOS libproc failures keep the kernel-table process row and classify exit, access denial, unsupported fields, and collector failures separately. Exit drops ordinary churn; independently successful fields remain publishable.
 
 ## Process groups and history
 

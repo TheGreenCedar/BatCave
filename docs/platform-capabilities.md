@@ -9,26 +9,26 @@ This document lists supported collectors and packages for BatCave Monitor 0.2. E
 | System CPU | Win32 system counters; native aggregate and kernel CPU | `/proc/stat`; native aggregate, kernel, and logical CPU deltas | sysinfo host CPU; estimated aggregate/logical CPU, kernel CPU unavailable |
 | System memory | Win32 physical memory, commit, cache, and kernel pool counters | `/proc/meminfo`; native memory and swap | sysinfo host memory and swap; memory native, swap estimated |
 | Host disk | PDH physical-disk totals/rates | Deduplicated `/sys/class/block` physical-device totals/rates | Deduplicated `IOBlockStorageDriver` byte counters; disk-image paths are excluded |
-| Host network | Non-loopback interface aggregate | Non-loopback `/proc/net/dev` interface aggregate | sysinfo all-interface aggregate, including `lo0` |
-| Process identity and resources | Win32 process APIs | `/proc/<pid>` | sysinfo row enriched by libproc |
+| Host network | Non-loopback interface aggregate | Non-loopback `/proc/net/dev` interface aggregate | Non-loopback interface aggregate from the kernel route table and per-interface 64-bit counters |
+| Process identity and resources | Win32 process APIs | `/proc/<pid>` | Kernel process table (`KERN_PROC_ALL`) plus one libproc pass per process |
 | Process read/write I/O | Win32 cumulative transfer counters | `/proc/<pid>/io` cumulative counters | libproc `proc_pid_rusage` cumulative counters |
 | Process network | ETW IP socket payload attribution | Optional bpftrace/eBPF IP socket payload attribution | NStat IP socket payload attribution |
 | Protected collection | Current elevated token or installed collector service | Normal host permissions apply | Normal host permissions apply |
 
 The macOS host-disk number is a physical block-driver aggregate, not a sum of mounted APFS volumes or visible processes. Registry entry IDs deduplicate the source. Attaching a DMG may add an `IOBlockStorageDriver`, but its `IOHDIXController`/DiskImages registry path is excluded. If any eligible physical driver lacks a complete byte-counter pair, the whole host-disk metric fails closed to `unavailable`; it is not published as a partial host total. Device-set changes require a fresh baseline before rates resume.
 
-The macOS host-network source includes loopback because that is the scope exposed by sysinfo. Protocol v4 publishes `all_interface_aggregate` for those observations. Windows and Linux host-network observations publish `non_loopback_interface_aggregate`. macOS process rates come from XNU NStat TCP, UDP, and QUIC counters and publish `ip_socket_payload`.
+The macOS host-network source excludes loopback interfaces and reads 64-bit byte counters per interface; the collector derives rates from counter deltas and holds the first sample and any counter regression. All three platforms publish `non_loopback_interface_aggregate`. macOS process rates come from XNU NStat TCP, UDP, and QUIC counters and publish `ip_socket_payload`.
 
 NStat is a private XNU wire interface, not a private-framework dependency. BatCave opens one unprivileged nonblocking control socket and checks the revision-9 fields it consumes against small local TCP and UDP transfers on every session. All four socket endpoints, libproc process identity, and exact payload counters must match before a complete query can establish the baseline. The probes are excluded from app rates. This permits compatible descriptor growth without an OS-version cutoff. Rejected providers, unknown messages, unrequested extensions, malformed data, truncation, or failed qualification make attribution unavailable. Counter regression and dropped final counts mark the affected interval partial. No historical bytes are emitted as a live rate.
 
 ## Process failure semantics
 
-macOS libproc probes classify each field independently:
+macOS lists every process from the kernel process table, which needs no per-process permission, so processes owned by other users stay visible. Libproc probes then classify each field independently:
 
 | Probe outcome | Row behavior | Metric behavior |
 | --- | --- | --- |
 | Process exited (`ESRCH`) | Drop the stale row as ordinary churn | No denied count and no rate baseline |
-| Access denied (`EPERM`/`EACCES`) | Keep the sysinfo row; `denied` only when every native probe is denied | Affected counters are unavailable with `access_denied` |
+| Access denied (`EPERM`/`EACCES`) | Keep the row with kernel-table identity; `denied` only when every native probe is denied | Affected counters are unavailable with `access_denied` |
 | Unsupported (`ENOSYS`/`ENOTSUP`) | Keep the row as partial | Affected field is explicitly unavailable with `unsupported_metric` |
 | Other native failure | Keep the row as partial | Affected field is unavailable with `collector_failure` |
 | Mixed success/failure | Keep independently successful fields | Row is partial; one failed probe does not discard successful measurements |
