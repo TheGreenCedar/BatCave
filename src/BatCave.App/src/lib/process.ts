@@ -82,7 +82,7 @@ export const focusOptions: FocusOption[] = [
   {
     value: "attention",
     label: "Busy now",
-    description: "Apps with notable CPU, memory, I/O, or network use, or limited access",
+    description: "Apps with notable CPU, memory, I/O, or network use",
   },
   {
     value: "io",
@@ -98,13 +98,28 @@ export interface SortOption {
 }
 
 export const sortOptions: SortOption[] = [
-  { value: "attention", label: "Activity", description: "Busiest workloads first" },
+  {
+    value: "attention",
+    label: "Activity",
+    description:
+      "Activity ranks workloads by combined CPU, memory, disk and network use, weighted toward CPU.",
+  },
   { value: "cpu", label: "CPU", description: "CPU use, one logical core = 100%" },
   { value: "memory", label: "Memory", description: "Resident memory" },
   { value: "io", label: "I/O", description: "Disk read and write rate" },
   { value: "network", label: "Network", description: "Network send and receive rate" },
   { value: "name", label: "Name", description: "Alphabetical by workload name" },
 ];
+
+/**
+ * Ranking sorts by a 5-sample moving average computed in the runtime, and the
+ * emitted rows display those same averages.
+ */
+export function rankingWindowNote(sampleIntervalMs: number): string {
+  return sampleIntervalMs === 1000
+    ? "CPU, disk and network show 5-second averages; new processes join the ranking after 3 seconds."
+    : "CPU, disk and network show averages of the last 5 samples; new processes join the ranking after 3 samples.";
+}
 
 export const processColumns: ProcessColumn[] = [
   { key: "name", label: "Workload", description: "App or process name" },
@@ -302,8 +317,7 @@ export function processNeedsAttention(process: ProcessSample): boolean {
     process.cpu_percent >= attentionCpuPercent ||
     process.memory_bytes >= attentionMemoryBytes ||
     rawProcessIoRate(process) >= attentionIoBps ||
-    rawProcessNetworkRate(process) >= attentionNetworkBps ||
-    process.access_state !== "full"
+    rawProcessNetworkRate(process) >= attentionNetworkBps
   );
 }
 
@@ -518,6 +532,7 @@ export function settleProcessRanking(
   now: number,
   lastSettledAt: number,
   settleIntervalMs = 10_000,
+  isNearTie?: (a: ProcessViewRow, b: ProcessViewRow) => boolean,
 ): RankingSettle {
   const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row] as const));
   const currentKeys = new Set(current.map(processViewRowKey));
@@ -535,10 +550,31 @@ export function settleProcessRanking(
   const survivorIndexByKey = new Map(
     survivors.map((row, index) => [processViewRowKey(row), index] as const),
   );
-  for (let index = 0; index < commonIncoming.length; index += 1) {
-    const survivorIndex = survivorIndexByKey.get(processViewRowKey(commonIncoming[index]));
-    if (survivorIndex === undefined || Math.abs(index - survivorIndex) > 1) {
-      return { rows: incoming, settledAt: now };
+  if (isNearTie) {
+    // The held order survives only when every inversion it shows relative to
+    // the incoming order is a near-tie; any larger inversion adopts immediately.
+    for (let index = 0; index < commonIncoming.length; index += 1) {
+      for (let earlier = 0; earlier < index; earlier += 1) {
+        const incomingEarlier = commonIncoming[earlier];
+        const incomingLater = commonIncoming[index];
+        const earlierSurvivor = survivorIndexByKey.get(processViewRowKey(incomingEarlier));
+        const laterSurvivor = survivorIndexByKey.get(processViewRowKey(incomingLater));
+        if (
+          earlierSurvivor !== undefined &&
+          laterSurvivor !== undefined &&
+          earlierSurvivor > laterSurvivor &&
+          !isNearTie(incomingEarlier, incomingLater)
+        ) {
+          return { rows: incoming, settledAt: now };
+        }
+      }
+    }
+  } else {
+    for (let index = 0; index < commonIncoming.length; index += 1) {
+      const survivorIndex = survivorIndexByKey.get(processViewRowKey(commonIncoming[index]));
+      if (survivorIndex === undefined || Math.abs(index - survivorIndex) > 1) {
+        return { rows: incoming, settledAt: now };
+      }
     }
   }
 
@@ -554,6 +590,11 @@ export function settleProcessRanking(
     }
   }
   return { rows, settledAt: lastSettledAt };
+}
+
+/** Two ranked values count as a near-tie within an absolute floor or 15% of the larger value. */
+export function rankingNearTie(floor: number): (a: number, b: number) => boolean {
+  return (a, b) => Math.abs(a - b) <= Math.max(floor, 0.15 * Math.max(Math.abs(a), Math.abs(b)));
 }
 
 export function windowProcessViewRows(
@@ -628,17 +669,37 @@ export function shouldHoldProcessOrder(interaction: {
   return interaction.view === "explore" && interaction.interacting;
 }
 
+export interface RankedRows {
+  rows: ProcessViewRow[];
+  updateAvailable: boolean;
+  /** Keys of rows kept in place although they vanished from `incoming`. */
+  exitedKeys: Set<string>;
+}
+
 export function advanceProcessRanking(
   current: ProcessViewRow[],
   incoming: ProcessViewRow[],
   held: boolean,
-): { rows: ProcessViewRow[]; updateAvailable: boolean } {
-  return held
-    ? {
-        rows: stabilizeProcessRows(current, incoming),
-        updateAvailable: !hasSameProcessOrder(current, incoming),
-      }
-    : { rows: incoming, updateAvailable: false };
+): RankedRows {
+  if (!held) return { rows: incoming, updateAvailable: false, exitedKeys: new Set() };
+
+  const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row] as const));
+  const exitedKeys = new Set<string>();
+  const stable = current.map((row) => {
+    const next = incomingByKey.get(processViewRowKey(row));
+    if (next) return next;
+    // Ghost: keep the last known row object so nothing shifts under the cursor.
+    exitedKeys.add(processViewRowKey(row));
+    return row;
+  });
+  const stableKeys = new Set(current.map(processViewRowKey));
+  const rows = [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
+
+  return {
+    rows,
+    updateAvailable: exitedKeys.size > 0 || !hasSameProcessOrder(current, incoming),
+    exitedKeys,
+  };
 }
 
 export function reconcileWorkloadSelection(rows: ProcessViewRow[], selection: string): string {

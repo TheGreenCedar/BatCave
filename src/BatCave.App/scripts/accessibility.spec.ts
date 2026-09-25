@@ -150,8 +150,8 @@ test("enhanced explanations are an explicit local opt-in with a deterministic fa
 }) => {
   await openFixture(page, "settings");
   const dialog = page.getByRole("dialog", { name: "Settings" });
-  await expect(dialog.getByText("Not available on this system.")).toBeVisible();
-  await dialog.getByText("What this would do").click();
+  await expect(dialog.getByText("Enhanced explanations — not available on this Mac")).toBeVisible();
+  await dialog.getByText("Enhanced explanations — not available on this Mac").click();
   const toggle = dialog.getByRole("switch", {
     name: "Use local AI to choose explanations",
   });
@@ -753,4 +753,12 @@ test("exited inspection retains exact identity and last sample on desktop and co
   await expectNoAxeViolations(page);
   await page.setViewportSize({ width: 760, height: 900 });
   await expect(page.locator("body")).toHaveJSProperty("scrollWidth", 760);
+});
+
+test("Explore stays horizontally contained at the 720px minimum window width", async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 800 });
+  await openFixture(page, "overview");
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await expect(page.locator(".mobile-process-card").first()).toBeVisible();
+  await expect(page.locator("html")).toHaveJSProperty("scrollWidth", 720);
 });

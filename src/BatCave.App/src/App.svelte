@@ -58,7 +58,13 @@
     type NarrativeFactPacket,
   } from "./lib/narratives";
   import { buildOverviewStatus, leadingOverviewRows } from "./lib/overview";
-  import { buildTelemetryPresentation, metricPresentation } from "./lib/telemetryPresentation";
+  import {
+    applyCollectionHysteresis,
+    buildTelemetryPresentation,
+    createCollectionHysteresis,
+    isCollectionLimited,
+    metricPresentation,
+  } from "./lib/telemetryPresentation";
   import {
     platformPresentation,
     privateMemoryValue,
@@ -81,7 +87,7 @@
     sortKeyForColumn,
     sortOptions,
     shouldHoldProcessOrder,
-    settleProcessRanking,
+    rankingWindowNote,
     type FocusMode,
     type SortKey,
   } from "./lib/process";
@@ -100,15 +106,17 @@
     shouldApplyRuntimePublication,
     shouldPollRuntime,
   } from "./lib/runtimeSnapshot";
-  import { startRuntimePolling } from "./lib/runtimePolling";
+  import { documentVisibility, startRuntimePolling } from "./lib/runtimePolling";
   import { observeDesktopPublication } from "./lib/desktopProbe";
   import {
     boundedPercent,
     combineSeries,
     emptyTrendState,
     maxRate,
+    historyGapPoints,
     nextSystemHistory,
     percentage,
+    replaySystemHistory,
     trimSystemHistory,
   } from "./lib/telemetryHistory";
   import { AcceptedRuntimeControls } from "./lib/runtimeControls";
@@ -146,6 +154,7 @@
     observeAcceptedRuntimePublication,
     ProtocolMismatchError,
     readNativeSnapshot,
+    readSystemHistory,
     refreshRuntime,
     runtimeMutationAllowed,
     setRuntimePaused,
@@ -226,6 +235,7 @@
   let synchronizedThemeName: ResolvedThemeName | null = null;
   let historyPointLimit: HistoryPointLimit = 72;
   let history = emptyTrendState();
+  let lastHistorySampleSeq = 0;
   let inspection: WorkloadInspection | null = null;
   let inspectionLoading = false;
   let inspectionError = "";
@@ -237,6 +247,7 @@
   let resourceSummaries: ResourceSummaryOption[] = [];
   let displayProcessRows: ProcessViewRow[] = [];
   let pendingProcessRows: ProcessViewRow[] | null = null;
+  let exitedRowKeys: Set<string> = new Set();
   let queueInteracting = false;
   let rankingUpdateAvailable = false;
   let settingsOpen = false;
@@ -246,7 +257,6 @@
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
-  let rankingSettledAt = 0;
   let runtimeQueryRequestSeq = 0;
   let runtimeCadenceRequestSeq = 0;
   let pendingCadenceRequestSeq = 0;
@@ -296,7 +306,11 @@
     row.kind === "process" ? [row.detail.process] : [],
   );
   $: selectedRow = inspection?.stable_id === selectedWorkloadId ? inspection.row : null;
-  $: inspectionCurrent = inspection?.stable_id === selectedWorkloadId && inspection.status === "current" && inspection.sample_seq === snapshot.sample_seq && collectionState === "live" && !inspectionLoading && !inspectionError;
+  // A background refresh of the same workload must not flip the pane to
+  // "last recorded" for the one tick the inspection lags the snapshot.
+  $: inspectionCurrent = inspection?.stable_id === selectedWorkloadId && inspection.status === "current" && inspection.sample_seq + 1 >= snapshot.sample_seq && collectionState === "live" && !inspectionError;
+  // Only a first load for a newly selected workload shows the loading notice.
+  $: inspectionFirstLoad = inspectionLoading && inspection?.stable_id !== selectedWorkloadId;
   $: void refreshInspection(
     selectedWorkloadId,
     historyPointLimit,
@@ -323,11 +337,20 @@
       ? "native telemetry"
       : "fixture demo";
   $: systemQuality = snapshot.system.quality ?? {};
+  $: rankingNote = rankingWindowNote(snapshot.settings.sample_interval_ms);
   $: visibleProcessColumns = processColumns
     .filter((column) => column.key !== "attention")
-    .map((column) =>
-      column.key === "memory" ? { ...column, description: presentation.memoryLabel } : column,
-    );
+    .map((column) => {
+      const base =
+        column.key === "memory" ? presentation.memoryLabel : (column.description ?? "");
+      const smoothed = column.key === "cpu" || column.key === "io" || column.key === "network";
+      return { ...column, description: smoothed ? `${base} ${rankingNote}` : base };
+    });
+  $: rankedSortOptions = sortOptions.map((option) =>
+    option.value === "cpu" || option.value === "io" || option.value === "network"
+      ? { ...option, description: `${option.description} ${rankingNote}` }
+      : option,
+  );
   $: memoryAccounting = snapshot.system.memory_accounting;
   $: topKernelPoolTags = topPoolTags(memoryAccounting?.kernel_pool_tags);
   $: blockedProcessCount =
@@ -352,7 +375,14 @@
   $: coreSpread = Math.max(0, corePeak - coreMinimum);
   $: hotCoreCount = coreLoads.filter((core) => core.load >= 75).length;
   $: busyCoreCount = coreLoads.filter((core) => core.load >= 45).length;
-  $: telemetry = buildTelemetryPresentation(snapshot, pollState === "starting" ? "starting" : pollState === "error" ? "stale" : isPaused ? "paused" : "live");
+  const collectionHysteresis = createCollectionHysteresis();
+  let limitedLatched = false;
+  let transportState: CollectionState = "starting";
+  $: transportState = pollState === "starting" ? "starting" : pollState === "error" ? "stale" : isPaused ? "paused" : "live";
+  $: telemetry = applyCollectionHysteresis(
+    buildTelemetryPresentation(snapshot, transportState),
+    limitedLatched,
+  );
   $: collectionState = telemetry.state;
   $: overviewNarrativeCopy = collectionState === "live" && enhancedNarratives && overviewPrimaryProcess
     ? renderNarrative(overviewNarrative, processNarrativeFacts(overviewPrimaryProcess, overviewResource === "disk" ? "io" : overviewResource, "top_contributor"),
@@ -380,7 +410,6 @@
   $: overviewPrimaryProcess = resolveContributorProcess(snapshot, overviewPrimaryBrief.leadingProcessId);
   $: overviewPrimaryIdentity = overviewPrimaryProcess ? processIdentity(overviewPrimaryProcess) : null;
   $: overviewPrimaryIcon = resolvedProcessIcon(processIcons, overviewPrimaryProcess ? processIconKey(overviewPrimaryProcess) : undefined);
-  $: overviewPrimaryMetric = resourceSummaries.find((resource) => resource.mode === overviewResource);
   $: healthTone = telemetry.tone;
   $: healthLabel = telemetry.label;
   $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
@@ -432,7 +461,7 @@
       value: metricValueLabel(snapshot.system.cpu_percent, systemQuality.cpu, formatPercent),
       supportingMetrics: [
         {
-          label: "Peak logical core",
+          label: "Busiest core",
           value: metricValueLabel(corePeak, logicalCpuMetricQuality(systemQuality), formatPercent),
         },
       ],
@@ -565,13 +594,17 @@
         poll: async () => {
           if (shouldPollRuntime(isPaused, hasTauriRuntime())) {
             const next = await readSnapshot();
+            await backfillHistoryGap(next);
             ingest(next);
           }
         },
         scheduler: {
           setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
           clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
+          setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
+          clearInterval: (intervalId) => window.clearInterval(intervalId),
         },
+        visibility: documentVisibility(),
       });
     }
 
@@ -1488,9 +1521,36 @@
       return;
     }
 
+    limitedLatched = collectionHysteresis(
+      isCollectionLimited(
+        buildTelemetryPresentation(
+          next,
+          pollState === "error" ? "stale" : next.settings.paused ? "paused" : "live",
+        ),
+      ),
+    );
 
     history = nextSystemHistory(history, next, historyPointLimit);
+    lastHistorySampleSeq = next.sample_seq;
     dropStaleNarratives();
+  }
+
+  async function backfillHistoryGap(next: RuntimeSnapshot): Promise<void> {
+    if (runtimeMode() !== "native") return;
+    const last = lastHistorySampleSeq;
+    if (last <= 0 || next.sample_seq <= last + 1) return;
+    try {
+      const points = await readSystemHistory(invoke, last);
+      const retained = historyGapPoints(points, last, next.sample_seq);
+      if (!retained.length) return;
+      history = replaySystemHistory(history, retained, historyPointLimit);
+      lastHistorySampleSeq = Math.max(
+        lastHistorySampleSeq,
+        retained[retained.length - 1].sample_seq,
+      );
+    } catch {
+      // Backfill is best-effort; the live snapshot still appends on its own.
+    }
   }
 
   function hydrateRuntimeControls(next: RuntimeSnapshot): void {
@@ -1768,16 +1828,15 @@
     if (hold) {
       const ranking = advanceProcessRanking(displayProcessRows, incoming, true);
       displayProcessRows = ranking.rows;
+      exitedRowKeys = ranking.exitedKeys;
       rankingUpdateAvailable = ranking.updateAvailable;
       pendingProcessRows = incoming;
     } else {
-      const settled = forceRankingRefresh
-        ? { rows: incoming, settledAt: Date.now() }
-        : settleProcessRanking(displayProcessRows, incoming, Date.now(), rankingSettledAt);
-      displayProcessRows = settled.rows;
-      rankingSettledAt = settled.settledAt;
+      // Not interacting: adopt the incoming (backend-smoothed) order every tick.
+      displayProcessRows = incoming;
       rankingUpdateAvailable = false;
       pendingProcessRows = null;
+      exitedRowKeys = new Set();
     }
     forceRankingRefresh = false;
   }
@@ -1789,10 +1848,10 @@
   function applyPendingRanking(): void {
     if (pendingProcessRows !== null) {
       displayProcessRows = pendingProcessRows;
-      rankingSettledAt = Date.now();
     }
     pendingProcessRows = null;
     rankingUpdateAvailable = false;
+    exitedRowKeys = new Set();
   }
 
   function applyPendingRankingIfReleased(): void {
@@ -1808,7 +1867,12 @@
     }
   }
 
-  function resetHistory(): void { history = emptyTrendState(); }
+  function resetHistory(): void {
+    history = emptyTrendState();
+    // Keep tracking the newest accepted sample so the next poll does not
+    // backfill points the user just cleared.
+    lastHistorySampleSeq = snapshot.sample_seq;
+  }
   function trimHistory(): void { history = trimSystemHistory(history, historyPointLimit); }
 
   async function refreshInspection(stableId: string, pointLimit: HistoryPointLimit, publication: number, visible: boolean): Promise<void> {
@@ -2004,7 +2068,6 @@
       resources={resourceSummaries}
       leadingRows={overviewRows}
       {processIcons}
-      primaryMetric={overviewPrimaryMetric}
       leadingName={overviewPrimaryBrief.leadingWorkload}
       leadingValue={overviewContributorCopy}
       leadingNarrativeGenerated={overviewNarrativeCopy !== null}
@@ -2012,6 +2075,7 @@
       leadingIconKind={overviewPrimaryIdentity?.icon ?? "process"}
       leadingIconSrc={overviewPrimaryIcon.src}
       leadingIconMatched={overviewPrimaryIcon.origin === "name_match"}
+      leadingIconSystemTool={overviewPrimaryIcon.systemTool ?? false}
       onSelectResource={selectOverviewResource}
       onInspectResource={() => selectDetailMode(overviewResource)}
       onOpenDiagnostics={() => (diagnosticsOpen = true)}
@@ -2056,7 +2120,7 @@
           commandError={commandErrorSurface === "workload" ? commandError : ""}
           {rankingUpdateAvailable}
           {focusOptions}
-          {sortOptions}
+          sortOptions={rankedSortOptions}
           mutationsDisabled={protocolMismatch !== null}
           onFocus={setFocusMode}
           onSort={setSortKey}
@@ -2068,6 +2132,7 @@
         <div class="explore-queue">
           <AttentionQueue
             processRows={processViewRows}
+            {exitedRowKeys}
             {totalProcessCount}
             {focusMode}
             {searchText}
@@ -2095,7 +2160,7 @@
             {selectedWorkloadIconSrc}
             {selectedWorkloadIconMatched}
             {inspection}
-            {inspectionLoading}
+            inspectionLoading={inspectionFirstLoad}
             {inspectionError}
             {inspectionCurrent}
             {processReadRate}

@@ -6,7 +6,13 @@ import {
 } from "./format.ts";
 import { nextMetricHistory } from "./history.ts";
 import { processSelectionKey, type ProcessRates, type WorkloadMetrics } from "./process.ts";
-import type { ProcessSample, RuntimeSnapshot, TrendState, WorkloadDetail } from "./types.ts";
+import type {
+  ProcessSample,
+  RuntimeSnapshot,
+  SystemHistoryPoint,
+  TrendState,
+  WorkloadDetail,
+} from "./types.ts";
 
 export interface ProcessTrendState {
   cpu: number[];
@@ -43,7 +49,7 @@ export function emptyProcessTrendState(): ProcessTrendState {
 
 export function nextSystemHistory(
   previous: TrendState,
-  snapshot: RuntimeSnapshot,
+  snapshot: Pick<RuntimeSnapshot, "system">,
   pointLimit: number,
 ): TrendState {
   const logicalCpu = snapshot.system.logical_cpu_percent.length
@@ -104,6 +110,22 @@ export function nextSystemHistory(
       ),
     ),
   };
+}
+
+export function historyGapPoints(
+  points: SystemHistoryPoint[],
+  afterSeq: number,
+  beforeSeq: number,
+): SystemHistoryPoint[] {
+  return points.filter((point) => point.sample_seq > afterSeq && point.sample_seq < beforeSeq);
+}
+
+export function replaySystemHistory(
+  state: TrendState,
+  points: SystemHistoryPoint[],
+  pointLimit: number,
+): TrendState {
+  return points.reduce((history, point) => nextSystemHistory(history, point, pointLimit), state);
 }
 
 export function processRatesFromSamples(processes: ProcessSample[]): Record<string, ProcessRates> {

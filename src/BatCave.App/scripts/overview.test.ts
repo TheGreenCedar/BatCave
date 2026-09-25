@@ -10,9 +10,28 @@ import {
 } from "../src/lib/overview.ts";
 import { makeEmptySnapshot } from "../src/lib/runtimeSnapshot.ts";
 import {
+  applyCollectionHysteresis,
   buildTelemetryPresentation,
+  createCollectionHysteresis,
   metricPresentation,
 } from "../src/lib/telemetryPresentation.ts";
+import type { ProcessViewRow } from "../src/lib/types.ts";
+
+function withMetric(
+  row: ProcessViewRow,
+  resource: "cpu" | "memory",
+  value: number,
+): ProcessViewRow {
+  const clone = structuredClone(row);
+  if (resource === "cpu") {
+    if (clone.kind === "group") clone.detail.cpu_percent = value;
+    else clone.detail.process.cpu_percent = value;
+  } else {
+    if (clone.kind === "group") clone.detail.memory_bytes = value;
+    else clone.detail.process.memory_bytes = value;
+  }
+  return clone;
+}
 
 test("overview reports measured utilization without diagnosing machine health", () => {
   const snapshot = makeFixtureSnapshot(1, undefined, "macos");
@@ -73,6 +92,77 @@ test("startup, stale samples, pause, and collector failure share one freshness s
   assert.equal(buildTelemetryPresentation(snapshot, "live").state, "stale");
   snapshot.health.engine_state = "fatal";
   assert.equal(buildTelemetryPresentation(snapshot, "paused").tone, "danger");
+});
+
+test("a failed first poll reports monitoring unavailable instead of starting", () => {
+  const empty = makeEmptySnapshot("protocol_contributor_identity_invalid");
+  const failed = buildTelemetryPresentation(empty, "stale");
+  assert.equal(failed.state, "stale");
+  assert.equal(failed.tone, "danger");
+  assert.equal(failed.label, "Monitoring unavailable");
+
+  // A later successful poll recovers to the live presentation.
+  const recovered = buildTelemetryPresentation(makeFixtureSnapshot(1, undefined, "macos"), "live");
+  assert.equal(recovered.state, "live");
+  assert.equal(recovered.tone, "healthy");
+});
+
+function limitedPresentation() {
+  const snapshot = makeFixtureSnapshot(1, undefined, "macos");
+  snapshot.health.reason_codes = ["collector_limited"];
+  return buildTelemetryPresentation(snapshot, "live");
+}
+
+test("collection-limited hysteresis engages after 3 and clears after 5", () => {
+  const hysteresis = createCollectionHysteresis();
+  assert.equal(hysteresis(true), false, "first limited sample");
+  assert.equal(hysteresis(true), false, "second limited sample");
+  assert.equal(hysteresis(true), true, "third consecutive limited sample latches");
+  assert.equal(hysteresis(true), true, "stays latched");
+
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal(hysteresis(false), true, `clear sample ${index + 1} keeps the latch`);
+  }
+  assert.equal(hysteresis(false), false, "fifth clear sample releases");
+
+  // A single limited sample after release does not re-engage.
+  assert.equal(hysteresis(true), false);
+});
+
+test("hysteresis gates only the limited presentation; danger passes through", () => {
+  const limited = limitedPresentation();
+  assert.equal(limited.label, "Collection limited");
+
+  const unlatched = applyCollectionHysteresis(limited, false);
+  assert.equal(unlatched.tone, "healthy");
+  assert.equal(unlatched.label, "Monitoring");
+  assert.equal(unlatched.state, "live");
+
+  const healthy = buildTelemetryPresentation(makeFixtureSnapshot(1, undefined, "macos"), "live");
+  const stillLimited = applyCollectionHysteresis(healthy, true);
+  assert.equal(stillLimited.label, "Collection limited");
+  assert.equal(stillLimited.tone, "warning");
+
+  const stale = buildTelemetryPresentation(makeEmptySnapshot("failed"), "stale");
+  const passthrough = applyCollectionHysteresis(stale, true);
+  assert.equal(passthrough.label, "Monitoring unavailable");
+  assert.equal(passthrough.tone, "danger");
+});
+
+test("collector-limited and limitation counts stay chip-only; danger keeps the banner", () => {
+  const limited = makeFixtureSnapshot(1, undefined, "macos");
+  limited.health.reason_codes = ["collector_limited"];
+  limited.health.collector_state = "limited";
+  const limitedStatus = buildOverviewStatus(limited, "live", 4);
+  assert.equal(limitedStatus.attention.tone, "healthy");
+
+  const calm = buildOverviewStatus(makeFixtureSnapshot(1, undefined, "macos"), "live", 3);
+  assert.equal(calm.attention.tone, "healthy");
+
+  const stale = makeEmptySnapshot("protocol failure");
+  stale.health.freshness = "stale";
+  const staleStatus = buildOverviewStatus(stale, "stale", 0);
+  assert.equal(staleStatus.attention.tone, "danger");
 });
 
 test("metric presentation fails closed and preserves real zero plus freshness", () => {
@@ -175,12 +265,19 @@ test("Overview order holds fresh identities through pointer and keyboard interac
   ranking.setInteraction("pointer", true);
   ranking.update("cpu", initial);
   assert.deepEqual(ranking.update("memory", incoming), incoming);
-  assert.deepEqual(ranking.update("memory", []), []);
+  // While interacting, an emptied incoming list keeps the last rows as ghosts.
+  assert.deepEqual(
+    ranking.update("memory", []).map((row) => row.detail.workload_id),
+    incoming.map((row) => row.detail.workload_id),
+  );
+  // Releasing the interaction drops the ghosts.
   assert.deepEqual(ranking.setInteraction("pointer", false), []);
 });
 
-test("Overview ranking keeps an adjacent swap stable inside the settle interval", () => {
-  const initial = makeFixtureSnapshot(1, undefined, "macos").overview_rows.slice(0, 3);
+test("Overview ranking keeps a near-tie swap stable inside the settle interval", () => {
+  const initial = makeFixtureSnapshot(1, undefined, "macos")
+    .overview_rows.slice(0, 3)
+    .map((row, index) => withMetric(row, "cpu", 20 + index * 0.5));
   const swapped = [initial[1], initial[0], initial[2]];
   const ranking = new OverviewRanking();
   assert.deepEqual(ranking.update("cpu", initial), initial);
@@ -188,6 +285,64 @@ test("Overview ranking keeps an adjacent swap stable inside the settle interval"
     ranking.update("cpu", swapped).map((row) => row.detail.workload_id),
     initial.map((row) => row.detail.workload_id),
   );
-  const displaced = [initial[2], initial[0], initial[1]];
-  assert.deepEqual(ranking.update("cpu", displaced), displaced);
+});
+
+test("Overview ranking adopts a large inversion immediately", () => {
+  const [first, second] = makeFixtureSnapshot(1, undefined, "macos").overview_rows.slice(0, 2);
+  const quiet = withMetric(first, "cpu", 23);
+  const busy = withMetric(second, "cpu", 182);
+  const ranking = new OverviewRanking();
+  assert.deepEqual(ranking.update("cpu", [quiet, busy]), [quiet, busy]);
+  // A quiet row outranking a much busier one is not a tie; re-sort now.
+  assert.deepEqual(ranking.update("cpu", [busy, quiet]), [busy, quiet]);
+});
+
+test("Overview ranking holds memory inversions only within the near-tie floor", () => {
+  const rows = makeFixtureSnapshot(1, undefined, "macos")
+    .overview_rows.slice(0, 2)
+    .map((row) => structuredClone(row));
+  const gib = 1024 * 1024 * 1024;
+  const mib = 1024 * 1024;
+  const base = rows.map((row, index) => withMetric(row, "memory", gib + index * 20 * mib));
+  const ranking = new OverviewRanking();
+  assert.deepEqual(ranking.update("memory", base), base);
+  // 20 MiB is inside the 32 MiB floor for a ~1 GiB row: held.
+  assert.deepEqual(
+    ranking.update("memory", [base[1], base[0]]).map((row) => row.detail.workload_id),
+    base.map((row) => row.detail.workload_id),
+  );
+
+  const far = rows.map((row, index) => withMetric(row, "memory", gib + index * 400 * mib));
+  const distant = new OverviewRanking();
+  distant.update("memory", far);
+  assert.deepEqual(distant.update("memory", [far[1], far[0]]), [far[1], far[0]]);
+});
+
+test("OverviewRanking reports an available update while held and applies it on request", () => {
+  const rows = makeFixtureSnapshot(1, undefined, "macos")
+    .overview_rows.slice(0, 3)
+    .map((row, index) => withMetric(row, "cpu", 40 - index));
+  const reordered = [rows[1], rows[2], rows[0]];
+  const ranking = new OverviewRanking();
+  ranking.update("cpu", rows);
+  assert.equal(ranking.updateAvailable, false);
+
+  // A settle-hold without interaction stays silent.
+  ranking.update("cpu", reordered);
+  assert.equal(ranking.updateAvailable, false);
+
+  ranking.setInteraction("pointer", true);
+  const held = ranking.update("cpu", reordered);
+  assert.equal(ranking.updateAvailable, true);
+  assert.deepEqual(
+    held.map((row) => row.detail.workload_id),
+    rows.map((row) => row.detail.workload_id),
+  );
+
+  assert.deepEqual(ranking.applyUpdate(), reordered);
+  assert.equal(ranking.updateAvailable, false);
+  assert.deepEqual(
+    ranking.update("cpu", reordered).map((row) => row.detail.workload_id),
+    reordered.map((row) => row.detail.workload_id),
+  );
 });

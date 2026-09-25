@@ -543,7 +543,7 @@ test("quality guidance entries group metrics that share a message", () => {
     }),
     [
       {
-        metrics: "Kernel CPU, Peak logical core",
+        metrics: "Kernel CPU, Busiest core",
         message: "Kernel metrics unavailable",
         consequence: "Shown as Unavailable.",
       },
@@ -614,7 +614,7 @@ test("memory accounting formats null and held observations honestly", () => {
   assert.equal(displayAccountingMetricValue(1024, { quality: "held" }, String), "Held");
 });
 
-test("attention includes each scored resource and limited access", () => {
+test("attention includes each scored resource but not limited access", () => {
   const quiet = process();
 
   assert.equal(processNeedsAttention(quiet), false);
@@ -622,7 +622,9 @@ test("attention includes each scored resource and limited access", () => {
   assert.equal(processNeedsAttention(process({ memory_bytes: 900 * 1024 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ io_read_bps: 500 * 1024 })), true);
   assert.equal(processNeedsAttention(process({ network_received_bps: 1024 * 1024 })), true);
-  assert.equal(processNeedsAttention(process({ access_state: "partial" })), true);
+  // Limited access is not activity; quality communicates it separately.
+  assert.equal(processNeedsAttention(process({ access_state: "partial" })), false);
+  assert.equal(processNeedsAttention(process({ access_state: "denied" })), false);
   assert.equal(processNeedsAttention(process({ other_io_bps: 8 * 1024 * 1024 })), false);
 });
 

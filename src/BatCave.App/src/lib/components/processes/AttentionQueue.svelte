@@ -21,6 +21,7 @@
   export let sortDirection: SortDirection;
   export let processIcons: ResolvedProcessIconCatalog = {};
   export let rankingUpdateAvailable = false;
+  export let exitedRowKeys: Set<string> = new Set();
   export let platform: RuntimePlatform = "fixture";
   export let onSelect: (pid: string) => void;
   export let onToggleSort: (key: SortKey) => void;
@@ -111,6 +112,7 @@
   {#if mobileLayout}
     <MobileProcessList
       processRows={visibleRows}
+      {exitedRowKeys}
       {selectedWorkloadId}
       {processIcons}
       {expandedGroups}
@@ -122,6 +124,7 @@
   {:else}
     <ProcessTable
       processRows={visibleRows}
+      {exitedRowKeys}
       {columns}
       {selectedWorkloadId}
       {sortKey}

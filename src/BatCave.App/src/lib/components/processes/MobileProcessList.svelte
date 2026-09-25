@@ -35,6 +35,7 @@
   export let onToggleGroup: (key: string) => void = () => {};
   export let onInteractionChange: (active: boolean) => void = () => {};
   export let platform: RuntimePlatform = "fixture";
+  export let exitedRowKeys: Set<string> = new Set();
 
   $: cardRows = processRows.filter(
     (row) =>
@@ -139,9 +140,11 @@
     {@const actionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
     {@const expanded = row.kind === "group" ? !!expandedGroups[row.detail.group_key] : false}
     {@const secondaryLabel = processRowSecondaryLabel(row)}
+    {@const ghost = exitedRowKeys.has(processViewRowKey(row))}
     <article
       class="mobile-process-card"
       class:selected={highlighted}
+      class:exited-row={ghost}
       class:child-card={row.kind === "process" && row.is_grouped}
     >
       <button
@@ -149,8 +152,11 @@
         type="button"
         aria-pressed={actionSelected}
         aria-label={row.kind === "group" ? `Inspect ${row.detail.label} group` : `Inspect ${process?.name}, PID ${process?.pid}`}
+        aria-disabled={ghost || undefined}
         data-workload-id={row.detail.workload_id}
-        onclick={() => selectRow(row)}
+        onclick={() => {
+          if (!ghost) selectRow(row);
+        }}
       >
         <span class="card-title-row">
           <span class="mobile-process-title">
@@ -159,6 +165,7 @@
               child={row.kind === "process" && row.is_grouped}
               src={resolvedIcon.src}
               matched={resolvedIcon.origin === "name_match"}
+              systemTool={resolvedIcon.systemTool ?? false}
             />
             <span>
               <strong title={row.kind === "group" ? row.detail.label : process?.exe || process?.name}>{displayProcessName(row.kind === "group" ? row.detail.label : process?.name ?? "")}</strong>
@@ -170,19 +177,19 @@
         <span class="card-metrics">
           <span>
             <em>CPU / core</em>
-            <b title={process?.quality?.cpu?.message ?? ""}>{cpuLabel(row)}</b>
+            <b title={process?.quality?.cpu?.message ?? ""}>{ghost ? "Exited" : cpuLabel(row)}</b>
           </span>
           <span>
             <em>{presentation.memoryLabel}</em>
-            <b title={process ? processMemoryTitle(process) : ""}>{row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</b>
+            <b title={process ? processMemoryTitle(process) : ""}>{ghost ? "—" : row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</b>
           </span>
           <span>
             <em>I/O</em>
-            <b title={process?.quality?.io?.message ?? ""}>{ioLabel(row)}</b>
+            <b title={process?.quality?.io?.message ?? ""}>{ghost ? "—" : ioLabel(row)}</b>
           </span>
           <span>
             <em>Network</em>
-            <b>{networkLabel(row)}</b>
+            <b>{ghost ? "—" : networkLabel(row)}</b>
           </span>
         </span>
         <span class="card-foot">

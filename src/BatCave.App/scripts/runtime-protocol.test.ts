@@ -20,6 +20,9 @@ const windows = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/windows-s
 const elevated = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/windows-elevated.json");
 const linux = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/linux-partial.json");
 const macos = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/macos-limited.json");
+const macosPartialContributors = fixture(
+  "../src-tauri/src/fixtures/runtime-protocol-v4/macos-partial-contributors.json",
+);
 const incompatible = fixture("../src-tauri/src/fixtures/runtime-protocol-v4/incompatible.json");
 const transitions = fixtureArray(
   "../src-tauri/src/fixtures/runtime-protocol-v4/quality-transitions.json",
@@ -155,6 +158,26 @@ test("unsupported process values remain unavailable instead of becoming zero", (
   const adapted = adaptRuntimePayload(decoded.payload);
   assert.ok(Number.isNaN(adapted.processes[0].private_bytes));
   assert.equal(adapted.processes[0].quality?.memory?.quality, "partial");
+});
+
+test("named contributors with partial coverage decode and adapt", () => {
+  const decoded = decodeProtocolEnvelope(macosPartialContributors);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") return;
+
+  const adapted = adaptRuntimePayload(decoded.payload);
+  assert.equal(adapted.process_contributors.cpu, "BatCave.App");
+  assert.equal(adapted.process_contributors.cpu_process_id, "process:1234:1699999999000");
+  assert.deepEqual(adapted.process_contributors.cpu_coverage, { available: 2, total: 4 });
+  assert.equal(adapted.process_contributors.cpu_quality?.quality, "partial");
+  assert.equal(adapted.process_contributors.cpu_quality?.limitation_code, "group_partial_coverage");
+  assert.equal(adapted.process_contributors.memory, "BatCave.App");
+  assert.deepEqual(adapted.process_contributors.memory_coverage, {
+    available: 3,
+    total: 4,
+  });
+  assert.equal(adapted.process_contributors.network, null);
+  assert.equal(adapted.process_contributors.network_coverage.available, 0);
 });
 
 test("nullable memory accounting keeps its value and quality instead of producing NaN", () => {

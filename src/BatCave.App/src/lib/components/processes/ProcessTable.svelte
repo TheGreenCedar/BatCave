@@ -2,6 +2,7 @@
   import { displayProcessName } from "../../cockpit";
   import { ProcessInteraction } from "../../process";
   import ArrowDown from "phosphor-svelte/lib/ArrowDown";
+  import ArrowsDownUp from "phosphor-svelte/lib/ArrowsDownUp";
   import ArrowElbowDownRight from "phosphor-svelte/lib/ArrowElbowDownRight";
   import ArrowUp from "phosphor-svelte/lib/ArrowUp";
   import CaretRight from "phosphor-svelte/lib/CaretRight";
@@ -46,6 +47,13 @@
   export let onToggleGroup: (key: string) => void = () => {};
   export let onInteractionChange: (active: boolean) => void = () => {};
   export let platform: RuntimePlatform = "fixture";
+  export let exitedRowKeys: Set<string> = new Set();
+
+  function metricCellTitleFor(row: ProcessViewRow, metric: "cpu" | "io" | "network"): string {
+    return row.kind === "group"
+      ? (row.detail.quality[metric].message ?? "")
+      : (row.detail.process.quality?.[metric]?.message ?? "");
+  }
 
   function processCountLabel(count: number): string {
     return `${count} ${count === 1 ? "process" : "processes"}`;
@@ -129,13 +137,29 @@
   }
 </script>
 
+{#snippet metricCell(ghost: boolean, ghostLabel: string, label: string, title: string)}
+  {#if ghost}
+    <td class="ghost-cell">{ghostLabel}</td>
+  {:else if label === "Unavailable"}
+    <td class="metric-unavailable" title={title || "Unavailable"} aria-label="Unavailable">—</td>
+  {:else}
+    <td title={title}>{label}</td>
+  {/if}
+{/snippet}
+
 <div
   class="table-wrap attention-table-wrap"
   role="region"
   aria-label="Ranked apps and processes"
   onpointerenter={() => setInteraction("pointer", true)}
   onpointerleave={() => setInteraction("pointer", false)}
-  onfocusin={() => setInteraction("focus", true)}
+  onfocusin={(event) => {
+    // Only keyboard focus holds the order; a clicked row keeps focus and would
+    // otherwise freeze the ranking until focus moves elsewhere.
+    if (event.target instanceof Element && event.target.matches(":focus-visible")) {
+      setInteraction("focus", true);
+    }
+  }}
   onfocusout={handleFocusOut}
 >
   <table class="attention-table" class:without-network={!columns.some((column) => column.key === "network")}>
@@ -164,6 +188,10 @@
                     <ArrowDown size={13} weight="bold" />
                   {/if}
                 </small>
+              {:else}
+                <small class="sort-direction-icon sort-idle" aria-hidden="true">
+                  <ArrowsDownUp size={13} weight="regular" />
+                </small>
               {/if}
             </button>
           </th>
@@ -179,7 +207,13 @@
           {@const groupActionSelected = workloadSelectionMatchesRow(row, selectedWorkloadId)}
           {@const expanded = !!expandedGroups[row.detail.group_key]}
           {@const secondaryLabel = processRowSecondaryLabel(row)}
-          <tr class:group-selected={groupHighlighted} class="app-group-row">
+          {@const ghost = exitedRowKeys.has(processViewRowKey(row))}
+          <tr
+            class:group-selected={groupHighlighted}
+            class="app-group-row"
+            class:expanded
+            class:exited-row={ghost}
+          >
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
@@ -202,13 +236,17 @@
                       type="button"
                       aria-pressed={groupActionSelected}
                       aria-label={`Inspect ${row.detail.label} group`}
+                      aria-disabled={ghost || undefined}
                       data-workload-id={row.detail.workload_id}
-                      onclick={() => onSelect(row.detail.workload_id)}
+                      onclick={() => {
+                        if (!ghost) onSelect(row.detail.workload_id);
+                      }}
                     >
                       <ProcessIcon
                         kind={iconKind(row)}
                         src={resolvedIcon.src}
                         matched={resolvedIcon.origin === "name_match"}
+                        systemTool={resolvedIcon.systemTool ?? false}
                       />
                       <span class="process-name-stack">
                         <span title={row.detail.label}>{displayProcessName(row.detail.label)}</span>
@@ -220,13 +258,18 @@
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Sampled"}</span></td>
               {:else if column.key === "cpu"}
-                <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
+                {@render metricCell(ghost, "Exited", cpuCellLabel(row), metricCellTitleFor(row, "cpu"))}
               {:else if column.key === "memory"}
-                <td>{displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</td>
+                {@render metricCell(
+                  ghost,
+                  "—",
+                  displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes),
+                  row.detail.quality.memory?.message ?? "",
+                )}
               {:else if column.key === "io"}
-                <td title={metricCellTitle(row, "io")}>{ioCellLabel(row)}</td>
+                {@render metricCell(ghost, "—", ioCellLabel(row), metricCellTitleFor(row, "io"))}
               {:else if column.key === "network"}
-                <td title={networkCellTitle(row)}>{networkCellLabel(row)}</td>
+                {@render metricCell(ghost, "—", networkCellLabel(row), metricCellTitleFor(row, "network"))}
               {:else}
                 <td></td>
               {/if}
@@ -237,7 +280,12 @@
           {@const resolvedIcon = processIcon(process)}
           {@const selectionKey = row.detail.workload_id}
           {@const secondaryLabel = processRowSecondaryLabel(row)}
-          <tr class:selected={selectionKey === selectedWorkloadId} class:child-row={row.is_grouped}>
+          {@const ghost = exitedRowKeys.has(processViewRowKey(row))}
+          <tr
+            class:selected={selectionKey === selectedWorkloadId}
+            class:child-row={row.is_grouped}
+            class:exited-row={ghost}
+          >
             {#each columns as column}
               {#if column.key === "name"}
                 <td>
@@ -251,13 +299,17 @@
                       type="button"
                       aria-pressed={selectionKey === selectedWorkloadId}
                       aria-label={`Inspect ${process.name}, PID ${process.pid}`}
+                      aria-disabled={ghost || undefined}
                       data-workload-id={selectionKey}
-                      onclick={() => onSelect(selectionKey)}
+                      onclick={() => {
+                        if (!ghost) onSelect(selectionKey);
+                      }}
                     >
                       <ProcessIcon
                         kind={iconKind(row)}
                         src={resolvedIcon.src}
                         matched={resolvedIcon.origin === "name_match"}
+                        systemTool={resolvedIcon.systemTool ?? false}
                       />
                       <span class="process-name-stack">
                         <span title={process.exe || process.name}>{displayProcessName(process.name)}</span>
@@ -269,13 +321,13 @@
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Sampled"}</span></td>
               {:else if column.key === "cpu"}
-                <td title={metricCellTitle(row, "cpu")}>{cpuCellLabel(row)}</td>
+                {@render metricCell(ghost, "Exited", cpuCellLabel(row), metricCellTitleFor(row, "cpu"))}
               {:else if column.key === "memory"}
-                <td title={processMemoryTitle(process)}>{residentMemoryValue(process, platform)}</td>
+                {@render metricCell(ghost, "—", residentMemoryValue(process, platform), processMemoryTitle(process))}
               {:else if column.key === "io"}
-                <td title={metricCellTitle(row, "io")}>{ioCellLabel(row)}</td>
+                {@render metricCell(ghost, "—", ioCellLabel(row), metricCellTitleFor(row, "io"))}
               {:else if column.key === "network"}
-                <td title={networkCellTitle(row)}>{networkCellLabel(row)}</td>
+                {@render metricCell(ghost, "—", networkCellLabel(row), metricCellTitleFor(row, "network"))}
               {:else}
                 <td></td>
               {/if}

@@ -204,6 +204,12 @@ export interface SystemMetricsSnapshot {
   quality?: SystemMetricQuality;
 }
 
+export interface SystemHistoryPoint {
+  sample_seq: number;
+  sampled_at_ms: number;
+  system: SystemMetricsSnapshot;
+}
+
 export interface SystemMemoryAccounting {
   process_working_set_bytes: number | null;
   process_private_bytes: number | null;

@@ -3,18 +3,21 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 use std::collections::HashMap;
 
-use sysinfo::{
-    CpuRefreshKind, MemoryRefreshKind, Networks, ProcessRefreshKind, RefreshKind, System,
-    UpdateKind,
-};
+#[cfg(not(target_os = "macos"))]
+use sysinfo::Networks;
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+#[cfg(not(target_os = "macos"))]
+use sysinfo::{ProcessRefreshKind, UpdateKind};
 
+#[cfg(any(not(target_os = "macos"), test))]
+use crate::contracts::AccessState;
 use crate::contracts::{
-    AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
-    ProcessMetricQuality, ProcessSample, RuntimeCollectorServiceStatus, RuntimeCollectorState,
-    SystemMetricQuality, SystemMetricsSnapshot,
+    MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource, ProcessMetricQuality,
+    ProcessSample, RuntimeCollectorServiceStatus, RuntimeCollectorState, SystemMetricQuality,
+    SystemMetricsSnapshot,
 };
 #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
 use crate::network_attribution::{
@@ -61,6 +64,7 @@ pub struct TelemetrySampleProvenance {
 
 pub struct TelemetryCollector {
     system: System,
+    #[cfg(not(target_os = "macos"))]
     networks: Networks,
     #[cfg(target_os = "linux")]
     linux_system: LinuxSystemCollector,
@@ -125,6 +129,7 @@ impl TelemetryCollector {
     ) -> Self {
         Self {
             system: System::new_with_specifics(sysinfo_refresh_kind()),
+            #[cfg(not(target_os = "macos"))]
             networks: Networks::new_with_refreshed_list(),
             #[cfg(target_os = "linux")]
             linux_system: LinuxSystemCollector::new(),
@@ -169,25 +174,58 @@ impl TelemetryCollector {
 
         let process_sample_started_ms = now_ms();
         self.system.refresh_specifics(sysinfo_refresh_kind());
+        #[cfg(not(target_os = "macos"))]
         self.networks.refresh(true);
 
-        let sysinfo_processes = collect_sysinfo_processes(&self.system);
-        let sysinfo_cpu_by_generation = sysinfo_processes
-            .iter()
-            .filter_map(|process| {
-                sysinfo_process_join_key(process)
-                    .map(|generation| (generation, process.cpu_percent))
-            })
-            .collect::<HashMap<_, _>>();
         let logical_cpu_percent = logical_cpu_percent(&self.system, &mut warnings);
-        let sysinfo_snapshot = collect_sysinfo_system(&self.system, &self.networks);
-        let mut processes = collect_processes(
-            &sysinfo_processes,
-            &sysinfo_cpu_by_generation,
-            &mut warnings,
-            self,
-            process_sample_started_ms,
-        )?;
+        // macOS sums the kernel interface counters directly; sysinfo's Networks
+        // refresh does a getifaddrs per interface per tick.
+        #[cfg(not(target_os = "macos"))]
+        let sysinfo_snapshot =
+            collect_sysinfo_system(&self.system, summed_network_totals(&self.networks));
+        #[cfg(target_os = "macos")]
+        let sysinfo_snapshot = collect_sysinfo_system(&self.system, (0, 0));
+
+        // macOS enumerates processes with libproc; sysinfo processes stay on Windows
+        // and the generic fallback.
+        #[cfg(target_os = "macos")]
+        let mut processes = {
+            let (processes, collection) = self.macos_processes.collect(process_sample_started_ms);
+            let process_count = processes.len();
+            if process_count > 0
+                && collection
+                    .denied_count
+                    .saturating_add(collection.partial_count)
+                    == process_count
+            {
+                warnings.push(format!(
+                    "macos_process_collector_no_full_access:denied={} partial={}",
+                    collection.denied_count, collection.partial_count
+                ));
+            }
+            processes
+        };
+        #[cfg(not(target_os = "macos"))]
+        let mut processes = {
+            let sysinfo_processes = collect_sysinfo_processes(&self.system);
+            #[cfg(windows)]
+            let sysinfo_cpu_by_generation = sysinfo_processes
+                .iter()
+                .filter_map(|process| {
+                    sysinfo_process_join_key(process)
+                        .map(|generation| (generation, process.cpu_percent))
+                })
+                .collect::<HashMap<_, _>>();
+            #[cfg(not(windows))]
+            let sysinfo_cpu_by_generation = HashMap::<SysinfoProcessJoinKey, f64>::new();
+            collect_processes(
+                &sysinfo_processes,
+                &sysinfo_cpu_by_generation,
+                &mut warnings,
+                self,
+                process_sample_started_ms,
+            )?
+        };
         let mut system_snapshot = collect_system_snapshot(
             sysinfo_snapshot,
             &logical_cpu_percent,
@@ -252,7 +290,10 @@ impl TelemetryCollector {
             self.networks.refresh(true);
             (
                 Some(collect_sysinfo_processes(&self.system)),
-                Some(collect_sysinfo_system(&self.system, &self.networks)),
+                Some(collect_sysinfo_system(
+                    &self.system,
+                    summed_network_totals(&self.networks),
+                )),
             )
         } else {
             (None, None)
@@ -363,6 +404,7 @@ fn metric_degrades_collector(quality: &MetricQualityInfo) -> bool {
     }) || (quality.quality == MetricQuality::Unavailable && quality.limitation_code.is_none())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn sysinfo_refresh_kind() -> RefreshKind {
     RefreshKind::nothing()
         .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
@@ -377,6 +419,15 @@ fn sysinfo_refresh_kind() -> RefreshKind {
         )
 }
 
+// macOS keeps sysinfo for global/logical CPU and memory only; process rows come from
+// the libproc collector, so the per-tick process refresh is skipped entirely.
+#[cfg(target_os = "macos")]
+fn sysinfo_refresh_kind() -> RefreshKind {
+    RefreshKind::nothing()
+        .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+        .with_memory(MemoryRefreshKind::everything())
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -384,14 +435,14 @@ pub fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SysinfoProcessJoinKey {
     pid: u32,
     start_time_seconds: u64,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 fn sysinfo_process_join_key(process: &ProcessSample) -> Option<SysinfoProcessJoinKey> {
     let pid = process.pid.parse().ok()?;
     (process.start_time_ms > 0).then_some(SysinfoProcessJoinKey {
@@ -407,7 +458,7 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 fn collect_processes(
     sysinfo_processes: &[ProcessSample],
     sysinfo_cpu_by_generation: &HashMap<SysinfoProcessJoinKey, f64>,
@@ -450,28 +501,6 @@ fn collect_processes(
                 Ok(sysinfo_processes.to_vec())
             }
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let _ = sysinfo_cpu_by_generation;
-        let mut processes = sysinfo_processes.to_vec();
-        let process_count = processes.len();
-        let collection = collector
-            .macos_processes
-            .enrich(&mut processes, process_sample_started_ms);
-        if process_count > 0
-            && collection
-                .denied_count
-                .saturating_add(collection.partial_count)
-                == process_count
-        {
-            warnings.push(format!(
-                "macos_process_collector_no_full_access:denied={} partial={}",
-                collection.denied_count, collection.partial_count
-            ));
-        }
-        Ok(processes)
     }
 
     #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
@@ -542,9 +571,12 @@ fn collect_system_snapshot(
 
     #[cfg(target_os = "macos")]
     {
-        let _ = (logical_cpu_percent, warnings);
+        let _ = logical_cpu_percent;
         let mut snapshot = sysinfo_snapshot;
         collector.macos_system.enrich(&mut snapshot, processes);
+        collector
+            .macos_system
+            .apply_network_rates(&mut snapshot, warnings);
         Ok(snapshot)
     }
 
@@ -649,16 +681,20 @@ impl TelemetryCollector {
     }
 }
 
-fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetricsSnapshot {
-    let (network_received_total_bytes, network_transmitted_total_bytes) =
-        networks
-            .iter()
-            .fold((0_u64, 0_u64), |(received, transmitted), (_, data)| {
-                (
-                    received.saturating_add(data.total_received()),
-                    transmitted.saturating_add(data.total_transmitted()),
-                )
-            });
+#[cfg(not(target_os = "macos"))]
+fn summed_network_totals(networks: &Networks) -> (u64, u64) {
+    networks
+        .iter()
+        .fold((0_u64, 0_u64), |(received, transmitted), (_, data)| {
+            (
+                received.saturating_add(data.total_received()),
+                transmitted.saturating_add(data.total_transmitted()),
+            )
+        })
+}
+
+fn collect_sysinfo_system(system: &System, network_totals: (u64, u64)) -> SystemMetricsSnapshot {
+    let (network_received_total_bytes, network_transmitted_total_bytes) = network_totals;
 
     SystemMetricsSnapshot {
         cpu_percent: round1(system.global_cpu_usage() as f64),
@@ -727,6 +763,7 @@ fn collect_sysinfo_system(system: &System, networks: &Networks) -> SystemMetrics
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn collect_sysinfo_processes(system: &System) -> Vec<ProcessSample> {
     system
         .processes()
@@ -807,27 +844,11 @@ fn process_network_quality_unavailable() -> MetricQualityInfo {
     )
 }
 
-#[cfg(all(not(windows), not(target_os = "macos")))]
+#[cfg(all(not(windows), any(not(target_os = "macos"), test)))]
 fn process_network_quality_unavailable() -> MetricQualityInfo {
     MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Sysinfo).with_limitation(
         MetricLimitationCode::UnsupportedMetric,
         "Per-process network attribution is unavailable from the sysinfo fallback.",
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn process_network_quality_unavailable() -> MetricQualityInfo {
-    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
-        MetricLimitationCode::UnsupportedMetric,
-        "Per-process network attribution is unavailable on macOS.",
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn process_io_seed_quality() -> MetricQualityInfo {
-    MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
-        MetricLimitationCode::CollectorFailure,
-        "Native process read/write totals have not been collected.",
     )
 }
 
@@ -1155,7 +1176,7 @@ mod tests {
     #[test]
     fn isolated_process_probe_failure_stays_row_local() {
         let native = MetricQualityInfo::new(MetricQuality::Native, MetricSource::DirectApi);
-        let mut system = collect_sysinfo_system(&System::new(), &Networks::new());
+        let mut system = collect_sysinfo_system(&System::new(), (0, 0));
         system.quality = Some(SystemMetricQuality {
             cpu: Some(native.clone()),
             kernel_cpu: Some(native.clone()),
@@ -1189,11 +1210,10 @@ mod tests {
     #[test]
     fn sysinfo_fallback_marks_physical_disk_unavailable_for_native_collector_failures() {
         let system = System::new();
-        let networks = Networks::new();
 
         // Windows and Linux both return this shared snapshot when their native system
         // collector fails, so a zero payload must never be presented as measured disk I/O.
-        let snapshot = collect_sysinfo_system(&system, &networks);
+        let snapshot = collect_sysinfo_system(&system, (0, 0));
         let disk = snapshot
             .quality
             .as_ref()
@@ -1544,18 +1564,6 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_sysinfo_seed_never_claims_process_io_provenance() {
-        let quality = process_io_seed_quality();
-        assert_eq!(quality.quality, MetricQuality::Unavailable);
-        assert_eq!(quality.source, Some(MetricSource::Libproc));
-        assert_eq!(
-            quality.limitation_code,
-            Some(MetricLimitationCode::CollectorFailure)
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
     fn macos_collector_reports_native_process_and_honest_system_sources() {
         let mut collector = TelemetryCollector::new();
         let first = collector
@@ -1606,12 +1614,13 @@ mod tests {
         assert_eq!(disk.source, Some(MetricSource::Iokit));
         assert_eq!(disk.quality, MetricQuality::Native);
         assert!(sample.system.disk_read_total_bytes > 0);
+        // Interface totals come from the kernel route table + IFMIB, not sysinfo.
         assert_eq!(
             system_quality
                 .network
                 .as_ref()
                 .and_then(|quality| quality.source),
-            Some(MetricSource::Sysinfo)
+            Some(MetricSource::InterfaceAggregate)
         );
 
         let current_pid = std::process::id().to_string();

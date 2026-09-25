@@ -10,6 +10,67 @@ export interface TelemetryPresentation {
   tone: TelemetryTone;
 }
 
+export const COLLECTION_LIMITED_LABEL = "Collection limited";
+const HEALTHY_PRESENTATION = {
+  label: "Monitoring",
+  detail: "Local measurements are current.",
+} as const;
+
+export function isCollectionLimited(presentation: TelemetryPresentation): boolean {
+  return presentation.label === COLLECTION_LIMITED_LABEL;
+}
+
+/**
+ * Latched hysteresis for the noisy "Collection limited" condition: it engages
+ * after 3 consecutive limited samples and clears after 5 consecutive samples
+ * that are not limited. Callers feed it once per new sample.
+ */
+export function createCollectionHysteresis(): (limited: boolean) => boolean {
+  let limitedStreak = 0;
+  let clearStreak = 0;
+  let latched = false;
+  return (limited: boolean) => {
+    if (limited) {
+      clearStreak = 0;
+      limitedStreak += 1;
+      if (limitedStreak >= 3) latched = true;
+    } else {
+      limitedStreak = 0;
+      clearStreak += 1;
+      if (clearStreak >= 5) latched = false;
+    }
+    return latched;
+  };
+}
+
+/**
+ * Applies the latched hysteresis to a raw presentation. Danger, paused, and
+ * starting states pass through untouched; only the healthy/limited boundary is
+ * smoothed.
+ */
+export function applyCollectionHysteresis(
+  presentation: TelemetryPresentation,
+  limitedLatched: boolean,
+): TelemetryPresentation {
+  if (isCollectionLimited(presentation) && !limitedLatched) {
+    return {
+      state: presentation.state,
+      label: HEALTHY_PRESENTATION.label,
+      detail: HEALTHY_PRESENTATION.detail,
+      tone: "healthy",
+    };
+  }
+  if (!isCollectionLimited(presentation) && limitedLatched && presentation.tone === "healthy") {
+    return {
+      state: presentation.state,
+      label: COLLECTION_LIMITED_LABEL,
+      detail: "Some measurements have limited coverage. Each value carries its own quality.",
+      tone: "warning",
+    };
+  }
+  return presentation;
+}
+
 /** Runtime freshness owns sample age; transport failure can only make it less current. */
 export function buildTelemetryPresentation(
   snapshot: RuntimeSnapshot,
@@ -40,6 +101,14 @@ export function buildTelemetryPresentation(
     };
   }
   if (snapshot.sampled_at_ms === null || transportState === "starting") {
+    if (transportState === "stale") {
+      return {
+        state: "stale",
+        label: "Monitoring unavailable",
+        detail: "The first sample could not be read. Open diagnostics for the failure detail.",
+        tone: "danger",
+      };
+    }
     return {
       state: "starting",
       label: "Starting monitoring",
@@ -80,7 +149,7 @@ export function buildTelemetryPresentation(
   ) {
     return {
       state,
-      label: "Collection limited",
+      label: COLLECTION_LIMITED_LABEL,
       detail: "Some measurements have limited coverage. Each value carries its own quality.",
       tone: "warning",
     };
@@ -102,11 +171,11 @@ export function buildTelemetryPresentation(
     };
   }
   if (reasons.has("cadence_missed")) {
+    const device = snapshot.environment.platform === "macos" ? "your Mac" : "your computer";
     return {
       state,
       label: "Sampling delayed",
-      detail:
-        "The monitor missed a collection deadline. Available measurements remain labeled by freshness.",
+      detail: `Some samples arrived late, usually because ${device} is busy. Values stay labeled by freshness.`,
       tone: "warning",
     };
   }
@@ -114,7 +183,8 @@ export function buildTelemetryPresentation(
     return {
       state,
       label: "Monitoring limited",
-      detail: "The runtime reported a monitoring issue. Open diagnostics for details.",
+      detail:
+        "A monitoring source reported a problem. Open diagnostics to see which measurements are affected.",
       tone: "warning",
     };
   }

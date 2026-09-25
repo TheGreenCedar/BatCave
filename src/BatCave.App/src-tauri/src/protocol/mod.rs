@@ -3,7 +3,7 @@ pub(crate) mod encode;
 pub(crate) mod types;
 mod validate;
 
-pub use encode::encode_snapshot;
+pub use encode::{encode_snapshot, encode_snapshot_ref_with_health};
 pub(crate) use types::RuntimeReleaseIdentityV4;
 pub use types::{
     ProcessFocusModeV4, ProtocolEnvelope, RuntimeQueryInputV4, RuntimeUiPreferencesV4,
@@ -68,6 +68,63 @@ mod tests {
         };
         assert_eq!(payload.health.evaluated_at_ms, expected_evaluation);
         assert_eq!(payload.health.sample_age_ms, expected_sample_age);
+    }
+
+    #[test]
+    fn encode_snapshot_ref_matches_the_owned_encoder() {
+        let mut variants = vec![fixture_snapshot()];
+
+        // A fatal snapshot exercises the moved health detail fields.
+        let mut fatal = fixture_snapshot();
+        fatal.health.engine_state = Some(crate::contracts::RuntimeEngineState::Fatal);
+        fatal.health.fatal_error = Some(crate::contracts::RuntimeFatalError {
+            code: "engine_fatal".to_string(),
+            message: "sampling engine stopped".to_string(),
+            occurred_at_ms: fatal.published_at_ms,
+        });
+        variants.push(fatal);
+
+        // Warnings, preferences and collector-service detail exercise the
+        // remaining owned-field clones in the reference encoder.
+        let mut detailed = fixture_snapshot();
+        detailed.settings.ui_preferences = Some(RuntimeUiPreferences {
+            theme: "ember".to_string(),
+            history_point_limit: 180,
+        });
+        detailed.warnings.push(crate::contracts::RuntimeWarning {
+            key: "collector_degraded".to_string(),
+            publication_seq: detailed.publication_seq,
+            occurred_at_ms: detailed.published_at_ms,
+            category: "collector".to_string(),
+            message: "collector degraded".to_string(),
+        });
+        variants.push(detailed);
+
+        for snapshot in variants {
+            assert_eq!(
+                serde_json::to_value(
+                    super::encode::encode_snapshot_ref(&snapshot).expect("ref encode")
+                )
+                .expect("ref envelope serializes"),
+                serde_json::to_value(encode_snapshot(snapshot.clone()).expect("owned encode"))
+                    .expect("owned envelope serializes"),
+            );
+
+            // The read path evaluates freshness at the runtime clock without
+            // mutating the published snapshot; it must match the old
+            // clone-evaluate-encode flow, including once the sample is stale.
+            let now = snapshot.published_at_ms + 30_000;
+            let health = crate::runtime_health::evaluated_health(&snapshot, now);
+            let via_ref = super::encode::encode_snapshot_ref_with_health(&snapshot, health, now)
+                .expect("ref+health encode");
+            let mut owned = snapshot.clone();
+            crate::runtime_health::evaluate_snapshot_health(&mut owned, now);
+            let via_owned = encode_snapshot(owned).expect("owned encode after eval");
+            assert_eq!(
+                serde_json::to_value(via_ref).unwrap(),
+                serde_json::to_value(via_owned).unwrap()
+            );
+        }
     }
 
     fn normalize_fixture_metadata(snapshot: &mut RuntimeSnapshot) {
@@ -879,6 +936,56 @@ mod tests {
                 RuntimeArchitectureV4::Aarch64,
             )),
             include_str!("../fixtures/runtime-protocol-v4/macos-limited.json"),
+        );
+        // Regression fixture: a denied system process and a held
+        // first-sample process leave contributor coverage partial, yet the
+        // measured winner's name and identity still publish.
+        let mut partial_contributors = fixture_for(RuntimePlatform::Macos);
+        let denied_metric = || {
+            quality(MetricQuality::Unavailable, MetricSource::Libproc).with_limitation(
+                MetricLimitationCode::AccessDenied,
+                "macOS denied access to this process.",
+            )
+        };
+        let mut denied = partial_contributors.processes[0].clone();
+        denied.pid = "7777".to_string();
+        denied.start_time_ms += 2;
+        denied.name = "denied-daemon".to_string();
+        denied.exe = "/usr/libexec/denied-daemon".to_string();
+        denied.parent_pid = None;
+        denied.access_state = crate::contracts::AccessState::Denied;
+        denied.quality = Some(ProcessMetricQuality {
+            cpu: Some(denied_metric()),
+            memory: Some(denied_metric()),
+            io: Some(denied_metric()),
+            other_io: Some(denied_metric()),
+            network: Some(denied_metric()),
+            threads: Some(denied_metric()),
+            handles: Some(denied_metric()),
+        });
+        let mut held = partial_contributors.processes[1].clone();
+        held.pid = "8888".to_string();
+        held.start_time_ms += 3;
+        held.name = "newborn-agent".to_string();
+        held.exe = "/usr/libexec/newborn-agent".to_string();
+        held.parent_pid = None;
+        held.quality.as_mut().expect("fixture quality").cpu = Some(
+            quality(MetricQuality::Held, MetricSource::Libproc).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Waiting for a second CPU sample.",
+            ),
+        );
+        partial_contributors.processes.push(denied);
+        partial_contributors.processes.push(held);
+        crate::runtime_store::shape_protocol_fixture_snapshot(&mut partial_contributors);
+        normalize_fixture_metadata(&mut partial_contributors);
+        update_or_assert(
+            &fixture_dir.join("macos-partial-contributors.json"),
+            json_with_newline(&encode_fixture(
+                partial_contributors,
+                RuntimeArchitectureV4::Aarch64,
+            )),
+            include_str!("../fixtures/runtime-protocol-v4/macos-partial-contributors.json"),
         );
         update_or_assert(
             &fixture_dir.join("browser-windows.json"),

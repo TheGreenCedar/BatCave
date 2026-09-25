@@ -100,7 +100,7 @@ pub fn validate_envelope(envelope: &ProtocolEnvelope) -> Result<(), String> {
                 .display_name
                 .as_deref()
                 .is_none_or(|name| name.trim().is_empty())
-                || contributor.available_contributors != contributor.total_contributors
+                || contributor.available_contributors == 0
                 || contributor.total_contributors == 0
                 || matches!(
                     quality,

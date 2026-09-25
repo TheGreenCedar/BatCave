@@ -7,13 +7,16 @@ import {
 } from "./format.ts";
 import {
   advanceProcessRanking,
+  hasSameProcessOrder,
   ProcessInteraction,
   processViewRowKey,
   processViewRowMetrics,
+  rankingNearTie,
   settleProcessRanking,
 } from "./process.ts";
 import {
   buildTelemetryPresentation,
+  isCollectionLimited,
   metricPresentation,
   type CollectionState,
 } from "./telemetryPresentation.ts";
@@ -81,7 +84,16 @@ export function buildOverviewStatus(
             : primaryResource === "disk"
               ? "Device throughput. Process read/write I/O is ranked separately and does not identify physical disk activity."
               : "Network interface throughput. Process traffic is attributed separately.";
-  const warning = telemetry.tone !== "healthy" && telemetry.state === "live";
+  // Collector-limited conditions and the limitation count stay chip-only; the
+  // banner is reserved for states that interrupt monitoring.
+  const collectorLimited =
+    isCollectionLimited(telemetry) ||
+    snapshot.health.collector_state === "limited" ||
+    new Set(snapshot.health.reason_codes).has("collector_limited") ||
+    new Set(snapshot.health.reason_codes).has("collector_warning");
+  const warning =
+    telemetry.tone === "danger" ||
+    (telemetry.tone !== "healthy" && telemetry.state === "live" && !collectorLimited);
   return {
     headline,
     summary,
@@ -92,19 +104,28 @@ export function buildOverviewStatus(
           detail: telemetry.detail,
           tone: telemetry.tone === "danger" ? "danger" : "warning",
         }
-      : limitationCount > 0 && telemetry.state === "live"
-        ? {
-            title: `${limitationCount} data limitation${limitationCount === 1 ? "" : "s"}`,
-            detail: "Affected measurements carry their quality beside the value.",
-            tone: "warning",
-          }
-        : {
-            title: telemetry.label,
-            detail: telemetry.detail,
-            tone: "healthy",
-          },
+      : {
+          title: telemetry.label,
+          detail: telemetry.detail,
+          tone: "healthy",
+        },
     primaryResource,
   };
+}
+
+const OVERVIEW_NEAR_TIE_FLOOR: Record<DetailMode, number> = {
+  cpu: 2, // percentage points
+  memory: 32 * 1024 * 1024, // bytes
+  disk: 32 * 1024, // bytes per second
+  network: 32 * 1024, // bytes per second
+};
+
+/** Near-tie over the Overview rank value for the active resource. */
+export function overviewRankingNearTie(
+  resource: DetailMode,
+): (a: ProcessViewRow, b: ProcessViewRow) => boolean {
+  const near = rankingNearTie(OVERVIEW_NEAR_TIE_FLOOR[resource]);
+  return (a, b) => near(overviewRankValue(a, resource), overviewRankValue(b, resource));
 }
 
 /** Owns only Overview ordering; Explore controls and selection never enter this state. */
@@ -115,6 +136,7 @@ export class OverviewRanking {
   private interacting = false;
   private lastSettledAt = 0;
   private readonly interaction = new ProcessInteraction();
+  updateAvailable = false;
 
   update(resource: DetailMode, incoming: ProcessViewRow[]): ProcessViewRow[] {
     if (this.resource !== resource) this.lastSettledAt = 0;
@@ -124,16 +146,32 @@ export class OverviewRanking {
     if (held) {
       this.rows = advanceProcessRanking(this.rows, incoming, true).rows;
     } else {
-      const settled = settleProcessRanking(this.rows, incoming, Date.now(), this.lastSettledAt);
+      const settled = settleProcessRanking(
+        this.rows,
+        incoming,
+        Date.now(),
+        this.lastSettledAt,
+        10_000,
+        overviewRankingNearTie(resource),
+      );
       this.rows = settled.rows;
       this.lastSettledAt = settled.settledAt;
     }
+    this.updateAvailable = this.interacting && !hasSameProcessOrder(this.rows, incoming);
     return this.rows;
   }
 
   setInteraction(source: "pointer" | "focus", active: boolean): ProcessViewRow[] {
     this.interacting = this.interaction.set(source, active);
     if (!this.interacting) this.rows = this.incoming;
+    this.updateAvailable = this.interacting && !hasSameProcessOrder(this.rows, this.incoming);
+    return this.rows;
+  }
+
+  applyUpdate(): ProcessViewRow[] {
+    this.rows = this.incoming;
+    this.lastSettledAt = Date.now();
+    this.updateAvailable = false;
     return this.rows;
   }
 }

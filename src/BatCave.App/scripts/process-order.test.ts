@@ -10,6 +10,7 @@ import {
   shouldHoldProcessOrder,
   settleProcessRanking,
   advanceProcessRanking,
+  rankingNearTie,
   ProcessInteraction,
   stabilizeProcessRows,
   windowProcessViewRows,
@@ -327,4 +328,101 @@ test("settleProcessRanking measures displacement only among common rows", () => 
     "process:4:0",
   ]);
   assert.equal(settled.settledAt, 1_000);
+});
+
+const cpuNearTie = (a: ProcessViewRow, b: ProcessViewRow) =>
+  rankingNearTie(2)(processViewRowMetrics(a).cpuPercent, processViewRowMetrics(b).cpuPercent);
+
+test("settleProcessRanking re-sorts a large inversion immediately when near-tie is provided", () => {
+  const quiet = row("1", 23);
+  const busy = row("2", 182);
+  const settled = settleProcessRanking(
+    [quiet, busy],
+    [busy, quiet],
+    5_000,
+    1_000,
+    10_000,
+    cpuNearTie,
+  );
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:2:0", "process:1:0"]);
+  assert.equal(settled.settledAt, 5_000);
+});
+
+test("settleProcessRanking holds a near-tie inversion inside the settle interval", () => {
+  const a = row("1", 20.0);
+  const b = row("2", 21.0);
+  const settled = settleProcessRanking([a, b], [b, a], 5_000, 1_000, 10_000, cpuNearTie);
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+test("settleProcessRanking applies the near-tie floor to memory-sized values", () => {
+  const mib = 1024 * 1024;
+  const memoryNearTie = (a: ProcessViewRow, b: ProcessViewRow) =>
+    rankingNearTie(32 * mib)(
+      processViewRowMetrics(a).memoryBytes,
+      processViewRowMetrics(b).memoryBytes,
+    );
+  const a = row("1", 0);
+  if (a.kind === "process") a.detail.process.memory_bytes = 1024 * mib;
+  const b = row("2", 0);
+  if (b.kind === "process") b.detail.process.memory_bytes = 1024 * mib + 20 * mib;
+  const held = settleProcessRanking([a, b], [b, a], 5_000, 1_000, 10_000, memoryNearTie);
+  assert.deepEqual(held.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
+
+  const far = row("3", 0);
+  if (far.kind === "process") far.detail.process.memory_bytes = 1024 * mib + 400 * mib;
+  const adopted = settleProcessRanking([a, far], [far, a], 5_000, 1_000, 10_000, memoryNearTie);
+  assert.deepEqual(adopted.rows.map(processViewRowKey), ["process:3:0", "process:1:0"]);
+  assert.equal(adopted.settledAt, 5_000);
+});
+
+test("settleProcessRanking without a near-tie keeps the previous one-position behavior", () => {
+  const quiet = row("1", 23);
+  const busy = row("2", 182);
+  const settled = settleProcessRanking([quiet, busy], [busy, quiet], 5_000, 1_000);
+  assert.deepEqual(settled.rows.map(processViewRowKey), ["process:1:0", "process:2:0"]);
+  assert.equal(settled.settledAt, 1_000);
+});
+
+test("held ranking keeps vanished rows in place as ghosts", () => {
+  const initial = [row("1", 30), row("2", 20), row("3", 10)];
+  const next = [row("1", 90), row("3", 80)];
+  const held = advanceProcessRanking(initial, next, true);
+
+  assert.deepEqual(held.rows.map(processViewRowKey), ["process:1:0", "process:2:0", "process:3:0"]);
+  // The ghost reuses the last known row object rather than incoming data.
+  assert.equal(held.rows[1], initial[1]);
+  assert.deepEqual([...held.exitedKeys], ["process:2:0"]);
+  assert.equal(held.updateAvailable, true);
+});
+
+test("releasing a held ranking drops ghost rows", () => {
+  const initial = [row("1", 30), row("2", 20)];
+  const next = [row("1", 90)];
+  const held = advanceProcessRanking(initial, next, true);
+  const released = advanceProcessRanking(held.rows, next, false);
+
+  assert.deepEqual(released.rows.map(processViewRowKey), ["process:1:0"]);
+  assert.equal(released.exitedKeys.size, 0);
+  assert.equal(released.updateAvailable, false);
+});
+
+test("held ranking still appends new incoming rows after ghosts", () => {
+  const initial = [row("1", 30), row("2", 20)];
+  const next = [row("1", 90), row("4", 80)];
+  const held = advanceProcessRanking(initial, next, true);
+
+  assert.deepEqual(held.rows.map(processViewRowKey), ["process:1:0", "process:2:0", "process:4:0"]);
+  assert.deepEqual([...held.exitedKeys], ["process:2:0"]);
+});
+
+test("non-interacting updates adopt the incoming order every tick", () => {
+  // The backend order is already smoothed, so no throttle or settle applies here.
+  const current = [row("1", 10), row("2", 9), row("3", 8)];
+  const incoming = [row("3", 90), row("1", 9), row("2", 8)];
+  const adopted = advanceProcessRanking(current, incoming, false);
+  assert.deepEqual(adopted.rows, incoming);
+  assert.equal(adopted.updateAvailable, false);
+  assert.equal(adopted.exitedKeys.size, 0);
 });

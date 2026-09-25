@@ -13,13 +13,18 @@ use crate::contracts::{
     AccessState, GroupDetail, KernelPoolKind, MetricLimitationCode, MetricQuality,
     MetricQualityInfo, MetricSource, ProcessContributorIdentity, ProcessDetail, ProcessFocusMode,
     ProcessSample, ProcessViewRow, RuntimeAdminModeState, RuntimeCollectorState,
-    RuntimeEngineState, RuntimeInstallKind, RuntimePersistence, RuntimePersistenceDurability,
-    RuntimePersistenceKind, RuntimePersistenceOperation, RuntimePersistenceOwner,
-    RuntimePersistencePermissionState, RuntimePersistenceState, RuntimePlatform,
-    RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, SortColumn, SortDirection,
+    RuntimeEngineState, RuntimeHealth, RuntimeInstallKind, RuntimePersistence,
+    RuntimePersistenceDurability, RuntimePersistenceKind, RuntimePersistenceOperation,
+    RuntimePersistenceOwner, RuntimePersistencePermissionState, RuntimePersistenceState,
+    RuntimePlatform, RuntimePrivilegedSource, RuntimeProcessElevation, RuntimeSnapshot, SortColumn,
+    SortDirection,
 };
 
 pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, String> {
+    encode_snapshot_ref(&snapshot)
+}
+
+pub fn encode_snapshot_ref(snapshot: &RuntimeSnapshot) -> Result<ProtocolEnvelope, String> {
     // The runtime owns freshness. A second wall-clock read would turn clock
     // corrections into permanently stale samples while runtime health stays live.
     let evaluated_at_ms = snapshot
@@ -32,6 +37,23 @@ pub fn encode_snapshot(snapshot: RuntimeSnapshot) -> Result<ProtocolEnvelope, St
         evaluated_at_ms,
         target_architecture(),
         super::release_identity(),
+        None,
+    )
+}
+
+/// Encode against a caller-evaluated health (e.g. a read-time freshness check on a
+/// shared snapshot) without mutating or cloning the snapshot itself.
+pub fn encode_snapshot_ref_with_health(
+    snapshot: &RuntimeSnapshot,
+    health: RuntimeHealth,
+    evaluated_at_ms: u64,
+) -> Result<ProtocolEnvelope, String> {
+    encode_snapshot_with_identity(
+        snapshot,
+        evaluated_at_ms,
+        target_architecture(),
+        super::release_identity(),
+        Some(health),
     )
 }
 
@@ -42,21 +64,23 @@ pub(super) fn encode_snapshot_at(
     architecture: RuntimeArchitectureV4,
 ) -> Result<ProtocolEnvelope, String> {
     encode_snapshot_with_identity(
-        snapshot,
+        &snapshot,
         evaluated_at_ms,
         architecture,
         RuntimeReleaseIdentityV4 {
             app_version: "development".to_string(),
             source_commit_sha: None,
         },
+        None,
     )
 }
 
 fn encode_snapshot_with_identity(
-    mut snapshot: RuntimeSnapshot,
+    snapshot: &RuntimeSnapshot,
     evaluated_at_ms: u64,
     architecture: RuntimeArchitectureV4,
     release_identity: RuntimeReleaseIdentityV4,
+    health_override: Option<RuntimeHealth>,
 ) -> Result<ProtocolEnvelope, String> {
     ensure_js_safe(snapshot.publication_seq)?;
     ensure_js_safe(snapshot.published_at_ms)?;
@@ -72,9 +96,10 @@ fn encode_snapshot_with_identity(
         }
     }
 
-    crate::runtime_health::evaluate_snapshot_health(&mut snapshot, evaluated_at_ms);
+    let health = health_override
+        .unwrap_or_else(|| crate::runtime_health::evaluated_health(snapshot, evaluated_at_ms));
     let mut catalog = CatalogBuilder::new(snapshot.settings.sample_interval_ms)?;
-    let system = encode_system(&snapshot, &mut catalog)?;
+    let system = encode_system(snapshot, &mut catalog)?;
     let workloads = encode_workloads(
         &snapshot.process_view_rows,
         snapshot.sample_seq,
@@ -89,7 +114,7 @@ fn encode_snapshot_with_identity(
         snapshot.environment.platform,
         &mut catalog,
     )?;
-    let contributors = encode_contributors(&snapshot, &mut catalog)?;
+    let contributors = encode_contributors(snapshot, &mut catalog)?;
     let visible_process_count = workloads
         .iter()
         .filter(|workload| matches!(workload, WorkloadDetailV4::Process(_)))
@@ -99,13 +124,13 @@ fn encode_snapshot_with_identity(
         published_at_ms: snapshot.published_at_ms,
         sample_seq: snapshot.sample_seq,
         sampled_at_ms: snapshot.sampled_at_ms,
-        source: snapshot.source,
+        source: snapshot.source.clone(),
         environment: RuntimeEnvironmentV4 {
             platform: platform(snapshot.environment.platform),
             architecture,
             process_elevation: process_elevation(snapshot.environment.process_elevation),
             install_kind: install_kind(snapshot.environment.install_kind),
-            data_directory: snapshot.environment.data_directory,
+            data_directory: snapshot.environment.data_directory.clone(),
             release_identity,
         },
         privileged_collection: RuntimePrivilegedCollectionV4 {
@@ -117,10 +142,13 @@ fn encode_snapshot_with_identity(
                 PrivilegedCollectionPreferenceV4::StandardOnly
             },
             standard_fallback_process_etw_disabled: snapshot.standard_fallback_process_etw_disabled,
-            detail: snapshot.admin_mode.detail,
+            detail: snapshot.admin_mode.detail.clone(),
             last_success_at_ms: snapshot.admin_mode.last_success_at_ms,
-            collector_service: snapshot.admin_mode.collector_service.map(|service| {
-                CollectorServiceStatusV4 {
+            collector_service: snapshot
+                .admin_mode
+                .collector_service
+                .clone()
+                .map(|service| CollectorServiceStatusV4 {
                     state: match service.state {
                         crate::contracts::RuntimeCollectorServiceState::NotInstalled => {
                             CollectorServiceStateV4::NotInstalled
@@ -159,12 +187,11 @@ fn encode_snapshot_with_identity(
                     instance_id: service.instance_id,
                     last_connected_at_ms: service.last_connected_at_ms,
                     detail: service.detail,
-                }
-            }),
+                }),
         },
         settings: RuntimeSettingsV4 {
             query: RuntimeQueryV4 {
-                filter_text: snapshot.settings.query.filter_text,
+                filter_text: snapshot.settings.query.filter_text.clone(),
                 focus_mode: focus_mode(snapshot.settings.query.focus_mode),
                 sort_column: sort_column(snapshot.settings.query.sort_column),
                 sort_direction: sort_direction(snapshot.settings.query.sort_direction),
@@ -176,7 +203,7 @@ fn encode_snapshot_with_identity(
             metric_window_seconds: snapshot.settings.metric_window_seconds,
             effective_sample_interval_ms: snapshot.settings.sample_interval_ms,
             collection_paused: snapshot.settings.paused,
-            ui_preferences: snapshot.settings.ui_preferences.map(|preferences| {
+            ui_preferences: snapshot.settings.ui_preferences.clone().map(|preferences| {
                 RuntimeUiPreferencesV4 {
                     theme: preferences.theme,
                     history_point_limit: preferences.history_point_limit,
@@ -184,14 +211,14 @@ fn encode_snapshot_with_identity(
             }),
         },
         health: RuntimeHealthV4 {
-            freshness: snapshot.health.freshness,
-            reason_codes: snapshot.health.reason_codes,
-            engine_state: snapshot.health.engine_state.map(engine_state),
-            collector_state: snapshot.health.collector_state.map(collector_state),
-            degraded: snapshot.health.degraded,
-            status_summary: snapshot.health.status_summary,
+            freshness: health.freshness,
+            reason_codes: health.reason_codes,
+            engine_state: health.engine_state.map(engine_state),
+            collector_state: health.collector_state.map(collector_state),
+            degraded: health.degraded,
+            status_summary: health.status_summary,
             evaluated_at_ms,
-            last_heartbeat_at_ms: snapshot.health.last_heartbeat_at_ms,
+            last_heartbeat_at_ms: health.last_heartbeat_at_ms,
             heartbeat_age_ms: snapshot
                 .health
                 .last_heartbeat_at_ms
@@ -200,29 +227,26 @@ fn encode_snapshot_with_identity(
             sample_age_ms: snapshot
                 .sampled_at_ms
                 .map(|sampled_at_ms| evaluated_at_ms.saturating_sub(sampled_at_ms)),
-            deadline_misses: snapshot.health.deadline_misses,
-            deadline_lateness_p95_ms: snapshot.health.deadline_lateness_p95_ms,
-            collection_latency_ms: snapshot.health.collection_latency_ms,
-            collection_p95_ms: snapshot.health.collection_p95_ms,
-            publication_latency_ms: snapshot.health.publication_latency_ms,
-            publication_p95_ms: snapshot.health.publication_p95_ms,
+            deadline_misses: health.deadline_misses,
+            deadline_lateness_p95_ms: health.deadline_lateness_p95_ms,
+            collection_latency_ms: health.collection_latency_ms,
+            collection_p95_ms: health.collection_p95_ms,
+            publication_latency_ms: health.publication_latency_ms,
+            publication_p95_ms: health.publication_p95_ms,
             collector_warning_count: to_u32(
-                snapshot.health.collector_warnings,
+                health.collector_warnings,
                 "protocol_warning_count_out_of_range",
             )?,
-            app_cpu_percent: snapshot.health.app_cpu_percent,
-            app_rss_bytes: snapshot.health.app_rss_bytes,
-            last_warning: snapshot.health.last_warning,
-            fatal_error: snapshot
-                .health
-                .fatal_error
-                .map(|error| RuntimeFatalErrorV4 {
-                    code: error.code,
-                    message: error.message,
-                    occurred_at_ms: error.occurred_at_ms,
-                }),
+            app_cpu_percent: health.app_cpu_percent,
+            app_rss_bytes: health.app_rss_bytes,
+            last_warning: health.last_warning,
+            fatal_error: health.fatal_error.map(|error| RuntimeFatalErrorV4 {
+                code: error.code,
+                message: error.message,
+                occurred_at_ms: error.occurred_at_ms,
+            }),
         },
-        persistence: snapshot.persistence.map(encode_persistence),
+        persistence: snapshot.persistence.clone().map(encode_persistence),
         descriptors: catalog.descriptors,
         quality_codes: QUALITY_CODES.to_vec(),
         limitations: catalog.limitations,
@@ -240,13 +264,13 @@ fn encode_snapshot_with_identity(
         )?,
         warnings: snapshot
             .warnings
-            .into_iter()
+            .iter()
             .map(|warning| RuntimeWarningV4 {
-                key: warning.key,
+                key: warning.key.clone(),
                 publication_seq: warning.publication_seq,
                 occurred_at_ms: warning.occurred_at_ms,
-                category: warning.category,
-                message: warning.message,
+                category: warning.category.clone(),
+                message: warning.message.clone(),
             })
             .collect(),
     };

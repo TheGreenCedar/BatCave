@@ -1,5 +1,10 @@
 import type { RuntimeQueryInputV4, RuntimeUiPreferencesV4 } from "./generated/runtime-protocol-v4";
-import type { RuntimeSnapshot } from "./types";
+import type {
+  MetricQuality,
+  RuntimeSnapshot,
+  SystemHistoryPoint,
+  SystemMetricsSnapshot,
+} from "./types";
 import type { ResolvedThemeName } from "./themes";
 import {
   defaultNarrativeCapability,
@@ -265,6 +270,119 @@ export async function cancelNarrativeModelDownload(
   invoke: RuntimeInvoke,
 ): Promise<NarrativeCapability> {
   return decodeNarrativeCapability(await invoke<unknown>("cancel_narrative_model_download"));
+}
+
+export async function readSystemHistory(
+  invoke: RuntimeInvoke,
+  afterSampleSeq: number,
+): Promise<SystemHistoryPoint[]> {
+  const value = await invoke<unknown>("get_system_history", { afterSampleSeq });
+  return decodeSystemHistoryPoints(value);
+}
+
+export function decodeSystemHistoryPoints(value: unknown): SystemHistoryPoint[] {
+  if (!Array.isArray(value)) {
+    throw new Error("System history response was not recognized.");
+  }
+  return value.map(decodeSystemHistoryPoint);
+}
+
+const METRIC_QUALITIES: readonly MetricQuality[] = [
+  "native",
+  "estimated",
+  "held",
+  "partial",
+  "unavailable",
+];
+
+const SYSTEM_NUMBER_FIELDS = [
+  "cpu_percent",
+  "kernel_cpu_percent",
+  "memory_used_bytes",
+  "memory_total_bytes",
+  "process_count",
+  "disk_read_total_bytes",
+  "disk_write_total_bytes",
+  "disk_read_bps",
+  "disk_write_bps",
+  "network_received_total_bytes",
+  "network_transmitted_total_bytes",
+  "network_received_bps",
+  "network_transmitted_bps",
+] as const;
+
+const SYSTEM_OPTIONAL_NUMBER_FIELDS = [
+  "memory_available_bytes",
+  "swap_used_bytes",
+  "swap_total_bytes",
+] as const;
+
+function decodeSystemHistoryPoint(value: unknown): SystemHistoryPoint {
+  if (
+    !isRecord(value) ||
+    !isFiniteNumber(value.sample_seq) ||
+    !isFiniteNumber(value.sampled_at_ms)
+  ) {
+    throw new Error("System history point was not recognized.");
+  }
+  return {
+    sample_seq: value.sample_seq,
+    sampled_at_ms: value.sampled_at_ms,
+    system: decodeSystemMetrics(value.system),
+  };
+}
+
+function decodeSystemMetrics(value: unknown): SystemMetricsSnapshot {
+  if (!isRecord(value)) {
+    throw new Error("System history metrics were not recognized.");
+  }
+  const system: Record<string, unknown> = {};
+  for (const field of SYSTEM_NUMBER_FIELDS) {
+    if (!isFiniteNumber(value[field])) {
+      throw new Error(`System history metric ${field} was not recognized.`);
+    }
+    system[field] = value[field];
+  }
+  for (const field of SYSTEM_OPTIONAL_NUMBER_FIELDS) {
+    const fieldValue = value[field];
+    if (fieldValue !== undefined) {
+      if (!isFiniteNumber(fieldValue)) {
+        throw new Error(`System history metric ${field} was not recognized.`);
+      }
+      system[field] = fieldValue;
+    }
+  }
+  const logicalCpu = value.logical_cpu_percent;
+  if (!Array.isArray(logicalCpu) || !logicalCpu.every(isFiniteNumber)) {
+    throw new Error("System history metric logical_cpu_percent was not recognized.");
+  }
+  system.logical_cpu_percent = logicalCpu;
+  if (value.quality !== undefined) {
+    system.quality = decodeMetricQualityMap(value.quality, "quality");
+  }
+  return system as unknown as SystemMetricsSnapshot;
+}
+
+function decodeMetricQualityMap(
+  value: unknown,
+  label: string,
+): NonNullable<SystemMetricsSnapshot["quality"]> {
+  if (!isRecord(value)) {
+    throw new Error(`System history ${label} was not recognized.`);
+  }
+  const decoded: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === undefined) continue;
+    if (!isRecord(entry) || !METRIC_QUALITIES.includes(entry.quality as MetricQuality)) {
+      throw new Error(`System history ${label}.${key} was not recognized.`);
+    }
+    decoded[key] = entry;
+  }
+  return decoded as NonNullable<SystemMetricsSnapshot["quality"]>;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 export function commandErrorMessage(error: unknown, fallback: string): string {

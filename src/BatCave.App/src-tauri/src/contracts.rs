@@ -307,6 +307,16 @@ pub struct SystemMetricsSnapshot {
     pub quality: Option<SystemMetricQuality>,
 }
 
+/// One retained machine-history point; the bounded ring is published through
+/// `get_system_history` so the frontend can backfill gaps without losing samples.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SystemHistoryPoint {
+    pub sample_seq: u64,
+    pub sampled_at_ms: u64,
+    pub system: SystemMetricsSnapshot,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SystemMemoryAccounting {
@@ -903,6 +913,65 @@ mod tests {
             serde_json::to_value(RuntimePrivilegedSource::CollectorService).unwrap(),
             json!("collector_service")
         );
+    }
+
+    #[test]
+    fn system_history_point_matches_the_typescript_wire_shape() {
+        let point = SystemHistoryPoint {
+            sample_seq: 7,
+            sampled_at_ms: 1_700_000_000_000,
+            system: SystemMetricsSnapshot {
+                cpu_percent: 12.5,
+                kernel_cpu_percent: 3.5,
+                logical_cpu_percent: vec![10.0, 15.0],
+                memory_used_bytes: 1_000,
+                memory_total_bytes: 2_000,
+                memory_available_bytes: None,
+                swap_used_bytes: Some(10),
+                swap_total_bytes: Some(20),
+                process_count: 3,
+                disk_read_total_bytes: 4,
+                disk_write_total_bytes: 5,
+                disk_read_bps: 6,
+                disk_write_bps: 7,
+                network_received_total_bytes: 8,
+                network_transmitted_total_bytes: 9,
+                network_received_bps: 10,
+                network_transmitted_bps: 11,
+                memory_accounting: None,
+                quality: None,
+            },
+        };
+        let value = serde_json::to_value(&point).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(
+            object.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["sample_seq", "sampled_at_ms", "system"]
+        );
+        let system = value["system"].as_object().unwrap();
+        for field in [
+            "cpu_percent",
+            "kernel_cpu_percent",
+            "logical_cpu_percent",
+            "memory_used_bytes",
+            "memory_total_bytes",
+            "swap_used_bytes",
+            "swap_total_bytes",
+            "process_count",
+            "disk_read_total_bytes",
+            "disk_write_total_bytes",
+            "disk_read_bps",
+            "disk_write_bps",
+            "network_received_total_bytes",
+            "network_transmitted_total_bytes",
+            "network_received_bps",
+            "network_transmitted_bps",
+        ] {
+            assert!(system.contains_key(field), "missing {field}");
+        }
+        assert!(!system.contains_key("memory_available_bytes"));
+        assert!(!system.contains_key("memory_accounting"));
+        assert!(!system.contains_key("quality"));
     }
 
     #[test]
