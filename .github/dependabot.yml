@@ -20,6 +20,10 @@ updates:
     groups:
       frontend-compatible:
         update-types: [minor, patch]
+    ignore:
+      # Types track the Node 24 runtime; move majors together with the runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
   - package-ecosystem: cargo
     directory: /src/BatCave.App/src-tauri
