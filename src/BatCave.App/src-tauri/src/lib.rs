@@ -221,12 +221,17 @@ fn get_process_icons(
     if exes.len() > 120 {
         return Err("process_icon_batch_too_large".to_string());
     }
-    exes.into_iter()
+    // One rejected or unreadable executable must not blank every other icon in the batch.
+    Ok(exes
+        .into_iter()
         .map(|exe| {
-            validate_process_icon_request(&exe, |candidate| state.has_process_exe(candidate))?;
-            Ok((exe.clone(), process_icons::icon_data_url(&exe)?))
+            let icon =
+                validate_process_icon_request(&exe, |candidate| state.has_process_exe(candidate))
+                    .and_then(|()| process_icons::icon_data_url(&exe))
+                    .unwrap_or(None);
+            (exe, icon)
         })
-        .collect()
+        .collect())
 }
 
 #[tauri::command(async)]

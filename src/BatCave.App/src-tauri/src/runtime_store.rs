@@ -87,6 +87,9 @@ struct PublishedRuntime {
     system_history: Arc<Mutex<VecDeque<SystemHistoryPoint>>>,
     snapshot: Arc<RuntimeSnapshot>,
     process_exe_authoritative: bool,
+    // Lowercased executables of every live process, independent of the active
+    // query, so icon requests for filtered-out or selected rows stay trusted.
+    live_exes: Arc<HashSet<String>>,
 }
 
 struct MonotonicWireClock {
@@ -208,6 +211,7 @@ impl RuntimeState {
             )),
             system_history: Arc::clone(&store.system_history),
             process_exe_authoritative: store.live_process_snapshot,
+            live_exes: Arc::clone(&store.live_exes),
         }));
         let refresh_gate = Arc::new(RefreshGate::default());
         let (control, receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
@@ -404,16 +408,11 @@ impl RuntimeState {
             .published
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let snapshot = Arc::clone(&published.snapshot);
+        let live_exes = Arc::clone(&published.live_exes);
         let authoritative = published.process_exe_authoritative;
         drop(published);
         let exe = exe.trim();
-        Ok(authoritative
-            && !exe.is_empty()
-            && snapshot
-                .processes
-                .iter()
-                .any(|process| process.exe.eq_ignore_ascii_case(exe)))
+        Ok(authoritative && !exe.is_empty() && live_exes.contains(&exe.to_lowercase()))
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), String> {
@@ -898,6 +897,7 @@ fn publish_store(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     target.snapshot = Arc::clone(&snapshot);
     target.process_exe_authoritative = store.live_process_snapshot;
+    target.live_exes = Arc::clone(&store.live_exes);
     snapshot
 }
 
@@ -917,6 +917,7 @@ fn publish_store_measured(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     target.snapshot = Arc::clone(&snapshot);
     target.process_exe_authoritative = store.live_process_snapshot;
+    target.live_exes = Arc::clone(&store.live_exes);
     drop(target);
     let publication_latency_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
     (snapshot, publication_latency_ms)
@@ -1111,6 +1112,7 @@ struct RuntimeStore {
     // previous_processes changes (see set_previous_processes / rebuild_process_views).
     process_groups: Vec<ProcessAppGroup>,
     full_view_rows: Vec<ProcessViewRow>,
+    live_exes: Arc<HashSet<String>>,
     // Generations currently qualifying for the "Busy now" focus, with enter/exit
     // hysteresis; updated once per sample in update_ranking_history.
     attention_members: HashSet<(String, u64)>,
@@ -1397,6 +1399,7 @@ impl RuntimeStore {
             previous_processes: warm_cache.rows,
             process_groups,
             full_view_rows,
+            live_exes: Arc::new(HashSet::new()),
             attention_members: HashSet::new(),
             ranking_history: RankingHistory::new(),
             system_history: Arc::new(Mutex::new(VecDeque::new())),
@@ -1432,11 +1435,7 @@ impl RuntimeStore {
         let exe = exe.trim();
         self.live_process_snapshot
             && !exe.is_empty()
-            && self
-                .snapshot
-                .processes
-                .iter()
-                .any(|process| process.exe.eq_ignore_ascii_case(exe))
+            && self.live_exes.contains(&exe.to_lowercase())
     }
 
     fn set_paused(&mut self, paused: bool) -> RuntimeSnapshot {
@@ -1764,6 +1763,13 @@ impl RuntimeStore {
     }
 
     fn set_previous_processes(&mut self, processes: Vec<ProcessSample>) {
+        self.live_exes = Arc::new(
+            processes
+                .iter()
+                .filter(|process| !process.exe.trim().is_empty())
+                .map(|process| process.exe.trim().to_lowercase())
+                .collect(),
+        );
         self.previous_processes = processes;
         self.rebuild_process_views();
     }
@@ -5021,6 +5027,7 @@ mod tests {
         let published = Arc::new(RwLock::new(PublishedRuntime {
             snapshot: Arc::new(snapshot.clone()),
             process_exe_authoritative: true,
+            live_exes: Arc::new(HashSet::new()),
             workload_archive: Arc::clone(&archive),
             system_history: Arc::new(Mutex::new(VecDeque::new())),
         }));
@@ -5072,6 +5079,7 @@ mod tests {
             )),
             system_history: Arc::clone(&store.system_history),
             process_exe_authoritative: false,
+            live_exes: Arc::new(HashSet::new()),
         }));
         let mut last_collector_revision = 0;
         let first_completed = Instant::now() - Duration::from_secs(5);
@@ -7807,41 +7815,18 @@ mod tests {
         let mut store = RuntimeStore::new();
         let trusted = sample("10", "Trusted", 1.0);
         let exe = trusted.exe.clone();
-        let all_processes = vec![trusted.clone()];
-        store.settings = RuntimeSettings::default();
-        store.snapshot = build_snapshot(
-            1,
-            now_ms(),
-            1,
-            Some(now_ms()),
-            store.provenance.environment(),
-            &store.settings,
-            &store.admin_mode,
-            false,
-            RuntimeHealth::default(),
-            Some(store.persistence.health()),
-            empty_system(),
-            &all_processes,
-            &build_process_groups(&all_processes, &RankingHistory::new()),
-            &emit_process_view(
-                &build_process_groups(&all_processes, &RankingHistory::new()),
-                &full_view_query(),
-                &attention_candidates(&all_processes, &RankingHistory::new()),
-            ),
-            emit_process_view(
-                &build_process_groups(&all_processes, &RankingHistory::new()),
-                &store.settings.query,
-                &attention_candidates(&all_processes, &RankingHistory::new()),
-            ),
-            vec![trusted],
-            Vec::new(),
-        );
+        // An idle process is outside "Busy now", but it is still running, so its
+        // icon (a group's presentation process or the selected row) stays trusted.
+        store.settings.query.focus_mode = ProcessFocusMode::Attention;
+        store.set_previous_processes(vec![trusted]);
 
         assert!(!store.has_process_exe(&exe));
 
         store.live_process_snapshot = true;
 
         assert!(store.has_process_exe(&exe));
+        assert!(store.has_process_exe(&exe.to_uppercase()));
+        assert!(!store.has_process_exe("/not/running/app"));
     }
 
     #[test]

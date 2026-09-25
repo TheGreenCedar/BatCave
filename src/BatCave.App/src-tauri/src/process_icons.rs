@@ -82,12 +82,21 @@ fn find_macos_icns(executable: &std::path::Path) -> Option<std::path::PathBuf> {
     if !executable.is_absolute() {
         return None;
     }
-    let bundle = executable.ancestors().find(|candidate| {
-        candidate
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
-    })?;
+    // Helper apps nested inside an app bundle usually ship no icon; fall back to
+    // the enclosing bundle so helpers share their app's icon.
+    executable
+        .ancestors()
+        .filter(|candidate| {
+            candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        })
+        .find_map(bundle_icns)
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_icns(bundle: &std::path::Path) -> Option<std::path::PathBuf> {
     let canonical_bundle = bundle.canonicalize().ok()?;
     let resources = bundle.join("Contents").join("Resources");
     let bundle_stem = bundle
@@ -373,6 +382,34 @@ mod tests {
 
         let data_url = load_icon_data_url(&executable.to_string_lossy()).expect("icon data URL");
         assert!(data_url.starts_with("data:image/png;base64,iVBORw0KGgo"));
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nested_helper_without_icon_uses_the_enclosing_app_icon() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-macos-helper-icon-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let app = root.join("Suite.app");
+        let helper = app
+            .join("Contents")
+            .join("Frameworks")
+            .join("Suite Helper.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Suite Helper");
+        let icon = app.join("Contents").join("Resources").join("Suite.icns");
+        std::fs::create_dir_all(helper.parent().unwrap()).expect("helper directory");
+        std::fs::create_dir_all(icon.parent().unwrap()).expect("icon directory");
+        std::fs::write(&helper, b"binary").expect("helper fixture");
+        std::fs::write(&icon, b"icns").expect("icon fixture");
+
+        let found = find_macos_icns(&helper).expect("enclosing app icon is found");
+        assert_eq!(found, icon.canonicalize().unwrap());
 
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
