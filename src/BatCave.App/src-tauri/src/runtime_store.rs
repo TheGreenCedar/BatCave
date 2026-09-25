@@ -1146,9 +1146,16 @@ struct RuntimeStore {
 }
 
 impl RuntimeStore {
+    // Tests must never read or write the real user data directory: an isolated,
+    // unique directory keeps host settings from changing test outcomes.
     #[cfg(test)]
     fn new() -> Self {
-        Self::from_base_dir(default_base_dir())
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, AtomicOrdering::Relaxed);
+        let base_dir =
+            std::env::temp_dir().join(format!("batcave-runtime-store-{}-{id}", std::process::id()));
+        let _ = fs::remove_dir_all(&base_dir);
+        Self::from_base_dir(base_dir)
     }
 
     fn from_base_dir(base_dir: PathBuf) -> Self {
