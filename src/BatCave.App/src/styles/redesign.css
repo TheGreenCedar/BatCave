@@ -1026,18 +1026,6 @@
   justify-items: start;
 }
 
-.process-button.app-group-button .process-icon {
-  width: 22px;
-  min-width: 22px;
-  height: 22px;
-  overflow: visible;
-}
-
-.process-button.app-group-button .process-icon img {
-  width: 22px;
-  height: 22px;
-}
-
 .hierarchy-gutter {
   width: 26px;
   height: 28px;
@@ -1135,8 +1123,8 @@
 }
 
 .process-icon svg {
-  width: 17px;
-  height: 17px;
+  width: 19px;
+  height: 19px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -1144,9 +1132,10 @@
   stroke-width: 1.8;
 }
 
+/* App icons already carry their own inset, so they fill the tile edge to edge. */
 .process-icon.has-image {
   border-color: color-mix(in srgb, var(--border) 78%, transparent);
-  padding: 3px;
+  padding: 0;
   background: color-mix(in srgb, var(--surface-3) 86%, var(--surface-2));
 }
 

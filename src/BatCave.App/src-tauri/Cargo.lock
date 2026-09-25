@@ -301,6 +301,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "plist",
  "png 0.18.1",
  "reqwest 0.13.4",
  "serde",

@@ -114,6 +114,7 @@ icns = { version = "0.4.0", default-features = false, features = ["pngio"] }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData"] }
+plist = "1.10.0"
 png = "0.18.1"
 
 [dev-dependencies]

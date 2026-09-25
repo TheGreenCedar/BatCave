@@ -84,7 +84,7 @@ fn find_macos_icns(executable: &std::path::Path) -> Option<std::path::PathBuf> {
     }
     // Helper apps nested inside an app bundle usually ship no icon; fall back to
     // the enclosing bundle so helpers share their app's icon.
-    executable
+    let bundles = executable
         .ancestors()
         .filter(|candidate| {
             candidate
@@ -92,12 +92,39 @@ fn find_macos_icns(executable: &std::path::Path) -> Option<std::path::PathBuf> {
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
         })
-        .find_map(bundle_icns)
+        .collect::<Vec<_>>();
+    let outermost = bundles.len().saturating_sub(1);
+    // A nested helper only counts when it declares or names its own icon; any other
+    // .icns inside it is usually a document icon, so fall through to the app.
+    bundles
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, bundle)| bundle_icns(bundle, index == outermost))
 }
 
 #[cfg(target_os = "macos")]
-fn bundle_icns(bundle: &std::path::Path) -> Option<std::path::PathBuf> {
+fn declared_icon_file(bundle: &std::path::Path) -> Option<String> {
+    let info = plist::Value::from_file(bundle.join("Contents").join("Info.plist")).ok()?;
+    let name = info
+        .as_dictionary()?
+        .get("CFBundleIconFile")?
+        .as_string()?
+        .trim()
+        .to_ascii_lowercase();
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(if name.ends_with(".icns") {
+        name
+    } else {
+        format!("{name}.icns")
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_icns(bundle: &std::path::Path, allow_any: bool) -> Option<std::path::PathBuf> {
     let canonical_bundle = bundle.canonicalize().ok()?;
+    let declared = declared_icon_file(bundle);
     let resources = bundle.join("Contents").join("Resources");
     let bundle_stem = bundle
         .file_stem()
@@ -122,12 +149,25 @@ fn bundle_icns(bundle: &std::path::Path) -> Option<std::path::PathBuf> {
             .to_ascii_lowercase();
         let preferred_bundle_name = format!("{bundle_stem}.icns");
         match name.as_str() {
-            "appicon.icns" => (0, name),
-            _ if name == preferred_bundle_name => (1, name),
-            "icon.icns" => (2, name),
-            _ => (3, name),
+            _ if declared.as_deref() == Some(name.as_str()) => (0, name),
+            "appicon.icns" => (1, name),
+            _ if name == preferred_bundle_name => (2, name),
+            "icon.icns" => (3, name),
+            _ => (4, name),
         }
     });
+    let named = |path: &std::path::PathBuf| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        declared.as_deref() == Some(name.as_str())
+            || name == "appicon.icns"
+            || name == format!("{bundle_stem}.icns")
+            || name == "icon.icns"
+    };
+    icons.retain(|path| allow_any || named(path));
     icons.into_iter().find_map(|path| {
         let canonical = path.canonicalize().ok()?;
         canonical
@@ -410,6 +450,36 @@ mod tests {
 
         let found = find_macos_icns(&helper).expect("enclosing app icon is found");
         assert_eq!(found, icon.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn declared_bundle_icon_wins_over_document_icons() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-macos-declared-icon-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let app = root.join("Visual Studio Code.app");
+        let executable = app.join("Contents").join("MacOS").join("Electron");
+        let resources = app.join("Contents").join("Resources");
+        std::fs::create_dir_all(executable.parent().unwrap()).expect("executable directory");
+        std::fs::create_dir_all(&resources).expect("resources directory");
+        std::fs::write(&executable, b"binary").expect("executable fixture");
+        for name in ["bat.icns", "Code.icns", "config.icns"] {
+            std::fs::write(resources.join(name), b"icns").expect("icon fixture");
+        }
+        std::fs::write(
+            app.join("Contents").join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIconFile</key><string>Code.icns</string></dict></plist>"#,
+        )
+        .expect("plist fixture");
+
+        let found = find_macos_icns(&executable).expect("declared icon is found");
+        assert_eq!(found, resources.join("Code.icns").canonicalize().unwrap());
 
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
