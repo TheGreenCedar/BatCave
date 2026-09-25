@@ -3,8 +3,6 @@ pub(crate) mod encode;
 pub(crate) mod types;
 mod validate;
 
-#[cfg(test)]
-pub(crate) use encode::encode_snapshot_ref;
 pub use encode::{encode_snapshot, encode_snapshot_ref_with_health};
 pub(crate) use types::RuntimeReleaseIdentityV4;
 pub use types::{

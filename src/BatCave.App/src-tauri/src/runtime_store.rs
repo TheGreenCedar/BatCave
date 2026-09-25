@@ -7883,8 +7883,10 @@ mod tests {
         );
         // A store-built snapshot encodes identically through the borrowing path.
         assert_eq!(
-            serde_json::to_value(crate::protocol::encode_snapshot_ref(&store.snapshot).unwrap())
-                .unwrap(),
+            serde_json::to_value(
+                crate::protocol::encode::encode_snapshot_ref(&store.snapshot).unwrap()
+            )
+            .unwrap(),
             serde_json::to_value(crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap())
                 .unwrap()
         );
