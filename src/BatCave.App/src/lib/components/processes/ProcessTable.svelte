@@ -48,6 +48,8 @@
   export let onInteractionChange: (active: boolean) => void = () => {};
   export let platform: RuntimePlatform = "fixture";
   export let exitedRowKeys: Set<string> = new Set();
+  // Held rows that vanished: "Exited" in the unfiltered list, otherwise they only left the view.
+  export let ghostLabel = "Exited";
 
   function metricCellTitleFor(row: ProcessViewRow, metric: "cpu" | "io" | "network"): string {
     return row.kind === "group"
@@ -258,7 +260,7 @@
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Sampled"}</span></td>
               {:else if column.key === "cpu"}
-                {@render metricCell(ghost, "Exited", cpuCellLabel(row), metricCellTitleFor(row, "cpu"))}
+                {@render metricCell(ghost, ghostLabel, cpuCellLabel(row), metricCellTitleFor(row, "cpu"))}
               {:else if column.key === "memory"}
                 {@render metricCell(
                   ghost,
@@ -321,7 +323,7 @@
               {:else if column.key === "attention"}
                 <td><span class="impact-label">{row.attention_label || "Sampled"}</span></td>
               {:else if column.key === "cpu"}
-                {@render metricCell(ghost, "Exited", cpuCellLabel(row), metricCellTitleFor(row, "cpu"))}
+                {@render metricCell(ghost, ghostLabel, cpuCellLabel(row), metricCellTitleFor(row, "cpu"))}
               {:else if column.key === "memory"}
                 {@render metricCell(ghost, "—", residentMemoryValue(process, platform), processMemoryTitle(process))}
               {:else if column.key === "io"}

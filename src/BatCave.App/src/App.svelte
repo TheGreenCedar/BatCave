@@ -2133,6 +2133,7 @@
           <AttentionQueue
             processRows={processViewRows}
             {exitedRowKeys}
+            ghostLabel={focusMode === "all" && !searchText.trim() ? "Exited" : "Left view"}
             {totalProcessCount}
             {focusMode}
             {searchText}
