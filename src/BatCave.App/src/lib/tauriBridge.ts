@@ -3,7 +3,6 @@ import type {
   MetricQuality,
   RuntimeSnapshot,
   SystemHistoryPoint,
-  SystemMemoryAccounting,
   SystemMetricsSnapshot,
 } from "./types";
 import type { ResolvedThemeName } from "./themes";
@@ -318,22 +317,6 @@ const SYSTEM_OPTIONAL_NUMBER_FIELDS = [
   "swap_total_bytes",
 ] as const;
 
-const ACCOUNTING_REQUIRED_FIELDS = [
-  "process_working_set_bytes",
-  "process_private_bytes",
-  "denied_process_count",
-  "partial_process_count",
-] as const;
-
-const ACCOUNTING_OPTIONAL_FIELDS = [
-  "commit_used_bytes",
-  "commit_limit_bytes",
-  "system_cache_bytes",
-  "kernel_total_bytes",
-  "kernel_paged_pool_bytes",
-  "kernel_nonpaged_pool_bytes",
-] as const;
-
 function decodeSystemHistoryPoint(value: unknown): SystemHistoryPoint {
   if (
     !isRecord(value) ||
@@ -377,9 +360,6 @@ function decodeSystemMetrics(value: unknown): SystemMetricsSnapshot {
   if (value.quality !== undefined) {
     system.quality = decodeMetricQualityMap(value.quality, "quality");
   }
-  if (value.memory_accounting !== undefined) {
-    system.memory_accounting = decodeMemoryAccounting(value.memory_accounting);
-  }
   return system as unknown as SystemMetricsSnapshot;
 }
 
@@ -399,55 +379,6 @@ function decodeMetricQualityMap(
     decoded[key] = entry;
   }
   return decoded as NonNullable<SystemMetricsSnapshot["quality"]>;
-}
-
-function decodeMemoryAccounting(value: unknown): SystemMemoryAccounting {
-  if (!isRecord(value)) {
-    throw new Error("System history memory_accounting was not recognized.");
-  }
-  const accounting: Record<string, unknown> = {};
-  for (const field of ACCOUNTING_REQUIRED_FIELDS) {
-    if (!isFiniteNumber(value[field])) {
-      throw new Error(`System history memory_accounting.${field} was not recognized.`);
-    }
-    accounting[field] = value[field];
-  }
-  for (const field of ACCOUNTING_OPTIONAL_FIELDS) {
-    const fieldValue = value[field];
-    if (fieldValue !== undefined) {
-      if (!isFiniteNumber(fieldValue)) {
-        throw new Error(`System history memory_accounting.${field} was not recognized.`);
-      }
-      accounting[field] = fieldValue;
-    }
-  }
-  if (value.quality !== undefined) {
-    accounting.quality = decodeMetricQualityMap(value.quality, "memory_accounting.quality");
-  }
-  if (value.kernel_pool_tags !== undefined) {
-    const tags = value.kernel_pool_tags;
-    if (
-      !Array.isArray(tags) ||
-      !tags.every(
-        (tag) =>
-          isRecord(tag) &&
-          typeof tag.tag === "string" &&
-          (tag.kind === "paged" || tag.kind === "nonpaged") &&
-          isFiniteNumber(tag.bytes) &&
-          isFiniteNumber(tag.allocations) &&
-          isFiniteNumber(tag.frees) &&
-          (tag.driver_candidates === undefined ||
-            (Array.isArray(tag.driver_candidates) &&
-              tag.driver_candidates.every((name) => typeof name === "string"))) &&
-          (tag.driver_candidates_pending === undefined ||
-            typeof tag.driver_candidates_pending === "boolean"),
-      )
-    ) {
-      throw new Error("System history memory_accounting.kernel_pool_tags was not recognized.");
-    }
-    accounting.kernel_pool_tags = tags;
-  }
-  return accounting as unknown as SystemMemoryAccounting;
 }
 
 function isFiniteNumber(value: unknown): value is number {

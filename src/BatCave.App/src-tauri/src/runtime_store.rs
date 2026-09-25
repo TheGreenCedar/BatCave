@@ -1114,8 +1114,8 @@ struct RuntimeStore {
     // Generations currently qualifying for the "Busy now" focus, with enter/exit
     // hysteresis; updated once per sample in update_ranking_history.
     attention_members: HashSet<(String, u64)>,
-    // Per-generation ring of recent values used only for ranking; displayed values
-    // stay instantaneous so transient processes cannot jump the list on one tick.
+    // Per-generation ring of recent values: emitted rows rank and display these
+    // 5-sample averages, while the history archive keeps per-sample values.
     ranking_history: RankingHistory,
     system_history: Arc<Mutex<VecDeque<SystemHistoryPoint>>>,
     live_process_snapshot: bool,
@@ -1632,10 +1632,14 @@ impl RuntimeStore {
                 .system_history
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Charts replay only machine totals; per-process accounting stays out.
             history.push_back(SystemHistoryPoint {
                 sample_seq: self.sample_seq,
                 sampled_at_ms: completed_at_ms,
-                system: system.clone(),
+                system: SystemMetricsSnapshot {
+                    memory_accounting: None,
+                    ..system.clone()
+                },
             });
             while history.len() > SYSTEM_HISTORY_CAPACITY {
                 history.pop_front();
@@ -4916,8 +4920,12 @@ mod tests {
             .all(|pair| pair[0].sample_seq < pair[1].sample_seq));
         assert_eq!(
             serde_json::to_value(&all.last().unwrap().system).unwrap(),
-            serde_json::to_value(state.snapshot().unwrap().system).unwrap(),
-            "the ring stores the exact system value published in the snapshot"
+            serde_json::to_value(SystemMetricsSnapshot {
+                memory_accounting: None,
+                ..state.snapshot().unwrap().system
+            })
+            .unwrap(),
+            "the ring stores the published system value without per-process accounting"
         );
 
         let filtered = state
@@ -4968,7 +4976,11 @@ mod tests {
             assert_eq!(history[0].sampled_at_ms, 10_000);
             assert_eq!(
                 serde_json::to_value(&history[0].system).unwrap(),
-                serde_json::to_value(&store.snapshot.system).unwrap()
+                serde_json::to_value(SystemMetricsSnapshot {
+                    memory_accounting: None,
+                    ..store.snapshot.system.clone()
+                })
+                .unwrap()
             );
         }
 
@@ -8049,114 +8061,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live host check: measures top-25 Explore row churn across 30 real collector ticks"]
-    fn live_explore_top25_churn_probe() {
-        let base_dir = runtime_test_dir("explore-top25-churn");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
-        store.settings.query = RuntimeQuery {
-            filter_text: String::new(),
-            focus_mode: match std::env::var("BATCAVE_PROBE_FOCUS").as_deref() {
-                Ok("attention") => ProcessFocusMode::Attention,
-                _ => ProcessFocusMode::All,
-            },
-            sort_column: SortColumn::CpuPct,
-            sort_direction: SortDirection::Desc,
-            limit: 5_000,
-        };
-        let mut collector = crate::telemetry::TelemetryCollector::new();
-
-        let visible_keys = |store: &RuntimeStore| -> Vec<(String, String, f64)> {
-            store
-                .snapshot
-                .process_view_rows
-                .iter()
-                .filter_map(|row| match row {
-                    ProcessViewRow::Group { detail, .. } => Some((
-                        detail.workload_id.clone(),
-                        detail.label.clone(),
-                        detail.cpu_percent,
-                    )),
-                    ProcessViewRow::Process {
-                        detail, is_grouped, ..
-                    } if !*is_grouped => Some((
-                        detail.workload_id.clone(),
-                        detail.process.name.clone(),
-                        detail.process.cpu_percent,
-                    )),
-                    _ => None,
-                })
-                .take(25)
-                .collect()
-        };
-
-        let mut previous: Vec<(String, String, f64)> = Vec::new();
-        let mut total_moved = 0_usize;
-        let mut total_entered = 0_usize;
-        let mut total_left = 0_usize;
-        let mut worst_tick = 0_usize;
-        let mut worst_score = 0_usize;
-
-        for tick in 0..30_u32 {
-            let sample = collector.collect().expect("live collect");
-            store.apply_raw_sample(sample, 0.0, store.clock.now_ms());
-            let current = visible_keys(&store);
-
-            let previous_index: HashMap<&str, usize> = previous
-                .iter()
-                .enumerate()
-                .map(|(index, row)| (row.0.as_str(), index))
-                .collect();
-            let current_index: HashMap<&str, usize> = current
-                .iter()
-                .enumerate()
-                .map(|(index, row)| (row.0.as_str(), index))
-                .collect();
-            let moved = current
-                .iter()
-                .filter(|row| {
-                    previous_index
-                        .get(row.0.as_str())
-                        .is_some_and(|index| *index != current_index[row.0.as_str()])
-                })
-                .count();
-            let entered = current
-                .iter()
-                .filter(|row| !previous_index.contains_key(row.0.as_str()))
-                .count();
-            let left = previous
-                .iter()
-                .filter(|row| !current_index.contains_key(row.0.as_str()))
-                .count();
-            total_moved += moved;
-            total_entered += entered;
-            total_left += left;
-            if moved + entered + left > worst_score {
-                worst_score = moved + entered + left;
-                worst_tick = tick as usize;
-            }
-            eprintln!(
-                "tick {tick}: moved={moved} entered={entered} left={left}\n  {}",
-                current
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| format!("{index}:{:?}({:.1})", row.1, row.2))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            );
-            previous = current;
-            if tick + 1 < 30 {
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        }
-
-        eprintln!(
-            "totals: moved={total_moved} entered={total_entered} left={total_left} worst_tick={worst_tick} worst_score={worst_score}"
-        );
-        let _ = fs::remove_dir_all(&base_dir);
-    }
-
-    #[test]
-    fn stabilized_view_holds_near_tie_positions_and_bubbles_clear_gains() {
+    fn strict_view_follows_smoothed_ranking() {
         let query = || RuntimeQuery {
             sort_column: SortColumn::CpuPct,
             limit: usize::MAX,
@@ -8196,8 +8101,8 @@ mod tests {
         let rows = emit_process_view(&groups, &query(), &attention);
         assert_eq!(names(&rows), ["Alpha", "Beta", "Gamma"]);
 
-        // Ranking follows the smoothed values strictly each tick: even a
-        // near-tie gain reorders immediately instead of holding stale order.
+        // Order follows the smoothed values strictly: a gain that stays below
+        // the row above keeps its position, and overtaking reorders at once.
         history
             .get_mut(&(beta.pid.clone(), beta.start_time_ms))
             .unwrap()

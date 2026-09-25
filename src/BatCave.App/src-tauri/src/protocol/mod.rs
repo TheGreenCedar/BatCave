@@ -939,7 +939,7 @@ mod tests {
             )),
             include_str!("../fixtures/runtime-protocol-v4/macos-limited.json"),
         );
-        // Regression fixture for H5/H7: a denied system process and a held
+        // Regression fixture: a denied system process and a held
         // first-sample process leave contributor coverage partial, yet the
         // measured winner's name and identity still publish.
         let mut partial_contributors = fixture_for(RuntimePlatform::Macos);

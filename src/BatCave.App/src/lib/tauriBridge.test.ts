@@ -32,28 +32,12 @@ test("decodeSystemHistoryPoints accepts a well-formed wire payload", () => {
         ...system,
         swap_used_bytes: 10,
         quality: { cpu: { quality: "partial", limitation_code: "held_value" } },
-        memory_accounting: {
-          process_working_set_bytes: 100,
-          process_private_bytes: 90,
-          denied_process_count: 1,
-          partial_process_count: 2,
-          kernel_pool_tags: [
-            {
-              tag: "Abcd",
-              kind: "paged",
-              bytes: 8,
-              allocations: 2,
-              frees: 1,
-              driver_candidates: ["drv.sys"],
-            },
-          ],
-        },
       },
     },
   ]);
   assert.equal(points.length, 2);
   assert.equal(points[0].sample_seq, 2);
-  assert.equal(points[1].system.memory_accounting?.process_working_set_bytes, 100);
+  assert.equal(points[1].system.swap_used_bytes, 10);
 });
 
 test("decodeSystemHistoryPoints rejects malformed payloads", () => {
@@ -68,16 +52,6 @@ test("decodeSystemHistoryPoints rejects malformed payloads", () => {
         sample_seq: 1,
         sampled_at_ms: 1,
         system: { ...system, quality: { cpu: { quality: "bogus" } } },
-      },
-    ],
-    [
-      {
-        sample_seq: 1,
-        sampled_at_ms: 1,
-        system: {
-          ...system,
-          memory_accounting: { process_working_set_bytes: null },
-        },
       },
     ],
   ]) {
