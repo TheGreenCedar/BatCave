@@ -250,8 +250,10 @@
   .history-heading {
     margin-bottom: 6px;
   }
+  /* Identical columns on every row keep the four sparklines aligned. */
   .history-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr) 7.5rem;
     align-items: center;
     gap: 12px;
     width: 100%;
@@ -265,8 +267,7 @@
     cursor: pointer;
   }
   .history-row-label {
-    flex: 0 1 110px;
-    min-width: 4.5rem;
+    min-width: 0;
     overflow: hidden;
     color: var(--text-soft);
     font-size: var(--text-xs);
@@ -274,25 +275,29 @@
     white-space: nowrap;
   }
   .history-sparkline {
-    flex: 1 1 0;
+    width: 100%;
     min-width: 0;
     height: 40px;
     display: block;
   }
   .history-row-value {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
+    min-width: 0;
+    display: grid;
+    justify-items: end;
+    gap: 2px;
     font-variant-numeric: tabular-nums;
     font-family: var(--font-ui);
     font-size: var(--text-sm);
+    line-height: 1.2;
     text-align: right;
     white-space: nowrap;
   }
   .history-row-peak {
+    max-width: 100%;
+    overflow: hidden;
     color: var(--text-muted);
     font-size: var(--text-xs);
+    text-overflow: ellipsis;
   }
   .history-hint {
     margin: 0 0 4px;

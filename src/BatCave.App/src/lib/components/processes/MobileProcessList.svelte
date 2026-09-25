@@ -36,6 +36,7 @@
   export let onInteractionChange: (active: boolean) => void = () => {};
   export let platform: RuntimePlatform = "fixture";
   export let exitedRowKeys: Set<string> = new Set();
+  export let ghostLabel = "Exited";
 
   $: cardRows = processRows.filter(
     (row) =>
@@ -177,7 +178,7 @@
         <span class="card-metrics">
           <span>
             <em>CPU / core</em>
-            <b title={process?.quality?.cpu?.message ?? ""}>{ghost ? "Exited" : cpuLabel(row)}</b>
+            <b title={process?.quality?.cpu?.message ?? ""}>{ghost ? ghostLabel : cpuLabel(row)}</b>
           </span>
           <span>
             <em>{presentation.memoryLabel}</em>

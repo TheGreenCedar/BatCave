@@ -21,6 +21,8 @@ pub const HISTORY_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const MAX_POINTS: usize = 360;
 const REPLY_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TOMBSTONES: usize = 1_024;
+// Live histories are trimmed no shorter than this before a live workload is released.
+const MIN_TRIMMED_POINTS: usize = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -463,58 +465,82 @@ impl WorkloadArchive {
             .budget
             .saturating_sub(REPLY_BUDGET_BYTES.min(self.budget / 8))
             .saturating_sub(self.ingress_reserved);
-        while self.retained_bytes() > target {
-            // Same eviction key as the previous per-eviction min_by_key scan. A stable
-            // sort keeps HashMap iteration order for equal keys, so each evicted id is
-            // the one that scan would have selected.
-            let mut eviction_order: Vec<((bool, u64), String)> = self
+        if self.retained_bytes() <= target {
+            return;
+        }
+        // 1. Workloads missing from the latest sample go first, stalest first. Unknown-start
+        //    identities cannot accumulate history across samples, so they lead.
+        let mut stale: Vec<((bool, u64), String)> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.last_sample_seq < self.sample_seq)
+            .map(|(id, entry)| {
+                let expired_publication = matches!(
+                    entry.identity_stability,
+                    ProcessIdentityStabilityV4::Publication
+                );
+                ((!expired_publication, entry.last_sample_seq), id.clone())
+            })
+            .collect();
+        stale.sort_by_key(|(key, _)| *key);
+        for (_, id) in stale {
+            if self.retained_bytes() <= target {
+                break;
+            }
+            self.evict_id(&id);
+        }
+        // 2. Live workloads keep their identity: trim every long history to a shared cap,
+        //    oldest points first, so an inspected workload never disappears mid-view.
+        let mut cap = self
+            .entries
+            .values()
+            .map(|entry| entry.history.len())
+            .max()
+            .unwrap_or_default();
+        while self.retained_bytes() > target && cap > MIN_TRIMMED_POINTS {
+            cap = cap
+                .saturating_sub((cap / 32).max(1))
+                .max(MIN_TRIMMED_POINTS);
+            self.trim_histories(cap);
+        }
+        // 3. Only when every live history is at the floor does a live workload go.
+        if self.retained_bytes() > target {
+            let mut live: Vec<(usize, String)> = self
                 .entries
                 .iter()
-                .map(|(id, entry)| {
-                    let expired_publication = matches!(
-                        entry.identity_stability,
-                        ProcessIdentityStabilityV4::Publication
-                    ) && entry.last_sample_seq < self.sample_seq;
-                    // Unknown-start identities cannot accumulate history across samples;
-                    // reclaim their obsolete observations before generation-bound history.
-                    ((!expired_publication, entry.last_sample_seq), id.clone())
-                })
+                .map(|(id, entry)| (usize::MAX - entry.history.len(), id.clone()))
                 .collect();
-            eviction_order.sort_by_key(|(key, _)| *key);
-            for (_, id) in eviction_order {
+            live.sort();
+            for (_, id) in live {
                 if self.retained_bytes() <= target {
                     break;
                 }
                 self.evict_id(&id);
-                // Shrinking lowers retained_bytes, so the old algorithm could stop
-                // evicting right after a capacity drop. Keep the same per-eviction
-                // checks so the stopping point (and final retained set) is identical.
-                if self.entries.len() * 4 < self.entries.capacity() {
-                    self.entries.shrink_to_fit();
-                }
-                if self.bundles.len() * 4 < self.bundles.capacity() {
-                    self.bundles.shrink_to_fit();
-                }
-                if self.evicted.len() * 4 < self.evicted.capacity() {
-                    self.evicted.shrink_to_fit();
-                }
             }
-            // Tombstones are only reclaimed once every entry is gone, as before.
-            while self.retained_bytes() > target && self.pop_evicted().is_some() {
-                if self.entries.len() * 4 < self.entries.capacity() {
-                    self.entries.shrink_to_fit();
-                }
-                if self.bundles.len() * 4 < self.bundles.capacity() {
-                    self.bundles.shrink_to_fit();
-                }
-                if self.evicted.len() * 4 < self.evicted.capacity() {
-                    self.evicted.shrink_to_fit();
-                }
+        }
+        while self.retained_bytes() > target && self.pop_evicted().is_some() {}
+        if self.entries.len() * 4 < self.entries.capacity() {
+            self.entries.shrink_to_fit();
+        }
+        if self.bundles.len() * 4 < self.bundles.capacity() {
+            self.bundles.shrink_to_fit();
+        }
+        if self.evicted.len() * 4 < self.evicted.capacity() {
+            self.evicted.shrink_to_fit();
+        }
+    }
+    fn trim_histories(&mut self, cap: usize) {
+        for (id, entry) in self.entries.iter_mut() {
+            if entry.history.len() <= cap {
+                continue;
             }
-            if self.entries.is_empty() && self.evicted.is_empty() {
-                break;
-            }
-            // Shrinking only lowers retained bytes; loop again only if still over.
+            let before = entry_heap(id, entry);
+            let excess = entry.history.len() - cap;
+            entry.history.drain(..excess);
+            // Keep a little headroom so the next sample does not reallocate at once.
+            entry.history.shrink_to(cap + cap / 8 + 1);
+            entry.truncated = true;
+            self.allocated = self.allocated - before + entry_heap(id, entry);
         }
     }
     pub fn acknowledge(&self, token: &str) -> Result<(), String> {
@@ -1556,133 +1582,90 @@ mod tests {
         }
     }
 
-    // Verbatim copy of the pre-optimization enforce_budget for equivalence testing.
-    fn reference_retained_bytes(archive: &WorkloadArchive) -> usize {
-        archive.allocated
-            + archive.entries.capacity() * (size_of::<(String, Entry)>() + 32)
-            + archive.bundles.capacity() * (size_of::<(u64, Bundle)>() + 32)
-            + archive.evicted.capacity() * size_of::<String>()
-            + archive.evicted.iter().map(String::capacity).sum::<usize>()
-    }
-    fn reference_remember_evicted(archive: &mut WorkloadArchive, id: String) {
-        if !archive.evicted.contains(&id) {
-            archive.evicted.push_back(id);
-        }
-        if archive.evicted.len() > MAX_TOMBSTONES {
-            archive.evicted.pop_front();
-        }
-    }
-    fn reference_evict_id(archive: &mut WorkloadArchive, id: &str) {
-        if let Some((key, entry)) = archive.entries.remove_entry(id) {
-            archive.allocated -= entry_heap(&key, &entry);
-            archive.release_bundle(entry.bundle_id);
-            reference_remember_evicted(archive, key);
-        }
-    }
-    fn reference_enforce_budget(archive: &mut WorkloadArchive) {
-        while reference_retained_bytes(archive)
-            > archive
-                .budget
-                .saturating_sub(REPLY_BUDGET_BYTES.min(archive.budget / 8))
-                .saturating_sub(archive.ingress_reserved)
-        {
-            let oldest = archive
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| {
-                    let expired_publication = matches!(
-                        entry.identity_stability,
-                        ProcessIdentityStabilityV4::Publication
-                    ) && entry.last_sample_seq < archive.sample_seq;
-                    (!expired_publication, entry.last_sample_seq)
-                })
-                .map(|(id, _)| id.clone());
-            if let Some(id) = oldest {
-                reference_evict_id(archive, &id);
-            } else if archive.evicted.pop_front().is_none() {
-                break;
-            }
-            if archive.entries.len() * 4 < archive.entries.capacity() {
-                archive.entries.shrink_to_fit();
-            }
-            if archive.bundles.len() * 4 < archive.bundles.capacity() {
-                archive.bundles.shrink_to_fit();
-            }
-            if archive.evicted.len() * 4 < archive.evicted.capacity() {
-                archive.evicted.shrink_to_fit();
-            }
-        }
-    }
-
-    // Same construction for both archives; unique (expired, seq) keys so the
-    // eviction order is fully determined and HashMap iteration order cannot matter.
-    fn populated_archive() -> WorkloadArchive {
-        let mut archive = WorkloadArchive::with_budget(64 * 1024);
-        archive.sample_seq = 25;
-        for index in 0..50usize {
+    fn archive_with(live: usize, stale: usize, points: usize, budget: usize) -> WorkloadArchive {
+        let mut archive = WorkloadArchive::with_budget(budget);
+        archive.sample_seq = 100;
+        for index in 0..live + stale {
             let id = format!("workload-{index:02}");
-            let mut history = VecDeque::new();
-            // Mixed history sizes so retained_bytes drops unevenly per eviction.
-            for point in 0..(index * 4 + 20) {
-                history.push_back(test_history_point(point as u64));
-            }
+            let history = (0..points as u64).map(test_history_point).collect();
             let entry = Entry {
                 bundle_id: 0,
-                // Unique staleness per entry -> unique eviction keys.
-                last_sample_seq: index as u64,
-                // Mixed identity stability.
-                identity_stability: if index % 3 == 0 {
-                    ProcessIdentityStabilityV4::Publication
-                } else {
-                    ProcessIdentityStabilityV4::Stable
-                },
+                last_sample_seq: if index < live { 100 } else { index as u64 },
+                identity_stability: ProcessIdentityStabilityV4::Stable,
                 history,
                 truncated: false,
             };
             archive.allocated += entry_heap(&id, &entry);
             archive.entries.insert(id, entry);
         }
-        // A few tombstones so the entries-exhausted path is also exercised.
-        for index in 0..8usize {
-            archive.remember_evicted(format!("gone-{index}"));
-        }
         archive
     }
 
-    #[test]
-    fn enforce_budget_matches_the_reference_eviction_algorithm() {
-        let mut archive = populated_archive();
-        let mut reference = populated_archive();
-        assert!(archive.retained_bytes() > archive.budget);
-        assert_eq!(
-            archive.retained_bytes(),
-            reference_retained_bytes(&reference)
-        );
-        // The incremental tombstone counter agrees with the old O(n) sum.
+    fn budget_target(archive: &WorkloadArchive) -> usize {
+        archive.budget - REPLY_BUDGET_BYTES.min(archive.budget / 8)
+    }
+
+    fn assert_tombstone_bytes_consistent(archive: &WorkloadArchive) {
         assert_eq!(
             archive.evicted_bytes,
             archive.evicted.iter().map(String::capacity).sum::<usize>()
         );
+    }
+
+    #[test]
+    fn budget_pressure_releases_stale_workloads_and_trims_live_history() {
+        let mut archive = archive_with(20, 10, 360, 1024 * 1024);
+        assert!(archive.retained_bytes() > budget_target(&archive));
 
         archive.enforce_budget();
-        reference_enforce_budget(&mut reference);
 
-        let actual_evicted: Vec<String> = archive.evicted.iter().cloned().collect();
-        let reference_evicted: Vec<String> = reference.evicted.iter().cloned().collect();
-        assert_eq!(actual_evicted, reference_evicted);
-        let mut actual_ids: Vec<&String> = archive.entries.keys().collect();
-        let mut reference_ids: Vec<&String> = reference.entries.keys().collect();
-        actual_ids.sort();
-        reference_ids.sort();
-        assert_eq!(actual_ids, reference_ids);
-        assert_eq!(
-            archive.retained_bytes(),
-            reference_retained_bytes(&reference)
-        );
-        // Counter still consistent after every push/pop inside enforce_budget.
-        assert_eq!(
-            archive.evicted_bytes,
-            archive.evicted.iter().map(String::capacity).sum::<usize>()
-        );
+        assert!(archive.retained_bytes() <= budget_target(&archive));
+        for index in 0..20 {
+            let entry = archive
+                .entries
+                .get(&format!("workload-{index:02}"))
+                .expect("live workloads keep their history identity");
+            assert!(entry.history.len() >= MIN_TRIMMED_POINTS);
+            assert!(entry.history.len() < 360);
+            assert!(entry.truncated);
+            // The newest points survive; trimming drops the oldest.
+            assert_eq!(entry.history.back().unwrap().sample_seq, 359);
+        }
+        for index in 20..30 {
+            let id = format!("workload-{index:02}");
+            assert!(!archive.entries.contains_key(&id));
+            assert!(archive.evicted.contains(&id));
+        }
+        assert_tombstone_bytes_consistent(&archive);
+    }
+
+    #[test]
+    fn stale_workloads_alone_can_satisfy_the_budget() {
+        let mut archive = archive_with(4, 40, 200, 512 * 1024);
+        assert!(archive.retained_bytes() > budget_target(&archive));
+
+        archive.enforce_budget();
+
+        assert!(archive.retained_bytes() <= budget_target(&archive));
+        for index in 0..4 {
+            let entry = &archive.entries[&format!("workload-{index:02}")];
+            assert_eq!(entry.history.len(), 200, "live history untouched");
+            assert!(!entry.truncated);
+        }
+        assert_tombstone_bytes_consistent(&archive);
+    }
+
+    #[test]
+    fn live_workloads_are_released_only_after_trimming_to_the_floor() {
+        let mut archive = archive_with(40, 0, 360, 96 * 1024);
+        archive.enforce_budget();
+
+        assert!(archive.retained_bytes() <= budget_target(&archive));
+        assert!(archive.entries.len() < 40);
+        assert!(archive
+            .entries
+            .values()
+            .all(|entry| entry.history.len() <= MIN_TRIMMED_POINTS));
+        assert_tombstone_bytes_consistent(&archive);
     }
 }

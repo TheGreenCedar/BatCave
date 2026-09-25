@@ -48,6 +48,11 @@ fn load_icon_data_url(exe: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn load_icon_data_url(exe: &str) -> Option<String> {
+    // Ask LaunchServices for the icon Finder and the Dock show. It resolves asset
+    // catalogs (CFBundleIconName) and system icon styling that a raw .icns cannot.
+    if let Some(png) = macos_icon_bundle(std::path::Path::new(exe)).and_then(workspace_icon_png) {
+        return Some(format!("data:image/png;base64,{}", STANDARD.encode(&png)));
+    }
     let icon_path = find_macos_icns(std::path::Path::new(exe))?;
     let metadata = std::fs::metadata(&icon_path).ok()?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 32 * 1024 * 1024 {
@@ -56,6 +61,66 @@ fn load_icon_data_url(exe: &str) -> Option<String> {
     let bytes = std::fs::read(icon_path).ok()?;
     let png = decode_icns_to_png(&bytes)?;
     Some(format!("data:image/png;base64,{}", STANDARD.encode(&png)))
+}
+
+/// The app bundle whose icon represents this executable: the innermost enclosing
+/// bundle that declares an icon, else the outermost app (helpers share it).
+#[cfg(target_os = "macos")]
+fn macos_icon_bundle(executable: &std::path::Path) -> Option<&std::path::Path> {
+    if !executable.is_absolute() {
+        return None;
+    }
+    let bundles = executable
+        .ancestors()
+        .filter(|candidate| {
+            candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        })
+        .collect::<Vec<_>>();
+    bundles
+        .iter()
+        .copied()
+        .find(|bundle| declares_icon(bundle))
+        .or_else(|| bundles.last().copied())
+}
+
+#[cfg(target_os = "macos")]
+fn declares_icon(bundle: &std::path::Path) -> bool {
+    plist::Value::from_file(bundle.join("Contents").join("Info.plist"))
+        .ok()
+        .and_then(|info| {
+            info.as_dictionary().map(|info| {
+                ["CFBundleIconName", "CFBundleIconFile"].iter().any(|key| {
+                    info.get(key)
+                        .and_then(plist::Value::as_string)
+                        .is_some_and(|name| !name.trim().is_empty())
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn workspace_icon_png(bundle: &std::path::Path) -> Option<Vec<u8>> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    let path = NSString::from_str(bundle.to_str()?);
+    let image = NSWorkspace::sharedWorkspace().iconForFile(&path);
+    let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(48.0, 48.0));
+    // SAFETY: `rect` is a valid, exclusively borrowed NSRect; no context or hints.
+    let cg_image = unsafe { image.CGImageForProposedRect_context_hints(&mut rect, None, None) }?;
+    let representation = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &cg_image);
+    // SAFETY: an empty property dictionary is valid for PNG encoding.
+    let data = unsafe {
+        representation
+            .representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }?;
+    let png = data.to_vec();
+    (!png.is_empty()).then_some(png)
 }
 
 #[cfg(target_os = "macos")]
@@ -82,13 +147,49 @@ fn find_macos_icns(executable: &std::path::Path) -> Option<std::path::PathBuf> {
     if !executable.is_absolute() {
         return None;
     }
-    let bundle = executable.ancestors().find(|candidate| {
-        candidate
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
-    })?;
+    // Helper apps nested inside an app bundle usually ship no icon; fall back to
+    // the enclosing bundle so helpers share their app's icon.
+    let bundles = executable
+        .ancestors()
+        .filter(|candidate| {
+            candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        })
+        .collect::<Vec<_>>();
+    let outermost = bundles.len().saturating_sub(1);
+    // A nested helper only counts when it declares or names its own icon; any other
+    // .icns inside it is usually a document icon, so fall through to the app.
+    bundles
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, bundle)| bundle_icns(bundle, index == outermost))
+}
+
+#[cfg(target_os = "macos")]
+fn declared_icon_file(bundle: &std::path::Path) -> Option<String> {
+    let info = plist::Value::from_file(bundle.join("Contents").join("Info.plist")).ok()?;
+    let name = info
+        .as_dictionary()?
+        .get("CFBundleIconFile")?
+        .as_string()?
+        .trim()
+        .to_ascii_lowercase();
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(if name.ends_with(".icns") {
+        name
+    } else {
+        format!("{name}.icns")
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_icns(bundle: &std::path::Path, allow_any: bool) -> Option<std::path::PathBuf> {
     let canonical_bundle = bundle.canonicalize().ok()?;
+    let declared = declared_icon_file(bundle);
     let resources = bundle.join("Contents").join("Resources");
     let bundle_stem = bundle
         .file_stem()
@@ -113,12 +214,25 @@ fn find_macos_icns(executable: &std::path::Path) -> Option<std::path::PathBuf> {
             .to_ascii_lowercase();
         let preferred_bundle_name = format!("{bundle_stem}.icns");
         match name.as_str() {
-            "appicon.icns" => (0, name),
-            _ if name == preferred_bundle_name => (1, name),
-            "icon.icns" => (2, name),
-            _ => (3, name),
+            _ if declared.as_deref() == Some(name.as_str()) => (0, name),
+            "appicon.icns" => (1, name),
+            _ if name == preferred_bundle_name => (2, name),
+            "icon.icns" => (3, name),
+            _ => (4, name),
         }
     });
+    let named = |path: &std::path::PathBuf| {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        declared.as_deref() == Some(name.as_str())
+            || name == "appicon.icns"
+            || name == format!("{bundle_stem}.icns")
+            || name == "icon.icns"
+    };
+    icons.retain(|path| allow_any || named(path));
     icons.into_iter().find_map(|path| {
         let canonical = path.canonicalize().ok()?;
         canonical
@@ -373,6 +487,105 @@ mod tests {
 
         let data_url = load_icon_data_url(&executable.to_string_lossy()).expect("icon data URL");
         assert!(data_url.starts_with("data:image/png;base64,iVBORw0KGgo"));
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nested_helper_without_icon_uses_the_enclosing_app_icon() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-macos-helper-icon-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let app = root.join("Suite.app");
+        let helper = app
+            .join("Contents")
+            .join("Frameworks")
+            .join("Suite Helper.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("Suite Helper");
+        let icon = app.join("Contents").join("Resources").join("Suite.icns");
+        std::fs::create_dir_all(helper.parent().unwrap()).expect("helper directory");
+        std::fs::create_dir_all(icon.parent().unwrap()).expect("icon directory");
+        std::fs::write(&helper, b"binary").expect("helper fixture");
+        std::fs::write(&icon, b"icns").expect("icon fixture");
+
+        let found = find_macos_icns(&helper).expect("enclosing app icon is found");
+        assert_eq!(found, icon.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn declared_bundle_icon_wins_over_document_icons() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-macos-declared-icon-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let app = root.join("Visual Studio Code.app");
+        let executable = app.join("Contents").join("MacOS").join("Electron");
+        let resources = app.join("Contents").join("Resources");
+        std::fs::create_dir_all(executable.parent().unwrap()).expect("executable directory");
+        std::fs::create_dir_all(&resources).expect("resources directory");
+        std::fs::write(&executable, b"binary").expect("executable fixture");
+        for name in ["bat.icns", "Code.icns", "config.icns"] {
+            std::fs::write(resources.join(name), b"icns").expect("icon fixture");
+        }
+        std::fs::write(
+            app.join("Contents").join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIconFile</key><string>Code.icns</string></dict></plist>"#,
+        )
+        .expect("plist fixture");
+
+        let found = find_macos_icns(&executable).expect("declared icon is found");
+        assert_eq!(found, resources.join("Code.icns").canonicalize().unwrap());
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_icon_renders_a_system_app_as_png() {
+        let finder = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder";
+        let bundle = macos_icon_bundle(std::path::Path::new(finder)).expect("Finder bundle");
+        let png = workspace_icon_png(bundle).expect("LaunchServices renders the Finder icon");
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_without_declared_icon_uses_the_outermost_app_bundle() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-macos-icon-bundle-{}-{}",
+            std::process::id(),
+            crate::telemetry::now_ms()
+        ));
+        let app = root.join("Suite.app");
+        let helper_app = app
+            .join("Contents")
+            .join("Frameworks")
+            .join("Suite Helper.app");
+        let helper = helper_app
+            .join("Contents")
+            .join("MacOS")
+            .join("Suite Helper");
+        std::fs::create_dir_all(helper.parent().unwrap()).expect("helper directory");
+        std::fs::write(&helper, b"binary").expect("helper fixture");
+        assert_eq!(macos_icon_bundle(&helper), Some(app.as_path()));
+
+        std::fs::write(
+            helper_app.join("Contents").join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIconName</key><string>HelperIcon</string></dict></plist>"#,
+        )
+        .expect("plist fixture");
+        assert_eq!(macos_icon_bundle(&helper), Some(helper_app.as_path()));
 
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
