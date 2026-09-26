@@ -261,6 +261,10 @@ jobs:
     name: Build Apple Silicon macOS release
     needs: prepare
     runs-on: macos-15
+    env:
+      # The runner's default Xcode 16.4 SDK lacks FoundationModels; release
+      # verification requires the sidecar to weak-link it.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
