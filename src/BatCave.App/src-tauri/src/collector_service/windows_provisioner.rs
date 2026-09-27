@@ -25,6 +25,32 @@ const APP_PATH_REGISTRATION_PATH: &str =
     r"Software\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe";
 const APP_PATH_REGISTRATION_NT_PATH: &str =
     r"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\batcave-monitor.exe";
+
+pub(super) fn with_start_entry_security<T>(
+    create: impl FnOnce(*const windows_sys::Win32::Security::SECURITY_ATTRIBUTES) -> Result<T, String>,
+) -> Result<T, String> {
+    native::with_start_entry_security(create)
+}
+
+pub(super) fn start_entry_security_digest(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<[u8; 32], String> {
+    native::start_entry_security_digest(handle)
+}
+
+#[cfg(test)]
+pub(super) fn with_start_fixture_security<T>(
+    create: impl FnOnce(*const windows_sys::Win32::Security::SECURITY_ATTRIBUTES) -> Result<T, String>,
+) -> Result<T, String> {
+    native::with_start_fixture_security(create)
+}
+
+#[cfg(test)]
+pub(super) fn start_fixture_security_digest(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<[u8; 32], String> {
+    native::start_fixture_security_digest(handle)
+}
 pub(crate) const SERVICE_LIFECYCLE_LOCK_FILE_NAME: &str = "process-owner.v1.lock";
 const SERVICE_TYPE_OWN_PROCESS: u32 = 0x10;
 const ERROR_FILE_NOT_FOUND_CODE: u32 = 2;
@@ -181,11 +207,6 @@ pub(crate) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, S
 
 /// Read-only authority for a current-user GUI launch entry; pins the installed image
 /// and install directories for the duration of the callback.
-pub(crate) fn with_verified_current_monitor<T>(
-    action: impl FnOnce(&Path) -> Result<T, String>,
-) -> Result<T, String> {
-    native::with_verified_current_monitor(action)
-}
 
 pub(crate) fn record_service_failure(category: &str) -> Result<(), String> {
     native::record_service_failure(category)
@@ -1440,6 +1461,98 @@ mod native {
         }
     }
 
+    pub(super) fn with_start_entry_security<T>(
+        create: impl FnOnce(*const SECURITY_ATTRIBUTES) -> Result<T, String>,
+    ) -> Result<T, String> {
+        // Readable by every user, writable only by installer authorities. The
+        // Shell parent remains ordinarily mutable; this does not grant trust to it.
+        let mut descriptor =
+            OwnedSecurityDescriptor::from_sddl("O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)")?;
+        create(&descriptor.attributes())
+    }
+
+    pub(super) fn start_entry_security_digest(handle: HANDLE) -> Result<[u8; 32], String> {
+        let principals = SecurityPrincipals::load_base()?;
+        validate_no_untrusted_writer(handle, &principals, false, false)?;
+        capture_start_entry_security(handle)
+    }
+
+    fn capture_start_entry_security(handle: HANDLE) -> Result<[u8; 32], String> {
+        let security = OwnedSecurityInfo::read(handle, "installer_start_security_failed")?;
+        let mut control = 0_u16;
+        let mut revision = 0_u32;
+        if unsafe { GetSecurityDescriptorControl(security.descriptor, &mut control, &mut revision) }
+            == 0
+            || control & SE_DACL_PROTECTED == 0
+        {
+            return Err("installer_start_security_unprotected".to_string());
+        }
+        let owner_size = unsafe { GetLengthSid(security.owner) } as usize;
+        if !(1..=SECURITY_MAX_SID_SIZE as usize).contains(&owner_size) {
+            return Err("installer_start_owner_invalid".to_string());
+        }
+        let mut hash = Sha256::new();
+        hash.update(unsafe { std::slice::from_raw_parts(security.owner.cast::<u8>(), owner_size) });
+        hash.update(dacl_sha256(security.dacl, "installer_start_dacl")?.as_bytes());
+        Ok(hash.finalize().into())
+    }
+
+    #[cfg(test)]
+    fn start_fixture_principals() -> Result<SecurityPrincipals, String> {
+        use windows_sys::Win32::Security::{TokenUser, TOKEN_USER};
+        let mut raw = ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+            return Err(last_error("installer_start_fixture_token_failed"));
+        }
+        let token = OwnedHandle::new(raw, "installer_start_fixture_token")?;
+        let size = size_of::<TOKEN_USER>() + SECURITY_MAX_SID_SIZE as usize;
+        let mut buffer = vec![0_usize; size.div_ceil(size_of::<usize>())];
+        let mut returned = 0;
+        if unsafe {
+            GetTokenInformation(
+                token.raw(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * size_of::<usize>()) as u32,
+                &mut returned,
+            )
+        } == 0
+        {
+            return Err(last_error("installer_start_fixture_user_failed"));
+        }
+        let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        let sid_size = unsafe { GetLengthSid(sid) } as usize;
+        if !(1..=SECURITY_MAX_SID_SIZE as usize).contains(&sid_size) {
+            return Err("installer_start_fixture_user_invalid".to_string());
+        }
+        let mut principals = SecurityPrincipals::load_base()?;
+        if unsafe { EqualSid(sid, principals.administrators.as_psid()) } != 0 {
+            return Err("installer_start_fixture_roles_alias".to_string());
+        }
+        // Only isolated test roots use the token user as the trusted system
+        // role. Production loads the fixed system SID and BA-owned descriptor.
+        principals.system =
+            OwnedSid(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), sid_size) }.to_vec());
+        Ok(principals)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_start_fixture_security<T>(
+        create: impl FnOnce(*const SECURITY_ATTRIBUTES) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let owner = sid_string(&start_fixture_principals()?.system)?;
+        let mut descriptor = OwnedSecurityDescriptor::from_sddl(&format!(
+            "O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;BA)(A;;FR;;;BU)"
+        ))?;
+        create(&descriptor.attributes())
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_fixture_security_digest(handle: HANDLE) -> Result<[u8; 32], String> {
+        validate_no_untrusted_writer(handle, &start_fixture_principals()?, false, false)?;
+        capture_start_entry_security(handle)
+    }
+
     #[derive(Clone)]
     struct OwnedSid(Vec<u8>);
 
@@ -2395,7 +2508,11 @@ mod native {
         monitor: &VerifiedMonitorImage,
     ) -> Result<(), String> {
         let created = ensure_app_path_registration(monitor)?;
-        if let Err(primary) = retire_shortcuts_with_controller(controller) {
+        let launch_gate = retire_shortcuts_with_controller(controller).and_then(|_| {
+            super::super::windows_shortcut_retirement::ensure_owned_start_entry(monitor.path())
+                .map(|_| ())
+        });
+        if let Err(primary) = launch_gate {
             return match created {
                 Some(created) => {
                     match delete_pinned_app_path_registration(&created, monitor.path()) {
@@ -2416,6 +2533,7 @@ mod native {
         let image = verify_current_binary_path()?;
         let monitor = verify_monitor_image(&image)?;
         preflight_app_path_registration(&monitor)?;
+        super::super::windows_shortcut_retirement::preflight_owned_start_entry(monitor.path())?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = open_service(&manager, SERVICE_ALL_ACCESS)?
             .ok_or_else(|| "collector_service_upgrade_service_missing".to_string())?;
@@ -2445,10 +2563,12 @@ mod native {
     ) -> Result<(), String> {
         let monitor = verify_monitor_image(staged)?;
         preflight_app_path_registration(&monitor)?;
+        super::super::windows_shortcut_retirement::preflight_owned_start_entry(monitor.path())?;
         validate_service_contract(service, stable)?;
         let _protected_root = open_protected_etw_lease_root()?;
         let prepared = resume_upgrade_transaction(staged, &monitor, stable, service)?;
         preflight_app_path_registration(&monitor)?;
+        super::super::windows_shortcut_retirement::preflight_owned_start_entry(monitor.path())?;
         let prior_digest = trusted_file_digest(stable, "collector_service_stable_image")?;
         ensure_service_generation_ready(service, stable, prior_digest)?;
         retire_shortcuts_with_controller(staged)?;
@@ -2477,6 +2597,7 @@ mod native {
         let staged = verify_current_staged_binary_path()?;
         let monitor = verify_monitor_image(&staged)?;
         preflight_app_path_registration(&monitor)?;
+        super::super::windows_shortcut_retirement::preflight_owned_start_entry(monitor.path())?;
         let stable = staged
             .path()
             .parent()
@@ -2518,6 +2639,7 @@ mod native {
         let image = verify_current_binary_path()?;
         let monitor = verify_monitor_image(&image)?;
         preflight_app_path_registration(&monitor)?;
+        super::super::windows_shortcut_retirement::preflight_owned_start_entry(monitor.path())?;
         let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
         if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
             validate_service_contract(&service, image.path())?;
@@ -2546,7 +2668,9 @@ mod native {
             start_service_and_wait(&service)?;
             validate_service_contract(&service, image.path())?;
             app_path_created = ensure_app_path_registration(&monitor)?;
-            retire_shortcuts_with_controller(&image)
+            retire_shortcuts_with_controller(&image)?;
+            super::super::windows_shortcut_retirement::ensure_owned_start_entry(monitor.path())
+                .map(|_| ())
         })();
         if let Err(error) = install_result {
             if let Err(rollback) = rollback_new_install(
@@ -2929,6 +3053,7 @@ mod native {
     ) -> Result<(), String> {
         let monitor = verify_monitor_image(controller)?;
         let app_path = preflight_app_path_registration(&monitor)?;
+        super::super::windows_shortcut_retirement::preflight_owned_start_entry(monitor.path())?;
         let manager = open_manager(SC_MANAGER_CONNECT)?;
         let service = match open_service(&manager, SERVICE_ALL_ACCESS) {
             Ok(Some(service)) => service,
@@ -2968,6 +3093,7 @@ mod native {
         }
         drop(service);
         wait_service_deleted(&manager)?;
+        super::super::windows_shortcut_retirement::remove_owned_start_entry(monitor.path())?;
         remove_app_path_registration(app_path, monitor.path())?;
         retire_upgrade_transaction_for_uninstall(stable, keep_staged_name)?;
         drop(_protected_root);
@@ -2987,6 +3113,7 @@ mod native {
         stable: &Path,
         keep_staged_name: Option<&str>,
     ) -> Result<(), String> {
+        super::super::windows_shortcut_retirement::remove_owned_start_entry(monitor.path())?;
         remove_app_path_registration(app_path, monitor.path())?;
         retire_upgrade_transaction_for_uninstall(stable, keep_staged_name)?;
         let roots = fixed_roots()?;
@@ -8321,17 +8448,6 @@ mod native {
     fn verify_current_binary_path() -> Result<VerifiedServiceImage, String> {
         let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
         verify_current_binary_at(&expected_service_path(&program_files), &program_files)
-    }
-
-    pub(super) fn with_verified_current_monitor<T>(
-        action: impl FnOnce(&Path) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
-        let expected = program_files
-            .join(PRODUCT_DIRECTORY_NAME)
-            .join(MONITOR_EXECUTABLE_NAME);
-        let monitor = verify_current_binary_at(&expected, &program_files)?;
-        action(monitor.path())
     }
 
     fn verify_current_staged_binary_path() -> Result<VerifiedServiceImage, String> {

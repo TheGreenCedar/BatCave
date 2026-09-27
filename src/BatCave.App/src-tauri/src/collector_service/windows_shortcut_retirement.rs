@@ -1,25 +1,28 @@
 use std::{
     ffi::{c_void, OsString},
-    mem::size_of,
+    mem::{offset_of, size_of},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr,
 };
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use windows_sys::{
     core::GUID,
     Win32::{
         Foundation::{
             CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
-            PROPERTYKEY,
+            PROPERTYKEY, UNICODE_STRING,
         },
         Storage::FileSystem::{
-            CreateFileW, FileDispositionInfo, GetFileInformationByHandle,
-            GetFinalPathNameByHandleW, ReadFile, SetFileInformationByHandle,
+            CreateFileW, FileDispositionInfo, FlushFileBuffers, GetFileInformationByHandle,
+            GetFinalPathNameByHandleW, ReadFile, SetFileInformationByHandle, WriteFile,
             BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY,
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            OPEN_EXISTING, READ_CONTROL,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+            FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
         },
         System::{
             Com::{
@@ -37,6 +40,58 @@ use windows_sys::{
 };
 
 const SHORTCUT_NAME: &str = "BatCave Monitor.lnk";
+const OWNED_START_NAME: &str = "BatCave.lnk";
+const OWNED_START_STAGE: &str = "BatCave-start-entry.tmp";
+const OWNED_START_RECEIPT: &str = "start-entry.v1.json";
+const OWNED_START_DESCRIPTION: &str = "BatCave installer-owned Start entry";
+const NT_FILE_CREATE: u32 = 2;
+const NT_FILE_OPEN: u32 = 1;
+const NT_FILE_CREATED: usize = 2;
+const NT_FILE_RENAME_INFORMATION: u32 = 10;
+const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+const OBJ_DONT_REPARSE: u32 = 0x1000;
+const NT_NON_DIRECTORY_SYNCHRONOUS_NO_REPARSE: u32 = 0x40 | 0x20 | 0x0020_0000;
+
+#[repr(C)]
+struct NtObjectAttributes {
+    length: u32,
+    root_directory: HANDLE,
+    object_name: *mut UNICODE_STRING,
+    attributes: u32,
+    security_descriptor: *mut c_void,
+    security_quality_of_service: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct NtIoStatusBlock {
+    status: usize,
+    information: usize,
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtCreateFile(
+        handle: *mut HANDLE,
+        access: u32,
+        attributes: *mut NtObjectAttributes,
+        status: *mut NtIoStatusBlock,
+        allocation_size: *const i64,
+        file_attributes: u32,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        ea_buffer: *mut c_void,
+        ea_length: u32,
+    ) -> i32;
+    fn NtSetInformationFile(
+        handle: HANDLE,
+        status: *mut NtIoStatusBlock,
+        information: *const c_void,
+        length: u32,
+        class: u32,
+    ) -> i32;
+}
 const APP_USER_MODEL_ID: &str = "dev.batcave.monitor";
 const SHORTCUT_MAX_BYTES: u64 = 1024 * 1024;
 const COM_TEXT_CAPACITY: usize = 32 * 1024;
@@ -158,7 +213,7 @@ impl PinnedDirectory {
             unsafe {
                 CreateFileW(
                     path_wide.as_ptr(),
-                    FILE_READ_ATTRIBUTES | READ_CONTROL,
+                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                     ptr::null(),
                     OPEN_EXISTING,
@@ -213,6 +268,8 @@ struct PinnedLocation {
     location: LegacyShortcutLocation,
     root: PathBuf,
     ancestry: Vec<PinnedDirectory>,
+    #[cfg(test)]
+    fixture: bool,
 }
 
 impl PinnedLocation {
@@ -223,6 +280,8 @@ impl PinnedLocation {
             location,
             root,
             ancestry,
+            #[cfg(test)]
+            fixture: false,
         })
     }
 
@@ -234,6 +293,10 @@ impl PinnedLocation {
         for directory in &self.ancestry {
             directory.revalidate()?;
         }
+        #[cfg(test)]
+        if self.fixture {
+            return Ok(());
+        }
         let after = known_folder_path(self.location)?;
         if !fixed_path_eq(&after, &self.root) {
             return Err(format!(
@@ -243,6 +306,494 @@ impl PinnedLocation {
         }
         Ok(())
     }
+}
+
+// This is an immutable record of exclusive creation, not a claim derived from
+// a readable nonce or a matching target. It precedes visible publication.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StartEntryReceipt {
+    schema_version: u32,
+    programs_root: PathBuf,
+    monitor: PathBuf,
+    volume_serial: u32,
+    file_index: u64,
+    creation_time: u64,
+    size: u64,
+    content_sha256: [u8; 32],
+    security_sha256: [u8; 32],
+}
+
+struct StartEntryRoots {
+    programs: PinnedLocation,
+    install_ancestry: Vec<PinnedDirectory>,
+    monitor: PathBuf,
+    create: fn(&PinnedDirectory, &str, &[u8]) -> Result<PinnedShortcut, String>,
+    security: fn(HANDLE) -> Result<[u8; 32], String>,
+}
+
+enum StartEntryState {
+    Absent,
+    Recorded {
+        record: StartEntryReceipt,
+        receipt: PinnedShortcut,
+        leaf: Option<PinnedShortcut>,
+        staged: bool,
+    },
+}
+
+impl StartEntryRoots {
+    fn open(monitor: &Path) -> Result<Self, String> {
+        let install = monitor
+            .parent()
+            .ok_or("installer_start_monitor_parent_missing")?;
+        if monitor.file_name().and_then(|name| name.to_str()) != Some("batcave-monitor.exe")
+            || install.file_name().and_then(|name| name.to_str()) != Some("BatCave Monitor")
+        {
+            return Err("installer_start_monitor_path_invalid".to_string());
+        }
+        Ok(Self {
+            programs: PinnedLocation::open(LegacyShortcutLocation::CommonPrograms)?,
+            install_ancestry: pin_ancestry(install)?,
+            monitor: monitor.to_path_buf(),
+            create: create_owned_start_file,
+            security: super::windows_provisioner::start_entry_security_digest,
+        })
+    }
+
+    #[cfg(test)]
+    fn receipt_path(&self) -> PathBuf {
+        self.monitor.parent().unwrap().join(OWNED_START_RECEIPT)
+    }
+
+    fn programs_directory(&self) -> &PinnedDirectory {
+        self.programs.ancestry.last().unwrap()
+    }
+
+    fn install_directory(&self) -> &PinnedDirectory {
+        self.install_ancestry.last().unwrap()
+    }
+
+    fn revalidate(&self) -> Result<(), String> {
+        self.programs.revalidate()?;
+        for directory in &self.install_ancestry {
+            directory.revalidate()?;
+        }
+        Ok(())
+    }
+
+    fn inspect(&self) -> Result<StartEntryState, String> {
+        self.revalidate()?;
+        let receipt = PinnedShortcut::open_at(self.install_directory(), OWNED_START_RECEIPT)?;
+        let final_leaf = PinnedShortcut::open_at(self.programs_directory(), OWNED_START_NAME)?;
+        let stage = PinnedShortcut::open_at(self.programs_directory(), OWNED_START_STAGE)?;
+        let Some(receipt) = receipt else {
+            if stage.is_some() {
+                return Err("installer_start_unrecorded_stage_preserved".to_string());
+            }
+            if final_leaf.is_some() {
+                return Err("installer_start_foreign_entry_preserved".to_string());
+            }
+            self.revalidate()?;
+            return Ok(StartEntryState::Absent);
+        };
+        (self.security)(receipt.handle.raw())?;
+        let record: StartEntryReceipt = serde_json::from_slice(&receipt.bytes)
+            .map_err(|_| "installer_start_receipt_invalid".to_string())?;
+        if record.schema_version != 1
+            || !fixed_path_eq(&record.programs_root, &self.programs.root)
+            || !fixed_path_eq(&record.monitor, &self.monitor)
+            || record.file_index == 0
+            || record.creation_time == 0
+            || !(1..=SHORTCUT_MAX_BYTES).contains(&record.size)
+        {
+            return Err("installer_start_receipt_contract_invalid".to_string());
+        }
+        if final_leaf.is_some() && stage.is_some() {
+            return Err("installer_start_multiple_objects_preserved".to_string());
+        }
+        let staged = stage.is_some();
+        let leaf = final_leaf.or(stage);
+        if let Some(leaf) = &leaf {
+            self.validate_owned(&record, leaf)?;
+        }
+        receipt.revalidate()?;
+        self.revalidate()?;
+        Ok(StartEntryState::Recorded {
+            record,
+            receipt,
+            leaf,
+            staged,
+        })
+    }
+
+    fn validate_owned(
+        &self,
+        record: &StartEntryReceipt,
+        leaf: &PinnedShortcut,
+    ) -> Result<(), String> {
+        leaf.revalidate()?;
+        // Owner/DACL are checked independently before comparison. File IDs may
+        // be reused; copied/replayed user objects must not acquire ownership.
+        let security = (self.security)(leaf.handle.raw())?;
+        if leaf.volume_serial != record.volume_serial
+            || leaf.identity.file_index != record.file_index
+            || leaf.creation_time != record.creation_time
+            || leaf.identity.size != record.size
+            || <[u8; 32]>::from(Sha256::digest(&leaf.bytes)) != record.content_sha256
+            || security != record.security_sha256
+        {
+            return Err("installer_start_changed_object_preserved".to_string());
+        }
+        validate_owned_start_contract(&read_shortcut_contract(&leaf.bytes)?, &self.monitor)?;
+        self.revalidate()
+    }
+
+    fn require_leaf_absence(&self) -> Result<(), String> {
+        self.revalidate()?;
+        for name in [OWNED_START_NAME, OWNED_START_STAGE] {
+            if PinnedShortcut::open_at(self.programs_directory(), name)?.is_some() {
+                return Err("installer_start_replacement_preserved".to_string());
+            }
+        }
+        self.revalidate()
+    }
+
+    fn delete_recorded(
+        &self,
+        receipt: PinnedShortcut,
+        leaf: Option<PinnedShortcut>,
+    ) -> Result<(), String> {
+        self.revalidate()?;
+        if let Some(leaf) = leaf {
+            leaf.revalidate()?;
+            leaf.mark_for_deletion()?;
+            drop(leaf);
+        }
+        // Keep the ownership record through deletion and confirmed absence.
+        // A foreign replacement aborts cleanup and retains the record.
+        self.require_leaf_absence()?;
+        receipt.revalidate()?;
+        receipt.mark_for_deletion()?;
+        drop(receipt);
+        self.revalidate()?;
+        if PinnedShortcut::open_at(self.install_directory(), OWNED_START_RECEIPT)?.is_some() {
+            return Err("installer_start_receipt_still_present".to_string());
+        }
+        // The namespace is ordinarily mutable. Confirm its completion state
+        // after receipt removal too; never delete a late foreign replacement.
+        self.require_leaf_absence()
+    }
+
+    fn publish(&self, leaf: &mut PinnedShortcut) -> Result<(), String> {
+        self.revalidate()?;
+        leaf.revalidate()?;
+        let name = OWNED_START_NAME.encode_utf16().collect::<Vec<_>>();
+        let size = offset_of!(FILE_RENAME_INFO, FileName) + name.len() * size_of::<u16>();
+        // Native structure plus variable UTF-16 tail, aligned for HANDLE.
+        let mut buffer = vec![0_usize; size.div_ceil(size_of::<usize>())];
+        let rename = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        unsafe {
+            (*rename).Anonymous.ReplaceIfExists = false;
+            (*rename).RootDirectory = self.programs_directory().handle.raw();
+            (*rename).FileNameLength = (name.len() * size_of::<u16>()) as u32;
+            ptr::copy_nonoverlapping(name.as_ptr(), (*rename).FileName.as_mut_ptr(), name.len());
+            let mut status = NtIoStatusBlock::default();
+            let result = NtSetInformationFile(
+                leaf.handle.raw(),
+                &mut status,
+                rename.cast(),
+                size as u32,
+                NT_FILE_RENAME_INFORMATION,
+            );
+            if result < 0 {
+                return Err(format!(
+                    "installer_start_publish_failed_owned_stage_retained:{result:#010x}"
+                ));
+            }
+        }
+        leaf.path = self.programs.root.join(OWNED_START_NAME);
+        leaf.revalidate()?;
+        self.revalidate()
+    }
+
+    fn ensure(&self) -> Result<bool, String> {
+        match self.inspect()? {
+            StartEntryState::Recorded {
+                record,
+                receipt,
+                leaf: Some(mut leaf),
+                staged,
+            } => {
+                if staged {
+                    self.publish(&mut leaf)?;
+                    self.validate_owned(&record, &leaf)?;
+                }
+                receipt.revalidate()?;
+                return Ok(false);
+            }
+            StartEntryState::Recorded {
+                receipt,
+                leaf: None,
+                ..
+            } => {
+                // A user may delete the projection. Retire its stale record
+                // only after confirming both fixed leaf paths are absent.
+                self.delete_recorded(receipt, None)?;
+            }
+            StartEntryState::Absent => {}
+        }
+        self.revalidate()?;
+        let bytes = owned_start_shortcut_bytes(&self.monitor)?;
+        let mut leaf = (self.create)(self.programs_directory(), OWNED_START_STAGE, &bytes)?;
+        let record_result = (|| {
+            self.revalidate()?;
+            let record = StartEntryReceipt {
+                schema_version: 1,
+                programs_root: self.programs.root.clone(),
+                monitor: self.monitor.clone(),
+                volume_serial: leaf.volume_serial,
+                file_index: leaf.identity.file_index,
+                creation_time: leaf.creation_time,
+                size: leaf.identity.size,
+                content_sha256: Sha256::digest(&leaf.bytes).into(),
+                security_sha256: (self.security)(leaf.handle.raw())?,
+            };
+            self.validate_owned(&record, &leaf)?;
+            let json = serde_json::to_vec(&record)
+                .map_err(|_| "installer_start_receipt_serialize_failed")?;
+            let receipt = (self.create)(self.install_directory(), OWNED_START_RECEIPT, &json)?;
+            (self.security)(receipt.handle.raw())?;
+            Ok::<_, String>((record, receipt))
+        })();
+        let (record, receipt) = match record_result {
+            Ok(record) => record,
+            Err(error) => {
+                let rollback = leaf.revalidate().and_then(|_| leaf.mark_for_deletion());
+                return match rollback {
+                    Ok(()) => Err(error),
+                    Err(rollback) => Err(format!(
+                        "{error};installer_start_stage_rollback_failed:{rollback}"
+                    )),
+                };
+            }
+        };
+        // If publication fails, both exact owned objects remain recoverable.
+        self.publish(&mut leaf)?;
+        self.validate_owned(&record, &leaf)?;
+        receipt.revalidate()?;
+        Ok(true)
+    }
+
+    fn remove(&self) -> Result<(), String> {
+        match self.inspect()? {
+            StartEntryState::Absent => Ok(()),
+            StartEntryState::Recorded { receipt, leaf, .. } => self.delete_recorded(receipt, leaf),
+        }
+    }
+}
+
+pub(super) fn preflight_owned_start_entry(monitor: &Path) -> Result<(), String> {
+    StartEntryRoots::open(monitor)?.inspect().map(|_| ())
+}
+
+pub(super) fn ensure_owned_start_entry(monitor: &Path) -> Result<bool, String> {
+    StartEntryRoots::open(monitor)?.ensure()
+}
+
+pub(super) fn remove_owned_start_entry(monitor: &Path) -> Result<(), String> {
+    StartEntryRoots::open(monitor)?.remove()
+}
+
+fn create_owned_start_file(
+    directory: &PinnedDirectory,
+    name: &str,
+    bytes: &[u8],
+) -> Result<PinnedShortcut, String> {
+    super::windows_provisioner::with_start_entry_security(|security| {
+        create_start_file_with_security(directory, name, bytes, security)
+    })
+}
+
+fn open_start_handle(
+    directory: &PinnedDirectory,
+    name: &str,
+    disposition: u32,
+    security: *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+) -> Result<Option<OwnedHandle>, String> {
+    // Every caller uses one fixed leaf component. Do not permit relative paths,
+    // streams, device names, or a fallback that walks the ambient namespace.
+    if ![OWNED_START_NAME, OWNED_START_STAGE, OWNED_START_RECEIPT].contains(&name) {
+        return Err("installer_start_leaf_name_invalid".to_string());
+    }
+    let mut text = wide_path(Path::new(name));
+    let mut unicode = UNICODE_STRING {
+        Length: ((text.len() - 1) * size_of::<u16>()) as u16,
+        MaximumLength: (text.len() * size_of::<u16>()) as u16,
+        Buffer: text.as_mut_ptr(),
+    };
+    let mut attributes = NtObjectAttributes {
+        length: size_of::<NtObjectAttributes>() as u32,
+        root_directory: directory.handle.raw(),
+        object_name: &mut unicode,
+        attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        security_descriptor: if security.is_null() {
+            ptr::null_mut()
+        } else {
+            unsafe { (*security).lpSecurityDescriptor }
+        },
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut status = NtIoStatusBlock::default();
+    let mut raw = ptr::null_mut();
+    let access = if disposition == NT_FILE_CREATE {
+        0x0013_019f
+    } else {
+        0x0013_0089
+    };
+    // Explicit FILE_GENERIC_READ, optionally FILE_GENERIC_WRITE, DELETE and
+    // SYNCHRONIZE for the synchronous handle; metadata-only sharing is unsafe.
+    let result = unsafe {
+        NtCreateFile(
+            &mut raw,
+            access,
+            &mut attributes,
+            &mut status,
+            ptr::null(),
+            0x80,
+            FILE_SHARE_READ,
+            disposition,
+            NT_NON_DIRECTORY_SYNCHRONOUS_NO_REPARSE,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if result < 0 {
+        // A missing single-component leaf is NAME_NOT_FOUND. PATH_NOT_FOUND
+        // beneath a live pinned parent is a malfunction, never an absence pass.
+        if disposition == NT_FILE_OPEN && result as u32 == 0xc000_0034 {
+            return Ok(None);
+        }
+        return Err(format!(
+            "installer_start_relative_open_failed:{result:#010x}"
+        ));
+    }
+    let handle = OwnedHandle::new(raw, "installer_start_relative_handle_invalid")?;
+    if disposition == NT_FILE_CREATE && status.information != NT_FILE_CREATED {
+        return Err("installer_start_exclusive_creation_not_observed".to_string());
+    }
+    Ok(Some(handle))
+}
+
+fn create_start_file_with_security(
+    directory: &PinnedDirectory,
+    name: &str,
+    bytes: &[u8],
+    security: *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+) -> Result<PinnedShortcut, String> {
+    if bytes.is_empty() || bytes.len() as u64 > SHORTCUT_MAX_BYTES {
+        return Err("installer_start_create_bytes_invalid".to_string());
+    }
+    let path = directory.path.join(name);
+    let handle = open_start_handle(directory, name, NT_FILE_CREATE, security)?
+        .ok_or("installer_start_exclusive_create_missing")?;
+    let result = (|| {
+        // No content is written before confirming the newly created object.
+        let initial = file_information(handle.raw(), "installer_start_initial_info_failed")?;
+        if initial.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+            || initial.nNumberOfLinks != 1
+            || !fixed_path_eq(
+                &final_path(&handle, "installer_start_initial_path_failed")?,
+                &path,
+            )
+        {
+            return Err("installer_start_initial_identity_invalid".to_string());
+        }
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let mut written = 0_u32;
+            if unsafe {
+                WriteFile(
+                    handle.raw(),
+                    bytes[offset..].as_ptr().cast(),
+                    (bytes.len() - offset) as u32,
+                    &mut written,
+                    ptr::null_mut(),
+                )
+            } == 0
+                || written == 0
+                || written as usize > bytes.len() - offset
+            {
+                return Err(last_error("installer_start_write_failed"));
+            }
+            offset += written as usize;
+        }
+        if unsafe { FlushFileBuffers(handle.raw()) } == 0 {
+            return Err(last_error("installer_start_flush_failed"));
+        }
+        let info = file_information(handle.raw(), "installer_start_created_info_failed")?;
+        let identity = ShortcutIdentity::from_info(&info);
+        identity.validate()?;
+        if !fixed_path_eq(
+            &final_path(&handle, "installer_start_created_path_failed")?,
+            &path,
+        ) {
+            return Err("installer_start_created_path_invalid".to_string());
+        }
+        Ok((info, identity))
+    })();
+    let (info, identity) = match result {
+        Ok(info) => info,
+        Err(primary) => {
+            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+            if unsafe {
+                SetFileInformationByHandle(
+                    handle.raw(),
+                    FileDispositionInfo,
+                    (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+                    size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            } == 0
+            {
+                return Err(format!(
+                    "{primary};{}",
+                    last_error("installer_start_create_rollback_failed")
+                ));
+            }
+            return Err(primary);
+        }
+    };
+    Ok(PinnedShortcut {
+        path,
+        handle,
+        volume_serial: info.dwVolumeSerialNumber,
+        identity,
+        creation_time: filetime(info.ftCreationTime),
+        last_write_time: filetime(info.ftLastWriteTime),
+        bytes: bytes.to_vec(),
+    })
+}
+
+fn validate_owned_start_contract(
+    contract: &ShortcutContract,
+    monitor: &Path,
+) -> Result<(), String> {
+    if !fixed_path_eq(Path::new(&contract.target), monitor)
+        || !contract.arguments.is_empty()
+        || !fixed_path_eq(Path::new(&contract.icon_path), monitor)
+        || contract.icon_index != 0
+        || !fixed_path_eq(
+            Path::new(&contract.working_directory),
+            monitor.parent().unwrap(),
+        )
+        || contract.show_command != 1
+        || contract.hotkey != 0
+        || contract.description != OWNED_START_DESCRIPTION
+        || contract.app_user_model_id != APP_USER_MODEL_ID
+    {
+        return Err("installer_start_launch_contract_invalid".to_string());
+    }
+    Ok(())
 }
 
 fn shortcut_path_for_root(root: &Path) -> PathBuf {
@@ -261,6 +812,13 @@ struct PinnedShortcut {
 }
 
 impl PinnedShortcut {
+    fn open_at(directory: &PinnedDirectory, name: &str) -> Result<Option<Self>, String> {
+        let Some(handle) = open_start_handle(directory, name, NT_FILE_OPEN, ptr::null())? else {
+            return Ok(None);
+        };
+        Self::from_handle(&directory.path.join(name), handle).map(Some)
+    }
+
     fn open(path: &Path) -> Result<Option<Self>, String> {
         let path_wide = wide_path(path);
         let raw = unsafe {
@@ -281,7 +839,10 @@ impl PinnedShortcut {
             }
             return Err(format!("installer_shortcut_open_failed:{error}"));
         }
-        let handle = OwnedHandle(raw);
+        Self::from_handle(path, OwnedHandle(raw)).map(Some)
+    }
+
+    fn from_handle(path: &Path, handle: OwnedHandle) -> Result<Self, String> {
         let info = file_information(handle.raw(), "installer_shortcut_info_failed")?;
         let identity = ShortcutIdentity::from_info(&info);
         identity.validate()?;
@@ -296,7 +857,7 @@ impl PinnedShortcut {
             identity.size,
             "installer_shortcut_read_failed",
         )?;
-        Ok(Some(Self {
+        Ok(Self {
             path: path.to_path_buf(),
             handle,
             volume_serial: info.dwVolumeSerialNumber,
@@ -304,7 +865,7 @@ impl PinnedShortcut {
             creation_time: filetime(info.ftCreationTime),
             last_write_time: filetime(info.ftLastWriteTime),
             bytes,
-        }))
+        })
     }
 
     fn validate_contract(&self, monitor_path: &Path) -> Result<(), String> {
@@ -641,9 +1202,9 @@ fn read_shortcut_contract(bytes: &[u8]) -> Result<ShortcutContract, String> {
     })
 }
 
-/// Builds bytes only. The GUI owns exclusive creation in its current user's Programs
-/// folder; this helper never opens a shortcut path or changes retirement policy.
-pub(crate) fn user_launch_shortcut_bytes(monitor: &Path) -> Result<Vec<u8>, String> {
+/// Serializes the ordinary launch contract; the installer publishes these bytes
+/// only after durable ownership recording. The GUI never creates Start entries.
+fn owned_start_shortcut_bytes(monitor: &Path) -> Result<Vec<u8>, String> {
     fn check(result: i32) -> Result<(), String> {
         if result < 0 {
             Err(format!("user_launch_shell_link_failed:{result:#010x}"))
@@ -679,7 +1240,7 @@ pub(crate) fn user_launch_shortcut_bytes(monitor: &Path) -> Result<Vec<u8>, Stri
             .parent()
             .ok_or("user_launch_monitor_parent_missing")?,
     );
-    let description = "BatCave Monitor current-user launch entry"
+    let description = OWNED_START_DESCRIPTION
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
@@ -912,10 +1473,401 @@ mod tests {
     use super::*;
     use std::{fs, os::windows::fs::symlink_file};
 
+    fn fixture_start_file(
+        directory: &PinnedDirectory,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<PinnedShortcut, String> {
+        super::super::windows_provisioner::with_start_fixture_security(|security| {
+            create_start_file_with_security(directory, name, bytes, security)
+        })
+    }
+
+    fn start_fixture() -> (tempfile::TempDir, StartEntryRoots) {
+        let temporary = tempfile::tempdir().expect("isolated Start fixture");
+        // Resolve the physical path once: Codex's packaged host can virtualize
+        // LOCALAPPDATA. These fixtures never address real Shell/install roots.
+        let parent = fs::canonicalize(temporary.path()).unwrap();
+        let parent = strip_verbatim_path_prefix(parent);
+        let programs = parent.join("Programs");
+        let install = parent.join("BatCave Monitor");
+        fs::create_dir(&programs).unwrap();
+        fs::create_dir(&install).unwrap();
+        let roots = StartEntryRoots {
+            programs: PinnedLocation {
+                location: LegacyShortcutLocation::CommonPrograms,
+                ancestry: pin_ancestry(&programs).expect("fixture Programs pinned"),
+                root: programs,
+                fixture: true,
+            },
+            install_ancestry: pin_ancestry(&install).expect("fixture install pinned"),
+            monitor: install.join("batcave-monitor.exe"),
+            create: fixture_start_file,
+            security: super::super::windows_provisioner::start_fixture_security_digest,
+        };
+        (temporary, roots)
+    }
+
+    fn seed_prepared(roots: &StartEntryRoots) {
+        let bytes = owned_start_shortcut_bytes(&roots.monitor).unwrap();
+        let leaf = (roots.create)(roots.programs_directory(), OWNED_START_STAGE, &bytes).unwrap();
+        let record = StartEntryReceipt {
+            schema_version: 1,
+            programs_root: roots.programs.root.clone(),
+            monitor: roots.monitor.clone(),
+            volume_serial: leaf.volume_serial,
+            file_index: leaf.identity.file_index,
+            creation_time: leaf.creation_time,
+            size: leaf.identity.size,
+            content_sha256: Sha256::digest(&bytes).into(),
+            security_sha256: (roots.security)(leaf.handle.raw()).unwrap(),
+        };
+        let receipt = (roots.create)(
+            roots.install_directory(),
+            OWNED_START_RECEIPT,
+            &serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        drop(receipt);
+        drop(leaf);
+    }
+
     #[test]
-    fn user_launch_stream_contains_exact_no_argument_monitor_contract() {
+    fn owned_start_creation_repair_and_cleanup_use_one_recorded_projection() {
+        let (_temporary, roots) = start_fixture();
+        assert!(roots.ensure().expect("publish exclusive owned Start entry"));
+        assert!(!roots.programs.root.join(OWNED_START_STAGE).exists());
+        assert!(roots.programs.root.join(OWNED_START_NAME).exists());
+        assert!(roots.receipt_path().exists());
+        assert!(!roots.ensure().expect("reuse exact recorded projection"));
+        roots.remove().expect("remove exact projection and receipt");
+        assert!(!roots.programs.root.join(OWNED_START_NAME).exists());
+        assert!(!roots.receipt_path().exists());
+        roots.remove().expect("already absent is idempotent");
+    }
+
+    #[test]
+    fn owned_start_prepared_identity_recovers_publication_or_removal() {
+        let (_temporary, roots) = start_fixture();
+        seed_prepared(&roots);
+        assert!(!roots
+            .ensure()
+            .expect("resume recorded original staged object"));
+        roots.remove().unwrap();
+        seed_prepared(&roots);
+        roots
+            .remove()
+            .expect("uninstall exact prepared object without publication");
+        assert!(!roots.programs.root.join(OWNED_START_STAGE).exists());
+        assert!(!roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_missing_record_never_adopts_matching_launch_bytes() {
+        let (_temporary, roots) = start_fixture();
+        let final_path = roots.programs.root.join(OWNED_START_NAME);
+        let bytes = owned_start_shortcut_bytes(&roots.monitor).unwrap();
+        drop((roots.create)(roots.programs_directory(), OWNED_START_NAME, &bytes).unwrap());
+        assert_eq!(
+            roots.ensure().unwrap_err(),
+            "installer_start_foreign_entry_preserved"
+        );
+        assert_eq!(
+            roots.remove().unwrap_err(),
+            "installer_start_foreign_entry_preserved"
+        );
+        assert_eq!(fs::read(&final_path).unwrap(), bytes);
+        assert!(!roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_unrecorded_stage_is_reported_and_preserved() {
+        let (_temporary, roots) = start_fixture();
+        let path = roots.programs.root.join(OWNED_START_STAGE);
+        drop(
+            (roots.create)(
+                roots.programs_directory(),
+                OWNED_START_STAGE,
+                b"inert incomplete pre-record creation",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            roots.ensure().unwrap_err(),
+            "installer_start_unrecorded_stage_preserved"
+        );
+        assert_eq!(
+            roots.remove().unwrap_err(),
+            "installer_start_unrecorded_stage_preserved"
+        );
+        assert!(path.exists());
+        assert!(!roots.programs.root.join(OWNED_START_NAME).exists());
+    }
+
+    #[test]
+    fn owned_start_replayed_bytes_and_receipt_cannot_adopt_replacement_identity() {
+        let (_temporary, roots) = start_fixture();
+        roots.ensure().unwrap();
+        let path = roots.programs.root.join(OWNED_START_NAME);
+        let moved = roots.programs.root.join("user-moved.lnk");
+        let bytes = fs::read(&path).unwrap();
+        // Preserve the original object so its ID cannot be reused by this control.
+        fs::rename(&path, &moved).unwrap();
+        drop((roots.create)(roots.programs_directory(), OWNED_START_NAME, &bytes).unwrap());
+        assert_eq!(
+            roots.remove().unwrap_err(),
+            "installer_start_changed_object_preserved"
+        );
+        assert!(moved.exists());
+        assert!(path.exists());
+        assert!(roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_changed_content_preserves_entry_and_receipt() {
+        let (_temporary, roots) = start_fixture();
+        roots.ensure().unwrap();
+        let path = roots.programs.root.join(OWNED_START_NAME);
+        fs::write(&path, b"user-edited entry").unwrap();
+        assert_eq!(
+            roots.remove().unwrap_err(),
+            "installer_start_changed_object_preserved"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"user-edited entry");
+        assert!(roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_parent_pins_block_namespace_redirection_during_operation() {
+        let (_temporary, roots) = start_fixture();
+        let parent = roots.programs.root.parent().unwrap();
+        assert!(
+            fs::rename(&roots.programs.root, parent.join("redirected")).is_err(),
+            "data-access directory pins must retain the actual operation root"
+        );
+        roots.ensure().unwrap();
+        roots.remove().unwrap();
+    }
+
+    fn set_fixture_junction(directory: &Path, target: &Path) {
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        let directory_wide = wide_path(directory);
+        let handle = OwnedHandle::new(
+            unsafe {
+                CreateFileW(
+                    directory_wide.as_ptr(),
+                    0x100,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | 4,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                    ptr::null_mut(),
+                )
+            },
+            "fixture junction metadata handle",
+        )
+        .expect("metadata-only attacker handle opens beside data pin");
+        let substitute = format!(r"\??\{}", target.display())
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        let print = target.as_os_str().encode_wide().collect::<Vec<_>>();
+        let mut bytes = Vec::new();
+        // REPARSE_DATA_BUFFER / mount-point header followed by bounded UTF-16.
+        bytes.extend_from_slice(&0xa000_0003_u32.to_le_bytes());
+        bytes.extend_from_slice(
+            &((8 + (substitute.len() + print.len() + 2) * 2) as u16).to_le_bytes(),
+        );
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&((substitute.len() * 2) as u16).to_le_bytes());
+        bytes.extend_from_slice(&(((substitute.len() + 1) * 2) as u16).to_le_bytes());
+        bytes.extend_from_slice(&((print.len() * 2) as u16).to_le_bytes());
+        for unit in substitute.into_iter().chain([0]).chain(print).chain([0]) {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        let mut returned = 0;
+        assert_ne!(
+            unsafe {
+                DeviceIoControl(
+                    handle.raw(),
+                    0x0009_00a4,
+                    bytes.as_ptr().cast(),
+                    bytes.len() as u32,
+                    ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    ptr::null_mut(),
+                )
+            },
+            0,
+            "actual in-place junction injection must succeed: {}",
+            unsafe { GetLastError() }
+        );
+    }
+
+    #[test]
+    fn owned_start_relative_operations_reject_late_root_reparse_before_outside_creation() {
+        let (_temporary, roots) = start_fixture();
+        let target = roots.programs.root.parent().unwrap().join("unowned-target");
+        fs::create_dir(&target).unwrap();
+        let foreign = target.join(OWNED_START_NAME);
+        fs::write(&foreign, b"foreign untouched entry").unwrap();
+        roots.revalidate().unwrap();
+        // Simulate conversion after preflight/revalidation and before the native
+        // operation. The already-open root remains the same directory object.
+        set_fixture_junction(&roots.programs.root, &target);
+        let create_error = (roots.create)(
+            roots.programs_directory(),
+            OWNED_START_STAGE,
+            b"must not escape",
+        )
+        .unwrap_err();
+        assert!(create_error.starts_with("installer_start_relative_open_failed:"),
+            "relative creation must fail at the native boundary, before outside mutation: {create_error}");
+        assert!(
+            !target.join(OWNED_START_STAGE).exists(),
+            "no outside staging object may be created"
+        );
+        let open_error =
+            PinnedShortcut::open_at(roots.programs_directory(), OWNED_START_NAME).unwrap_err();
+        assert!(
+            open_error.starts_with("installer_start_relative_open_failed:"),
+            "relative inspection must reject the converted root: {open_error}"
+        );
+        assert_eq!(fs::read(&foreign).unwrap(), b"foreign untouched entry");
+        let programs = roots.programs.root.clone();
+        drop(roots);
+        fs::remove_dir(&programs)
+            .expect("remove only isolated junction after closing directory pins");
+    }
+
+    #[test]
+    fn owned_start_user_owned_leaf_never_passes_production_authority_check() {
+        let (_temporary, roots) = start_fixture();
+        let leaf =
+            (roots.create)(roots.programs_directory(), OWNED_START_STAGE, b"fixture").unwrap();
+        assert_eq!(
+            super::super::windows_provisioner::start_entry_security_digest(leaf.handle.raw())
+                .unwrap_err(),
+            "collector_service_path_owner_invalid"
+        );
+    }
+
+    #[test]
+    fn owned_start_foreign_collision_preserves_prepared_original_and_record() {
+        let (_temporary, roots) = start_fixture();
+        seed_prepared(&roots);
+        let final_path = roots.programs.root.join(OWNED_START_NAME);
+        drop(
+            (roots.create)(
+                roots.programs_directory(),
+                OWNED_START_NAME,
+                b"foreign collision",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            roots.ensure().unwrap_err(),
+            "installer_start_multiple_objects_preserved"
+        );
+        assert_eq!(fs::read(&final_path).unwrap(), b"foreign collision");
+        assert!(roots.programs.root.join(OWNED_START_STAGE).exists());
+        assert!(roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_publication_never_replaces_a_collision_after_preflight() {
+        let (_temporary, roots) = start_fixture();
+        seed_prepared(&roots);
+        let StartEntryState::Recorded {
+            receipt,
+            leaf: Some(mut leaf),
+            ..
+        } = roots.inspect().unwrap()
+        else {
+            panic!("exact prepared identity must be present");
+        };
+        let path = roots.programs.root.join(OWNED_START_NAME);
+        drop(
+            (roots.create)(
+                roots.programs_directory(),
+                OWNED_START_NAME,
+                b"late foreign collision",
+            )
+            .unwrap(),
+        );
+        assert!(roots
+            .publish(&mut leaf)
+            .unwrap_err()
+            .starts_with("installer_start_publish_failed_owned_stage_retained:"));
+        assert_eq!(fs::read(&path).unwrap(), b"late foreign collision");
+        assert!(roots.programs.root.join(OWNED_START_STAGE).exists());
+        receipt
+            .revalidate()
+            .expect("receipt retained while original staging handle remains owned");
+    }
+
+    fn reject_receipt_creation(
+        directory: &PinnedDirectory,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<PinnedShortcut, String> {
+        if name == OWNED_START_RECEIPT {
+            let programs = directory.path.parent().unwrap().join("Programs");
+            assert!(
+                !programs.join(OWNED_START_NAME).exists(),
+                "visible projection must not precede durable ownership recording"
+            );
+            return Err("injected_receipt_write_failure".to_string());
+        }
+        fixture_start_file(directory, name, bytes)
+    }
+
+    #[test]
+    fn owned_start_receipt_creation_failure_rolls_back_only_exclusive_stage() {
+        let (_temporary, mut roots) = start_fixture();
+        roots.create = reject_receipt_creation;
+        assert_eq!(
+            roots.ensure().unwrap_err(),
+            "injected_receipt_write_failure"
+        );
+        assert!(
+            !roots.programs.root.join(OWNED_START_STAGE).exists(),
+            "unpublished original staging object must be rolled back"
+        );
+        assert!(!roots.programs.root.join(OWNED_START_NAME).exists());
+        assert!(!roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_user_deleted_projection_can_be_repaired_without_adoption() {
+        let (_temporary, roots) = start_fixture();
+        roots.ensure().unwrap();
+        fs::remove_file(roots.programs.root.join(OWNED_START_NAME)).unwrap();
+        assert!(roots
+            .ensure()
+            .expect("confirm absence, retire stale receipt and exclusively recreate"));
+        roots.remove().unwrap();
+        assert!(!roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_malformed_receipt_never_authorizes_cleanup() {
+        let (_temporary, roots) = start_fixture();
+        roots.ensure().unwrap();
+        fs::write(roots.receipt_path(), b"{partial").unwrap();
+        assert_eq!(
+            roots.remove().unwrap_err(),
+            "installer_start_receipt_invalid"
+        );
+        assert!(roots.programs.root.join(OWNED_START_NAME).exists());
+        assert!(roots.receipt_path().exists());
+    }
+
+    #[test]
+    fn owned_start_stream_contains_exact_no_argument_monitor_contract() {
         let monitor = Path::new(r"D:\Apps\BatCave Monitor\batcave-monitor.exe");
-        let bytes = user_launch_shortcut_bytes(monitor).expect("serialize native shell link");
+        let bytes = owned_start_shortcut_bytes(monitor).expect("serialize native shell link");
         let contract = read_shortcut_contract(&bytes).expect("read native shell link from memory");
         assert!(fixed_path_eq(Path::new(&contract.target), monitor));
         assert!(contract.arguments.is_empty());
@@ -927,14 +1879,11 @@ mod tests {
         ));
         assert_eq!(contract.show_command, 1);
         assert_eq!(contract.hotkey, 0);
-        assert_eq!(
-            contract.description,
-            "BatCave Monitor current-user launch entry"
-        );
+        assert_eq!(contract.description, OWNED_START_DESCRIPTION);
         assert_eq!(contract.app_user_model_id, APP_USER_MODEL_ID);
         assert!(
             validate_shortcut_contract(&contract, monitor).is_err(),
-            "user state is not a historical shared shortcut"
+            "the owned Start entry is separate from historical shortcut retirement"
         );
     }
 
