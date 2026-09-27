@@ -252,8 +252,9 @@
   let rankingUpdateAvailable = false;
   let settingsOpen = false;
   let diagnosticsOpen = false;
-  let isCompactDetail = false;
-  let compactDetailOpen = false;
+  let detailOpen = false;
+  let detailOpener: HTMLElement | null = null;
+  let detailFocusFrame: number | undefined;
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
@@ -315,7 +316,7 @@
     selectedWorkloadId,
     historyPointLimit,
     snapshot.publication_seq,
-    activeView === "explore" && detailSubject === "process" && (!isCompactDetail || compactDetailOpen),
+    activeView === "explore" && detailSubject === "process" && detailOpen,
   );
   $: selectedWorkload = selectedRow?.detail ?? null;
   $: selectedProcess =
@@ -526,14 +527,11 @@
 
   onMount(() => {
     let stopPolling: (() => void) | undefined;
-    let detailFocusFrame: number | undefined;
     const systemThemeQuery = window.matchMedia("(prefers-color-scheme: light)");
-    const compactDetailQuery = window.matchMedia("(max-width: 1279px)");
     const savedTheme = window.localStorage.getItem(themeStorageKey);
     const savedHistoryPointLimit = Number(window.localStorage.getItem(historyStorageKey));
 
     systemThemeMode = systemThemeQuery.matches ? "light" : "dark";
-    isCompactDetail = compactDetailQuery.matches;
 
     const savedThemePreference = parseThemePreference(savedTheme);
     if (savedThemePreference) {
@@ -612,36 +610,10 @@
       systemThemeMode = event.matches ? "light" : "dark";
     };
 
-    const handleCompactDetailChange = (event: MediaQueryListEvent) => {
-      if (isCompactDetail === event.matches) return;
-      if (detailFocusFrame !== undefined) {
-        window.cancelAnimationFrame(detailFocusFrame);
-        detailFocusFrame = undefined;
-      }
-      const active = document.activeElement;
-      const focusWasInDetail =
-        active instanceof HTMLElement && active.closest("#detail-pane") !== null;
-      const shouldRestoreLogicalFocus = isCompactDetail
-        ? compactDetailOpen
-        : focusWasInDetail;
-      isCompactDetail = event.matches;
-      compactDetailOpen = false;
-      if (shouldRestoreLogicalFocus) {
-        detailFocusFrame = window.requestAnimationFrame(() => {
-          detailFocusFrame = window.requestAnimationFrame(() => {
-            detailFocusFrame = undefined;
-            focusCurrentDetailControl();
-          });
-        });
-      }
-    };
-
     systemThemeQuery.addEventListener("change", handleSystemThemeChange);
-    compactDetailQuery.addEventListener("change", handleCompactDetailChange);
 
     return () => {
       systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
-      compactDetailQuery.removeEventListener("change", handleCompactDetailChange);
       stopPolling?.();
       inspectionGate.clear();
       if (searchDebounceId !== undefined) {
@@ -745,7 +717,7 @@
   ): void {
     settingsOpen = state === "settings";
     diagnosticsOpen = state === "diagnostics";
-    compactDetailOpen = false;
+    detailOpen = false;
 
     if (state === "process" || state === "compact" || state === "exited") {
       const processRow = next.process_view_rows.find(
@@ -758,7 +730,7 @@
       if (processRow) {
         selectedWorkloadId = processViewRowKey(processRow);
         detailSubject = "process";
-        compactDetailOpen = state === "compact";
+        detailOpen = true;
       }
       return;
     }
@@ -768,6 +740,7 @@
       if (groupRow) {
         selectedWorkloadId = processViewRowKey(groupRow);
         detailSubject = "process";
+        detailOpen = true;
       }
       return;
     }
@@ -1626,7 +1599,7 @@
     selectedWorkloadId = selection;
     detailSubject = "process";
     copyStatus = "";
-    openCompactDetail();
+    openDetail();
     if (changedSelection) {
       inspection = null;
       inspectionError = "";
@@ -1707,7 +1680,7 @@
     detailMode = mode;
     detailSubject = "system";
     selectedWorkloadId = "";
-    openCompactDetail();
+    openDetail();
     applyPendingRankingIfReleased();
   }
 
@@ -1742,7 +1715,7 @@
     activeView = view;
     if (view === "overview") {
       queueInteracting = false;
-      compactDetailOpen = false;
+      detailOpen = false;
       applyPendingRankingIfReleased();
     }
     void requestCurrentSurfaceNarrative();
@@ -1753,17 +1726,31 @@
     activeView = "explore";
   }
 
-  function openCompactDetail(): void {
-    if (!isCompactDetail) {
-      return;
+  function openDetail(): void {
+    if (detailFocusFrame !== undefined) {
+      window.cancelAnimationFrame(detailFocusFrame);
+      detailFocusFrame = undefined;
     }
-    compactDetailOpen = true;
+    if (!detailOpen) {
+      detailOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    detailOpen = true;
   }
 
-  function closeCompactDetail(): void {
-    compactDetailOpen = false;
+  function closeDetail(): void {
+    detailOpen = false;
     applyPendingRankingIfReleased();
-    window.requestAnimationFrame(() => focusCurrentDetailControl());
+    if (detailFocusFrame !== undefined) window.cancelAnimationFrame(detailFocusFrame);
+    detailFocusFrame = window.requestAnimationFrame(() => {
+      detailFocusFrame = undefined;
+      const opener = detailOpener;
+      detailOpener = null;
+      if (opener?.isConnected && opener.tabIndex >= 0 && opener.getClientRects().length > 0) {
+        opener.focus({ preventScroll: true });
+      } else {
+        focusCurrentDetailControl();
+      }
+    });
   }
 
   function handleAppKeydown(event: KeyboardEvent): void {
@@ -1780,7 +1767,7 @@
       !event.shiftKey &&
       !settingsOpen &&
       !diagnosticsOpen &&
-      !compactDetailOpen &&
+      !detailOpen &&
       !(target instanceof HTMLInputElement) &&
       !(target instanceof HTMLTextAreaElement) &&
       !(target instanceof HTMLSelectElement) &&
@@ -1802,7 +1789,7 @@
       !event.shiftKey &&
       !settingsOpen &&
       !diagnosticsOpen &&
-      !compactDetailOpen &&
+      !detailOpen &&
       !(target instanceof HTMLInputElement) &&
       !(target instanceof HTMLTextAreaElement) &&
       !(target instanceof HTMLSelectElement) &&
@@ -2149,12 +2136,11 @@
             onInteractionChange={setQueueInteraction}
           />
         </div>
-        {#if !isCompactDetail || compactDetailOpen}
+        {#if detailOpen}
           <DetailPane
             subject={detailSubject}
             telemetryStatus={telemetry}
-            compact={isCompactDetail}
-            onClose={closeCompactDetail}
+            onClose={closeDetail}
             onShowSystem={() => selectDetailMode(detailMode)}
             {selectedWorkload}
             {selectedWorkloadIconKind}
