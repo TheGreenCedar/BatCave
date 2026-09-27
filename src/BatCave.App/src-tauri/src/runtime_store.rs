@@ -1509,12 +1509,6 @@ impl RuntimeStore {
         let mut system = sample.system;
         let sample_processes = sample.processes;
         let process_rows_fresh = true;
-        if !service_active
-            && self.admin_mode.source == RuntimePrivilegedSource::CurrentProcess
-            && self.admin_mode.state == RuntimeAdminModeState::Active
-        {
-            self.admin_mode.last_success_at_ms = Some(completed_at_ms);
-        }
         self.sync_collector_warnings(active_collector_warnings);
         let disk_source = system
             .quality
@@ -1791,9 +1785,7 @@ impl RuntimeStore {
             self.admin_mode.source = RuntimePrivilegedSource::CollectorService;
             self.admin_mode.detail = None;
             self.admin_mode.last_success_at_ms = Some(sample_ts_ms);
-        } else if self.admin_mode.source == RuntimePrivilegedSource::CollectorService
-            || self.admin_mode.source == RuntimePrivilegedSource::None
-        {
+        } else {
             let last_success_at_ms = self.admin_mode.last_success_at_ms;
             self.admin_mode = self.provenance.admin_mode_status();
             self.admin_mode.detail = status.detail.clone();
@@ -2091,7 +2083,20 @@ impl RuntimeStore {
         true
     }
 
-    fn sync_collector_warnings(&mut self, messages: Vec<String>) {
+    fn sync_collector_warnings(&mut self, mut messages: Vec<String>) {
+        if self.provenance.environment().platform == RuntimePlatform::Windows
+            && self.provenance.environment().process_elevation == RuntimeProcessElevation::Elevated
+            && !self
+                .admin_mode
+                .collector_service
+                .as_ref()
+                .is_some_and(|service| service.state == RuntimeCollectorServiceState::Active)
+        {
+            messages.push(
+                "collector_service_desktop_elevated: The installed collector service accepts standard-token desktop connections. Open BatCave normally to use service-backed process-network metrics; administrator approval is required for installation, not each launch."
+                    .to_string(),
+            );
+        }
         let active = messages
             .iter()
             .map(|message| warning_key("collector", message))
@@ -2153,8 +2158,13 @@ impl RuntimeStore {
         }
     }
 
+    fn warm_cache_is_restricted(&self) -> bool {
+        self.admin_mode.state == RuntimeAdminModeState::Active
+            || self.provenance.environment().process_elevation == RuntimeProcessElevation::Elevated
+    }
+
     fn persist_warm_cache(&mut self) -> Result<(), String> {
-        if self.admin_mode.state == RuntimeAdminModeState::Active {
+        if self.warm_cache_is_restricted() {
             return Ok(());
         }
         let cache = WarmCache {
@@ -2302,7 +2312,7 @@ impl RuntimeStore {
             if let Err(error) = self.persist_settings(SettingsWriteIntent::Automatic) {
                 errors.push(error);
             }
-            let cache_result = if self.admin_mode.state == RuntimeAdminModeState::Active {
+            let cache_result = if self.warm_cache_is_restricted() {
                 self.purge_warm_cache()
             } else {
                 self.persist_warm_cache()
@@ -8539,10 +8549,7 @@ mod tests {
         let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
         store.admin_mode = store.provenance.admin_mode_status();
-        assert_eq!(
-            store.admin_mode.source,
-            RuntimePrivilegedSource::CurrentProcess
-        );
+        assert_eq!(store.admin_mode.source, RuntimePrivilegedSource::None);
 
         let sampled_at_ms = store.clock.now_ms();
         store.apply_raw_sample(
@@ -8562,9 +8569,107 @@ mod tests {
         );
 
         assert!(!store.snapshot.standard_fallback_process_etw_disabled);
+        assert_eq!(store.snapshot.admin_mode.state, RuntimeAdminModeState::Off);
+        assert_eq!(
+            store.snapshot.admin_mode.source,
+            RuntimePrivilegedSource::None
+        );
+        assert_eq!(store.snapshot.admin_mode.last_success_at_ms, None);
+        assert!(store.snapshot.warnings.iter().any(|warning| warning
+            .message
+            .starts_with("collector_service_desktop_elevated:")));
         crate::protocol::encode_snapshot(store.snapshot.clone())
             .expect("elevated fallback remains protocol-valid after authority clamp");
 
+        let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn elevated_service_guidance_preserves_errors_and_tracks_current_collection() {
+        let base_dir = runtime_test_dir("elevated-service-guidance");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
+        store.admin_mode = store.provenance.admin_mode_status();
+        let disconnected = crate::contracts::RuntimeCollectorServiceStatus {
+            state: RuntimeCollectorServiceState::Failed,
+            release_identity: None,
+            service_version: None,
+            negotiated_protocol_version: None,
+            minimum_desktop_version: None,
+            instance_id: None,
+            last_connected_at_ms: None,
+            detail: Some("collector_service_pipe_disconnected".to_string()),
+        };
+        assert!(!store.apply_collector_service_status(Some(disconnected.clone()), 7));
+        store.sync_collector_warnings(vec!["collector_service_pipe_disconnected".to_string()]);
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Off);
+        assert_eq!(store.admin_mode.last_success_at_ms, None);
+        assert_eq!(store.admin_mode.detail, disconnected.detail);
+        assert_eq!(
+            store.admin_mode.collector_service,
+            Some(disconnected.clone())
+        );
+        assert!(store
+            .warnings
+            .iter()
+            .any(|warning| warning.message == "collector_service_pipe_disconnected"));
+        let guidance = store
+            .warnings
+            .iter()
+            .find(|warning| {
+                warning
+                    .message
+                    .starts_with("collector_service_desktop_elevated:")
+            })
+            .expect("elevated inactive collection has actionable guidance")
+            .clone();
+        assert!(guidance.message.contains("Open BatCave normally"));
+        store.sync_collector_warnings(vec!["collector_service_pipe_disconnected".to_string()]);
+        assert_eq!(store.warnings.len(), 2);
+        assert!(store
+            .warnings
+            .iter()
+            .any(|warning| warning.key == guidance.key
+                && warning.message == guidance.message
+                && warning.occurred_at_ms == guidance.occurred_at_ms));
+
+        // This checks snapshot shaping after accepted service evidence, not transport authorization.
+        let active = crate::contracts::RuntimeCollectorServiceStatus {
+            state: RuntimeCollectorServiceState::Active,
+            release_identity: Some(crate::contracts::RuntimeReleaseIdentity {
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                source_commit_sha: None,
+            }),
+            service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            negotiated_protocol_version: Some(
+                crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            ),
+            minimum_desktop_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            instance_id: Some("guidance-service-instance".to_string()),
+            last_connected_at_ms: Some(8),
+            detail: None,
+        };
+        assert!(store.apply_collector_service_status(Some(active), 8));
+        store.sync_collector_warnings(Vec::new());
+        assert!(store.warnings.is_empty());
+        assert_eq!(
+            store.admin_mode.source,
+            RuntimePrivilegedSource::CollectorService
+        );
+        assert_eq!(store.admin_mode.last_success_at_ms, Some(8));
+        assert!(!store.apply_collector_service_status(Some(disconnected.clone()), 9));
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Off);
+        assert_eq!(store.admin_mode.source, RuntimePrivilegedSource::None);
+        assert_eq!(store.admin_mode.last_success_at_ms, Some(8));
+        assert_eq!(store.admin_mode.detail, disconnected.detail);
+        for elevation in [
+            RuntimeProcessElevation::Standard,
+            RuntimeProcessElevation::Unknown,
+        ] {
+            store.provenance = RuntimeProvenance::windows_for_test(elevation);
+            store.sync_collector_warnings(Vec::new());
+            assert!(store.warnings.is_empty());
+        }
         let _ = fs::remove_dir_all(&base_dir);
     }
 
@@ -9007,6 +9112,45 @@ mod tests {
         let _ = store.persist_warm_cache();
 
         assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        let _ = fs::remove_dir_all(base_dir);
+    }
+
+    #[test]
+    fn elevated_token_restricts_warm_cache_even_without_active_collection() {
+        let base_dir = runtime_test_dir("elevated-inactive-cache");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        store.provenance = RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Elevated);
+        store.admin_mode = store.provenance.admin_mode_status();
+        assert_eq!(store.admin_mode.state, RuntimeAdminModeState::Off);
+        store.set_previous_processes(vec![sample("10", "Elevated", 0.0)]);
+        store
+            .persist_warm_cache()
+            .expect("restricted cache write is skipped");
+        store
+            .persistence
+            .flush(Duration::from_secs(5))
+            .expect("isolated writes settle");
+        assert!(
+            !base_dir.join(WARM_CACHE_FILE).exists(),
+            "elevated rows must not be written to warm cache"
+        );
+
+        let cache = WarmCache {
+            seq: 7,
+            rows: vec![sample("10", "prior-cache", 0.0)],
+        };
+        fs::write(
+            base_dir.join(WARM_CACHE_FILE),
+            serde_json::to_vec(&cache).unwrap(),
+        )
+        .expect("isolated prior cache exists");
+        store
+            .shutdown_owned_resources()
+            .expect("elevated shutdown purges cache");
+        assert!(
+            !base_dir.join(WARM_CACHE_FILE).exists(),
+            "elevated shutdown must purge the prior cache"
+        );
         let _ = fs::remove_dir_all(base_dir);
     }
 
