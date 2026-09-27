@@ -5,7 +5,7 @@ struct SidecarProtocolTests {
     static func main() throws {
         try decodesStatusRequest()
         try decodesBoundedGenerationRequest()
-        rejectsInvalidRequests()
+        try rejectsInvalidRequests()
         rejectsUnofferedOrFreeTextSelections()
         try encodesBoundedResponse()
         print("Foundation Models sidecar protocol tests passed.")
@@ -30,12 +30,11 @@ struct SidecarProtocolTests {
         precondition(facts == #"{"cpu_percent":12.5,"healthy":true}"#)
     }
 
-    private static func rejectsInvalidRequests() {
+    private static func rejectsInvalidRequests() throws {
         for input in [
             #"{"version":2,"operation":"status"}"#,
             #"{"version":1,"operation":"status","facts":{}}"#,
             #"{"version":1,"operation":"generate"}"#,
-            #"{"version":1,"operation":"generate","request":{"surface":"overview","publication_seq":1,"fact_digest":""},"facts":{}}"#,
         ] {
             do {
                 _ = try decodeRequest(Data(input.utf8))
@@ -44,11 +43,31 @@ struct SidecarProtocolTests {
                 // Expected.
             }
         }
+
+        let emptyDigest = Data(
+            #"{"version":1,"operation":"generate","request":{"surface":"overview","publication_seq":1,"fact_digest":"","candidate_ids":["cpu_usage","memory_usage"]},"facts":{}}"#.utf8
+        )
         do {
-            _ = try decodeRequest(Data(repeating: 0x20, count: maximumInputBytes + 1))
-            preconditionFailure("oversized request was accepted")
-        } catch {
+            _ = try decodeRequest(emptyDigest)
+            preconditionFailure("empty fact digest was accepted")
+        } catch SidecarProtocolError.invalidRequest {
             // Expected.
+        } catch {
+            preconditionFailure("empty fact digest failed for the wrong reason: \(error)")
+        }
+
+        let oversizedValidRequest = try JSONSerialization.data(withJSONObject: [
+            "version": sidecarProtocolVersion,
+            "operation": "status",
+            "padding": String(repeating: "x", count: maximumInputBytes),
+        ])
+        do {
+            _ = try decodeRequest(oversizedValidRequest)
+            preconditionFailure("oversized request was accepted")
+        } catch SidecarProtocolError.requestTooLarge {
+            // Expected.
+        } catch {
+            preconditionFailure("valid oversized request failed for the wrong reason: \(error)")
         }
     }
 
@@ -81,5 +100,22 @@ struct SidecarProtocolTests {
         let result = json?["result"] as? [String: Any]
         precondition(result?["provider"] as? String == "apple_foundation")
         precondition(result?["publication_seq"] as? Int == 7)
+
+        let oversizedResponse = SidecarResponse(
+            availability: .available,
+            result: GenerationResult(
+                publicationSequence: 7,
+                factDigest: "digest",
+                text: String(repeating: "x", count: maximumOutputBytes)
+            )
+        )
+        do {
+            _ = try encodeResponse(oversizedResponse)
+            preconditionFailure("oversized response was accepted")
+        } catch SidecarProtocolError.responseTooLarge {
+            // Expected.
+        } catch {
+            preconditionFailure("oversized response failed for the wrong reason: \(error)")
+        }
     }
 }

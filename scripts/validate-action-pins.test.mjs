@@ -3,8 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { collectActionPinViolations } from "./validate-action-pins.mjs";
 
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const validationWorkflow = fs.readFileSync(
   new URL("../.github/workflows/validation.yml", import.meta.url),
   "utf8",
@@ -190,6 +192,10 @@ test("reports violations in stable path and line order", () => {
       );
     },
   );
+});
+
+test("rejects mutable action references in every checked-in workflow", () => {
+  assert.deepEqual(collectActionPinViolations(ROOT), []);
 });
 
 test("keeps validation toolchains, cache writers, and Linux package transport bounded", () => {

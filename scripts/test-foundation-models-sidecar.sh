@@ -9,7 +9,6 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   echo "Foundation Models sidecar tests require Apple Silicon." >&2
   exit 2
 fi
-
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 source_root="$repo_root/src/BatCave.App/src-tauri/swift/foundation-models-sidecar"
