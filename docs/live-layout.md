@@ -8,6 +8,8 @@ Overview keeps monitoring status separate from metric cards. Status and contribu
 
 The native main window enables Tauri's standard page zoom shortcuts: Ctrl + plus/equal or minus on Windows and Linux, and Command + plus/equal or minus on macOS. Ctrl + 0 (Command + 0 on macOS) resets zoom. Windows uses WebView2's zoom controls; macOS and Linux use Tauri's zoom polyfill. The existing `main` capability grants only the additional `core:webview:allow-set-webview-zoom` command needed by that polyfill. Native zoom, reset, and readable drawer/status behavior still require acceptance in the built app.
 
+At narrow zoomed widths, the app header stacks its title, navigation, and status/actions in that order. The Leading workloads header wraps its ranking badge and **View all in Explore** action. Settings monitoring actions also wrap, keeping **Resume monitoring** and **Refresh now** readable and reachable by keyboard.
+
 From `src/BatCave.App`, run:
 
 ```powershell

@@ -1089,5 +1089,53 @@ for (const viewport of [
     await expect.poll(() => status.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     await expect(page.getByRole("button", { name: "View diagnostics", exact: true })).toBeVisible();
     await expectNoAxeViolations(page);
+    await page.locator('.overview-resource-card[data-resource-mode="disk"]').click();
+    const leadingHeader = workloads.locator("header");
+    const leadingContent = await leadingHeader.evaluate((element) => ({
+      width: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(
+      leadingContent.scrollWidth,
+      "Leading workloads header must contain its Explore action",
+    ).toBeLessThanOrEqual(leadingContent.width + 1);
+    const exploreAction = leadingHeader.getByRole("button", {
+      name: "View all in Explore",
+      exact: true,
+    });
+    await exploreAction.scrollIntoViewIfNeeded();
+    const exploreBox = await exploreAction.boundingBox();
+    expect(exploreBox).not.toBeNull();
+    expect(exploreBox!.x + exploreBox!.width).toBeLessThanOrEqual(viewport.width + 1);
+    await exploreAction.focus();
+    await expect(exploreAction).toBeFocused();
+    await exploreAction.press("Enter");
+    await expect(page.locator('[data-view="explore"]')).toHaveAttribute("aria-current", "page");
+    await page.locator(".settings-action").click();
+    const settings = page.getByRole("dialog", { name: "Settings" });
+    const pauseAction = settings.getByRole("button", { name: "Pause monitoring", exact: true });
+    await pauseAction.focus();
+    await pauseAction.press("Enter");
+    const resumeAction = settings.getByRole("button", { name: "Resume monitoring", exact: true });
+    await expect(resumeAction).toBeFocused();
+    const samplingContent = await settings
+      .locator(".sampling-actions")
+      .evaluate((element) => ({ width: element.clientWidth, scrollWidth: element.scrollWidth }));
+    expect(
+      samplingContent.scrollWidth,
+      "Paused Settings actions must remain horizontally contained",
+    ).toBeLessThanOrEqual(samplingContent.width + 1);
+    const refreshAction = settings.getByRole("button", { name: "Refresh now", exact: true });
+    for (const action of [resumeAction, refreshAction]) {
+      const box = await action.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    await resumeAction.press("Tab");
+    await expect(refreshAction).toBeFocused();
+    await refreshAction.press("Enter");
+    await expect(pauseAction).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(settings).toHaveCount(0);
   });
 }

@@ -3376,6 +3376,7 @@ button:disabled {
 
 .overview-workloads > header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -3734,13 +3735,15 @@ button:disabled {
 
 .sampling-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 10px;
 }
 
 .sampling-actions button {
-  flex: 1 1 0;
-  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
 }
 
 .sampling-actions button,
