@@ -194,6 +194,44 @@ jobs:
       - name: Validate Linux app
         run: bash scripts/validate-tauri.sh --skip-bundle
 
+      # One-off #296 control in a detached disposable copy. Remove after proof is recorded.
+      - name: Prove linked-asset regression rejects unsafe creation
+        if: github.event_name == 'pull_request' && github.head_ref == 'codex/runtime-test-repairs'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=src/BatCave.App/src-tauri/src/bin/batcave-install-smoke/install_smoke_release.rs
+          control_checkout="$(mktemp -d "$RUNNER_TEMP/batcave-linked-asset-XXXXXX")"
+          git worktree add --detach "$control_checkout" HEAD
+          trap 'git worktree remove --force "$control_checkout"' EXIT
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/src/BatCave.App/src-tauri/target"
+          patch="$RUNNER_TEMP/linked-asset-fault.patch"
+          log="$RUNNER_TEMP/linked-asset-fault.log"
+          cat > "$patch" <<'PATCH'
+          --- a/src/BatCave.App/src-tauri/src/bin/batcave-install-smoke/install_smoke_release.rs
+          +++ b/src/BatCave.App/src-tauri/src/bin/batcave-install-smoke/install_smoke_release.rs
+          @@ -850,7 +850,7 @@
+           ) -> Result<(), Failure> {
+               for asset in &release.assets {
+                   let path = root.join(&asset.name);
+                   let mut output = OpenOptions::new()
+          -            .create_new(true)
+          +            .create(true)
+                       .write(true)
+                       .open(&path)
+          PATCH
+          git -C "$control_checkout" apply --check "$patch"
+          git -C "$control_checkout" apply "$patch"
+          status=0
+          cargo test --locked --manifest-path "$control_checkout/src/BatCave.App/src-tauri/Cargo.toml" --features private-release-verifier --bin batcave-install-smoke install_smoke_release::tests::owned_root_rejects_preexisting_link_asset -- --exact --nocapture > "$log" 2>&1 || status=$?
+          cat "$log"
+          test "$status" -eq 101
+          grep -Fq 'test install_smoke_release::tests::owned_root_rejects_preexisting_link_asset ... FAILED' "$log"
+          grep -Fq 'test result: FAILED. 0 passed; 1 failed;' "$log"
+          grep -Fq 'assertion `left == right` failed' "$log"
+          grep -Fq 'right: [111, 117, 116, 115, 105, 100, 101]' "$log"
+          git diff --exit-code -- "$target"
+
       - name: Test private public-release verifier
         run: cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-install-smoke --features private-release-verifier
 
