@@ -1,5 +1,14 @@
 import type { DetailMode } from "./components/metrics/types";
-import type { MetricCoverage, MetricQualityInfo, ProcessSample, RuntimeSnapshot } from "./types";
+import type {
+  MetricCoverage,
+  MetricQualityInfo,
+  ProcessSample,
+  ProcessViewRow,
+  RuntimeSnapshot,
+} from "./types";
+import { displayGroupMetricValue, displayProcessMetricValue } from "./format.ts";
+import { leadingOverviewRows } from "./overview.ts";
+import { processViewRowMetrics } from "./process.ts";
 
 import { metricPresentation, type CollectionState } from "./telemetryPresentation.ts";
 export type { CollectionState } from "./telemetryPresentation.ts";
@@ -25,6 +34,44 @@ export interface ResourceValues {
   memoryPercent: number;
   diskRate: number;
   networkRate: number;
+}
+
+export function buildOverviewContributor(
+  snapshot: RuntimeSnapshot,
+  mode: DetailMode,
+  collectionState: CollectionState,
+): { row: ProcessViewRow | null; statusLabel: string } {
+  if (mode === "disk") return { row: null, statusLabel: "No compatible process attribution" };
+  if (snapshot.sampled_at_ms === null || collectionState === "starting") {
+    return { row: null, statusLabel: "Workload attribution unavailable without a system sample" };
+  }
+  const row = leadingOverviewRows(snapshot.overview_rows, mode, 1)[0] ?? null;
+  if (!row)
+    return { row: null, statusLabel: "No available workload attribution for this resource" };
+  const metrics = processViewRowMetrics(row);
+  const value =
+    mode === "cpu"
+      ? metrics.cpuPercent
+      : mode === "memory"
+        ? metrics.memoryBytes
+        : metrics.networkBps;
+  const formatter =
+    mode === "cpu"
+      ? (value: number) => `${formatPercent(value)} of one core`
+      : mode === "memory"
+        ? (value: number) => `${formatBytes(value)} resident memory`
+        : (value: number) => `${formatRate(value)} process traffic`;
+  if (row.kind === "group") {
+    return {
+      row,
+      statusLabel: `${row.detail.process_count} ${row.detail.process_count === 1 ? "process" : "processes"} · ${displayGroupMetricValue(value, row.detail.quality[mode], row.detail.coverage[mode], formatter)}`,
+    };
+  }
+  const quality = row.detail.process.quality?.[mode];
+  return {
+    row,
+    statusLabel: `${displayProcessMetricValue(value, quality, formatter)}${contributorQualitySuffix(quality)}`,
+  };
 }
 
 export function buildResourceBrief(

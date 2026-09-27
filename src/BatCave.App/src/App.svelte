@@ -20,8 +20,7 @@
     type AccessibilityFixtureState,
   } from "./lib/accessibilityFixtures";
   import {
-    buildResourceBrief,
-    resolveContributorProcess,
+    buildOverviewContributor,
     type CollectionState,
   } from "./lib/cockpit";
   import { uniqueWarningCount } from "./lib/diagnostics";
@@ -387,9 +386,9 @@
   $: collectionState = telemetry.state;
   $: overviewNarrativeCopy = collectionState === "live" && enhancedNarratives && overviewPrimaryProcess
     ? renderNarrative(overviewNarrative, processNarrativeFacts(overviewPrimaryProcess, overviewResource === "disk" ? "io" : overviewResource, "top_contributor"),
-      "overview_contributor", overviewPrimaryBrief.leadingProcessId ?? undefined)
+      "overview_contributor", overviewPrimaryContributor.row?.detail.workload_id)
     : null;
-  $: overviewContributorCopy = overviewNarrativeCopy ?? overviewPrimaryBrief.contributorStatusLabel;
+  $: overviewContributorCopy = overviewNarrativeCopy ?? overviewPrimaryContributor.statusLabel;
   $: workloadNarrativeCopy = inspectionCurrent && enhancedNarratives && selectedProcess && selectedWorkload?.kind === "process"
     ? renderNarrative(workloadNarrative, processNarrativeFacts(selectedProcess, leadingNarrativeResource(selectedProcess), "notable"),
       "workload_insight", selectedWorkload.workload_id)
@@ -407,10 +406,8 @@
     overviewResource,
   );
   $: overviewRows = leadingOverviewRows(snapshot.overview_rows, overviewResource, 5);
-  $: overviewPrimaryBrief = buildResourceBrief(snapshot, overviewResource, { memoryPercent, diskRate: diskReadRate + diskWriteRate, networkRate: networkDownRate + networkUpRate }, collectionState);
-  $: overviewPrimaryProcess = resolveContributorProcess(snapshot, overviewPrimaryBrief.leadingProcessId);
-  $: overviewPrimaryIdentity = overviewPrimaryProcess ? processIdentity(overviewPrimaryProcess) : null;
-  $: overviewPrimaryIcon = resolvedProcessIcon(processIcons, overviewPrimaryProcess ? processIconKey(overviewPrimaryProcess) : undefined);
+  $: overviewPrimaryContributor = buildOverviewContributor(snapshot, overviewResource, collectionState);
+  $: overviewPrimaryProcess = overviewPrimaryContributor.row?.kind === "process" ? overviewPrimaryContributor.row.detail.process : null;
   $: healthTone = telemetry.tone;
   $: healthLabel = telemetry.label;
   $: liveStatus = rankingUpdateAvailable ? `${healthLabel}. A new workload ranking is available.` : healthLabel;
@@ -1018,10 +1015,10 @@
     facts: NarrativeFactPacket;
     subjectStableId: string;
   } | null {
-    if (collectionState !== "live" || !overviewPrimaryProcess || !overviewPrimaryBrief.leadingProcessId) return null;
+    if (collectionState !== "live" || !overviewPrimaryProcess || overviewPrimaryContributor.row?.kind !== "process") return null;
     return {
       facts: processNarrativeFacts(overviewPrimaryProcess, overviewResource === "disk" ? "io" : overviewResource, "top_contributor"),
-      subjectStableId: overviewPrimaryBrief.leadingProcessId,
+      subjectStableId: overviewPrimaryContributor.row.detail.workload_id,
     };
   }
 
@@ -2055,14 +2052,9 @@
       resources={resourceSummaries}
       leadingRows={overviewRows}
       {processIcons}
-      leadingName={overviewPrimaryBrief.leadingWorkload}
+      leadingRow={overviewPrimaryContributor.row}
       leadingValue={overviewContributorCopy}
       leadingNarrativeGenerated={overviewNarrativeCopy !== null}
-      leadingSelection={overviewPrimaryBrief.leadingProcessId}
-      leadingIconKind={overviewPrimaryIdentity?.icon ?? "process"}
-      leadingIconSrc={overviewPrimaryIcon.src}
-      leadingIconMatched={overviewPrimaryIcon.origin === "name_match"}
-      leadingIconSystemTool={overviewPrimaryIcon.systemTool ?? false}
       onSelectResource={selectOverviewResource}
       onInspectResource={() => selectDetailMode(overviewResource)}
       onOpenDiagnostics={() => (diagnosticsOpen = true)}

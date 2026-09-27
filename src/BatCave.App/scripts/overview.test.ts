@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { makeFixtureSnapshot } from "../src/lib/fixtures.ts";
+import { buildOverviewContributor } from "../src/lib/cockpit.ts";
 import {
   buildOverviewStatus,
   OverviewRanking,
@@ -226,6 +227,152 @@ test("unavailable or held resource measurements cannot enter the Overview rankin
       row.detail.process.quality = { ...row.detail.process.quality, network: { quality: "held" } };
   }
   assert.deepEqual(leadingOverviewRows(rows, "network", 5), []);
+});
+
+function groupedContributorFixture() {
+  const snapshot = makeFixtureSnapshot(8, undefined, "windows", "compact");
+  const group = snapshot.overview_rows.find((row) => row.kind === "group")!;
+  const members = snapshot.overview_rows.filter((row) => row.kind === "process" && row.is_grouped);
+  const competitor = snapshot.overview_rows.find(
+    (row) => row.kind === "process" && !row.is_grouped,
+  )!;
+  assert.equal(group.kind, "group");
+  assert.equal(competitor.kind, "process");
+  if (group.kind !== "group" || competitor.kind !== "process")
+    throw new Error("Expected fixture rows");
+  assert.equal(members.length, 2);
+  members.forEach((row, index) => {
+    if (row.kind !== "process") throw new Error("Expected process member");
+    row.detail.process.cpu_percent = index === 0 ? 45 : 35;
+    row.detail.process.memory_bytes = (index === 0 ? 96 : 64) * 1024 ** 2;
+    row.detail.process.network_received_bps = (index === 0 ? 14 : 10) * 1024;
+    row.detail.process.network_transmitted_bps = 0;
+  });
+  group.detail.label = "BatCave";
+  group.detail.cpu_percent = 80;
+  group.detail.memory_bytes = 160 * 1024 ** 2;
+  group.detail.network_bps = 24 * 1024;
+  group.detail.quality.cpu =
+    group.detail.quality.memory =
+    group.detail.quality.network =
+      { quality: "native" };
+  group.detail.coverage.cpu =
+    group.detail.coverage.memory =
+    group.detail.coverage.network =
+      { available: 2, total: 2 };
+  competitor.detail.process.cpu_percent = 72;
+  competitor.detail.process.memory_bytes = 128 * 1024 ** 2;
+  competitor.detail.process.network_received_bps = 20 * 1024;
+  competitor.detail.process.network_transmitted_bps = 0;
+  competitor.detail.process.quality = {
+    cpu: { quality: "native" },
+    memory: { quality: "native" },
+    network: { quality: "native" },
+  };
+  snapshot.overview_rows = [competitor, ...members, group, group];
+  return { snapshot, group, members, competitor };
+}
+
+test("Overview hero selects the distinct-member aggregate and preserves process contributor facts", () => {
+  const { snapshot, group } = groupedContributorFixture();
+  const contributors = structuredClone(snapshot.process_contributors);
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, group);
+  assert.equal(
+    buildOverviewContributor(snapshot, "cpu", "live").statusLabel,
+    "2 processes · 80% of one core",
+  );
+  assert.equal(
+    buildOverviewContributor(snapshot, "memory", "live").statusLabel,
+    "2 processes · 160 MB resident memory",
+  );
+  assert.equal(
+    buildOverviewContributor(snapshot, "network", "live").statusLabel,
+    "2 processes · 24 KB/s process traffic",
+  );
+  for (const resource of ["cpu", "memory", "network"] as const) {
+    assert.equal(
+      buildOverviewContributor(snapshot, resource, "live").row?.detail.workload_id,
+      leadingOverviewRows(snapshot.overview_rows, resource, 1)[0].detail.workload_id,
+    );
+  }
+  // Explore's filtered rows and raw process-scoped contributor identity cannot change the hero scope.
+  snapshot.process_view_rows = [];
+  snapshot.processes = [];
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, group);
+  assert.deepEqual(snapshot.process_contributors, contributors);
+});
+
+test("Overview hero retains aggregate partial coverage and excludes held, unavailable, and zero coverage", () => {
+  const { snapshot, group, competitor } = groupedContributorFixture();
+  group.detail.cpu_percent = 45;
+  group.detail.quality.cpu = { quality: "partial" };
+  group.detail.coverage.cpu = { available: 1, total: 2 };
+  competitor.detail.process.cpu_percent = 40;
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, group);
+  assert.equal(
+    buildOverviewContributor(snapshot, "cpu", "live").statusLabel,
+    "2 processes · 45% of one core · 1/2 · limited",
+  );
+  for (const quality of ["held", "unavailable"] as const) {
+    group.detail.quality.cpu = { quality };
+    assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, competitor);
+  }
+  group.detail.quality.cpu = { quality: "native" };
+  group.detail.coverage.cpu = { available: 0, total: 2 };
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, competitor);
+  competitor.detail.process.quality!.cpu = { quality: "unavailable" };
+  assert.deepEqual(buildOverviewContributor(snapshot, "cpu", "live"), {
+    row: null,
+    statusLabel: "No available workload attribution for this resource",
+  });
+});
+
+test("Overview hero admits only the current opaque group scope after removal and restart", () => {
+  const { snapshot, group, members, competitor } = groupedContributorFixture();
+  group.detail.workload_id = `group:scope:${"a".repeat(64)}`;
+  const previousId = group.detail.workload_id;
+  assert.equal(
+    buildOverviewContributor(snapshot, "cpu", "live").row?.detail.workload_id,
+    previousId,
+  );
+  snapshot.overview_rows = [competitor, ...members];
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, competitor);
+  const restarted = structuredClone(group);
+  restarted.detail.workload_id = `group:scope:${"b".repeat(64)}`;
+  restarted.detail.cpu_percent = 35;
+  restarted.detail.process_count = 1;
+  restarted.detail.coverage.cpu = { available: 1, total: 1 };
+  snapshot.overview_rows = [restarted];
+  const current = buildOverviewContributor(snapshot, "cpu", "live");
+  assert.equal(current.row, restarted);
+  assert.notEqual(current.row?.detail.workload_id, previousId);
+  assert.equal(current.statusLabel, "1 process · 35% of one core");
+  // Frontend selection uses the backend scope as published; it does not manufacture or retain an old scope.
+});
+
+test("Overview hero never treats aggregate process I/O as physical disk attribution", () => {
+  const { snapshot, group } = groupedContributorFixture();
+  group.detail.io_bps = 1024 ** 3;
+  snapshot.system.disk_read_bps = 1024;
+  snapshot.system.disk_write_bps = 0;
+  assert.deepEqual(buildOverviewContributor(snapshot, "disk", "live"), {
+    row: null,
+    statusLabel: "No compatible process attribution",
+  });
+  assert.equal(leadingOverviewRows(snapshot.overview_rows, "disk", 1)[0], group);
+  assert.equal(
+    buildOverviewStatus(snapshot, "live", 0, "disk").headline,
+    "Physical disk throughput is 1.0 KB/s.",
+  );
+});
+
+test("Overview hero waits for a system sample and uses the published rows while paused", () => {
+  const { snapshot, group } = groupedContributorFixture();
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "paused").row, group);
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "stale").row, group);
+  snapshot.sampled_at_ms = null;
+  assert.equal(buildOverviewContributor(snapshot, "cpu", "live").row, null);
+  assert.equal(buildOverviewContributor(makeEmptySnapshot(), "cpu", "starting").row, null);
 });
 
 test("monitor overhead is claimed only for an explicit runtime budget reason", () => {
