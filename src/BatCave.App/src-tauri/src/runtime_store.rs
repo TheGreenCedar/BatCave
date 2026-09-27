@@ -6753,8 +6753,8 @@ mod tests {
 
     #[test]
     fn batcave_context_latches_only_with_fresh_samples_and_keeps_existing_history_scope() {
-        let mut store = RuntimeStore::new();
-        let base_dir = store.provenance.environment().data_dir.clone();
+        let base_dir = runtime_test_dir("batcave-context-latching");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
         let (processes, context) = approved_batcave_fixture();
         let observation = |source_seq, context| crate::telemetry::TelemetrySample {
             latency_ms: 0,
