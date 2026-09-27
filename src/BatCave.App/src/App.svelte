@@ -4,7 +4,7 @@
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import CaretLeft from "phosphor-svelte/lib/CaretLeft";
   import MagnifyingGlass from "phosphor-svelte/lib/MagnifyingGlass";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import fixtureProcessIcon from "../src-tauri/icons/64x64.png";
   import DetailPane from "./lib/components/context/DetailPane.svelte";
   import type { DetailMode, ResourceSummaryOption } from "./lib/components/metrics/types";
@@ -254,6 +254,7 @@
   let detailOpen = false;
   let detailOpener: HTMLElement | null = null;
   let detailFocusFrame: number | undefined;
+  let viewNavigationRevision = 0;
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
@@ -610,6 +611,7 @@
     systemThemeQuery.addEventListener("change", handleSystemThemeChange);
 
     return () => {
+      viewNavigationRevision += 1;
       systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
       stopPolling?.();
       inspectionGate.clear();
@@ -1591,7 +1593,7 @@
 
   function selectProcess(selection: string): void {
     cancelNarrativeWork();
-    activeView = "explore";
+    activateView("explore");
     const changedSelection = selectedWorkloadId !== selection;
     selectedWorkloadId = selection;
     detailSubject = "process";
@@ -1673,7 +1675,7 @@
 
   function selectDetailMode(mode: DetailMode): void {
     cancelNarrativeWork();
-    activeView = "explore";
+    activateView("explore");
     detailMode = mode;
     detailSubject = "system";
     selectedWorkloadId = "";
@@ -1707,9 +1709,29 @@
     void requestCurrentSurfaceNarrative();
   }
 
+  function activateView(view: AppView, destination: "view" | "search" = "view"): void {
+    if (activeView === view && destination === "view") return;
+    const revision = ++viewNavigationRevision;
+    activeView = view;
+    void tick().then(() => {
+      if (revision !== viewNavigationRevision || activeView !== view) return;
+      // Compact views share the document scroller. A removed Overview can leave
+      // Explore below its retained offset, with only the shell background visible.
+      window.scrollTo(0, 0);
+      if (detailOpen || settingsOpen || diagnosticsOpen) return;
+      if (destination === "search") {
+        const search = document.querySelector<HTMLInputElement>("#process-search");
+        search?.focus({ preventScroll: true });
+        search?.select();
+      } else {
+        document.querySelector<HTMLElement>(`.${view}-view`)?.focus({ preventScroll: true });
+      }
+    });
+  }
+
   function navigateTo(view: AppView): void {
     cancelNarrativeWork();
-    activeView = view;
+    activateView(view);
     if (view === "overview") {
       queueInteracting = false;
       detailOpen = false;
@@ -1720,7 +1742,7 @@
 
   function openExplore(): void {
     cancelNarrativeWork();
-    activeView = "explore";
+    activateView("explore");
   }
 
   function openDetail(): void {
@@ -1794,12 +1816,7 @@
       !(target instanceof HTMLElement && target.isContentEditable)
     ) {
       event.preventDefault();
-      activeView = "explore";
-      window.requestAnimationFrame(() => {
-        const search = document.querySelector<HTMLInputElement>("#process-search");
-        search?.focus();
-        search?.select();
-      });
+      activateView("explore", "search");
     }
   }
 
@@ -2062,7 +2079,7 @@
       onOpenExplore={openExplore}
     />
   {:else}
-    <main class="explore-view" aria-labelledby="explore-heading">
+    <main class="explore-view" aria-labelledby="explore-heading" tabindex="-1">
       <header class="explore-heading">
         <div>
           <h2 id="explore-heading">Workloads</h2>
