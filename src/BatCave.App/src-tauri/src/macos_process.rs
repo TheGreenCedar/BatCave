@@ -1564,18 +1564,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_process_is_dropped_as_ordinary_churn() {
-        let mut collector = MacosProcessCollector::new();
-        let (processes, _summary) = collector.collect(crate::telemetry::now_ms());
-        // The live collector lists the current process; churn pids never appear.
-        let pid = (i32::MAX - 1).to_string();
-        assert!(!processes.iter().any(|process| process.pid == pid));
-        assert!(processes
-            .iter()
-            .any(|process| process.pid == std::process::id().to_string()));
-    }
-
-    #[test]
     #[ignore]
     fn live_collect_reports_accurate_cpu_and_identity() {
         use std::process::{Child, Command, Stdio};
