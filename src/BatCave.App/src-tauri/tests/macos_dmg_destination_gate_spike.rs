@@ -1549,15 +1549,47 @@ mod macos {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut authority = DestinationAuthority::valid().expect("acquire cleanup authority");
-        let outcome = authority.execute(Fault::CleanupFailure);
+        // Cleanup failure is independent of the native DMG/trust pipeline. Settle a
+        // real non-forking process before injecting the cleanup-only fault.
+        let mut authority = DestinationAuthority::acquire(b"inert cleanup fixture\n", Vec::new())
+            .expect("acquire cleanup authority");
+        let root = authority.root.clone().expect("owned cleanup root");
+        let mut command = Command::new("/usr/bin/true");
+        let result = authority
+            .run_owned_process(&mut command, "cleanup-precondition", NORMAL_TIMEOUT, false)
+            .expect("cleanup precondition process settles");
+        assert!(result.status.success());
+        assert!(!result.timed_out);
+        assert!(authority.unsettled_process.is_none());
+
+        authority.force_cleanup_failure = true;
+        let outcome = authority.finish(
+            Disposition::Rejected,
+            FailureBoundary::Cleanup,
+            true,
+            false,
+            false,
+            false,
+            DestinationGates::default(),
+            false,
+        );
         assert_eq!(outcome.disposition, Disposition::RetainedCleanupFailed);
+        assert_eq!(outcome.primary_boundary, FailureBoundary::Cleanup);
         assert_eq!(outcome.retained_boundary, Some(FailureBoundary::Cleanup));
+        assert!(outcome.process_started);
+        assert!(outcome.process_settled);
+        assert!(!outcome.fixture_dmg_mounted);
+        assert!(!outcome.fixture_app_copied);
+        assert!(!outcome.copied_tree_digest_matched);
+        assert!(!outcome.destination_revalidation_completed);
+        assert_eq!(outcome.gates, DestinationGates::default());
         assert!(!outcome.mount_residue);
         assert!(outcome.temporary_residue);
+        assert!(root.exists());
         assert_non_claims(&outcome);
 
         authority.retry_cleanup().expect("retry retained cleanup");
+        assert!(!root.exists(), "retry removes the retained cleanup root");
         assert!(!authority.root.as_ref().is_some_and(|root| root.exists()));
         assert!(!mount_is_active(&authority.mount_point));
     }
@@ -1568,6 +1600,7 @@ mod macos {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut authority = DestinationAuthority::valid().expect("acquire fixture authority");
+        authority.force_cleanup_failure = true;
         let outcome = authority.execute(Fault::SupervisionSettlementFailure);
 
         assert_eq!(outcome.disposition, Disposition::RetainedProcessUnsettled);
@@ -1579,9 +1612,11 @@ mod macos {
         assert!(outcome.process_started);
         assert!(!outcome.process_settled);
         assert!(outcome.temporary_residue);
+        assert!(authority.force_cleanup_failure);
         assert_non_claims(&outcome);
 
         assert!(authority.retry_cleanup().is_err());
+        assert!(authority.force_cleanup_failure);
         assert!(authority.unsettled_process.is_some());
         assert!(authority.root.as_ref().is_some_and(|root| root.exists()));
 
@@ -1589,6 +1624,7 @@ mod macos {
             .retry_cleanup()
             .expect("second retry settles and cleans retained authority");
         assert!(authority.unsettled_process.is_none());
+        assert!(!authority.force_cleanup_failure);
         assert!(!authority.root.as_ref().is_some_and(|root| root.exists()));
         assert!(!mount_is_active(&authority.mount_point));
     }
