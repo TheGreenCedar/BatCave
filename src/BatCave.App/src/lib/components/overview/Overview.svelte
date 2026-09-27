@@ -113,7 +113,7 @@
   }
 </script>
 
-<main class="overview-view" aria-labelledby="overview-heading">
+<main class="overview-view" aria-labelledby="overview-heading" tabindex="-1">
   <section class="overview-status-area" aria-label="Monitoring status">
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable status text must be keyboard reachable.) -->
     <div class="overview-status-copy" role="region" aria-labelledby="overview-heading" tabindex="0">

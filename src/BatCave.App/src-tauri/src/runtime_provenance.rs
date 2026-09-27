@@ -68,12 +68,9 @@ impl RuntimeProvenance {
 
     pub(crate) fn admin_mode_status(&self) -> RuntimeAdminModeStatus {
         let (state, source, detail) = match &self.process_elevation {
-            ProcessElevation::Elevated => (
-                RuntimeAdminModeState::Active,
-                RuntimePrivilegedSource::CurrentProcess,
-                None,
-            ),
-            ProcessElevation::Standard => (
+            // The desktop token describes access, not an active collector.
+            // Windows process-network ETW is owned by the installed service.
+            ProcessElevation::Elevated | ProcessElevation::Standard => (
                 RuntimeAdminModeState::Off,
                 RuntimePrivilegedSource::None,
                 None,
@@ -629,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_token_result_owns_active_or_standard_state() {
+    fn windows_token_result_does_not_claim_active_collection() {
         let environment = RuntimeEnvironment {
             platform: RuntimePlatform::Windows,
             admin_mode_available: true,
@@ -651,12 +648,13 @@ mod tests {
 
         assert_eq!(
             elevated.admin_mode_status().state,
-            RuntimeAdminModeState::Active
+            RuntimeAdminModeState::Off
         );
         assert_eq!(
             elevated.admin_mode_status().source,
-            RuntimePrivilegedSource::CurrentProcess
+            RuntimePrivilegedSource::None
         );
+        assert_eq!(elevated.admin_mode_status().last_success_at_ms, None);
         assert_eq!(
             elevated.environment().process_elevation,
             RuntimeProcessElevation::Elevated

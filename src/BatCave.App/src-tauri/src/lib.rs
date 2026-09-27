@@ -52,8 +52,6 @@ mod windows_pdh;
 mod windows_process;
 #[cfg(any(windows, test))]
 mod windows_system;
-#[cfg(any(windows, test))]
-mod windows_user_launch;
 mod wire_clock;
 mod workload_history;
 mod workload_identity;
@@ -332,14 +330,6 @@ pub fn run() -> Result<(), String> {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            #[cfg(windows)]
-            std::thread::Builder::new()
-                .name("batcave-user-launch".into())
-                .spawn(|| {
-                    if let Err(error) = windows_user_launch::ensure_current_user_start_entry() {
-                        eprintln!("current_user_launch_entry_failed:{error}");
-                    }
-                })?;
             let state = RuntimeState::new().map_err(std::io::Error::other)?;
             state.start();
             if !app.manage(state) {
