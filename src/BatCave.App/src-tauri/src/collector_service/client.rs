@@ -1,4 +1,4 @@
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 #[cfg(windows)]
 use std::time::Duration;
@@ -10,6 +10,7 @@ use crate::{
         SystemMetricQuality, SystemMetricsSnapshot,
     },
     telemetry::{TelemetrySample, TelemetrySampleProvenance},
+    wire_clock::MonotonicWireClock,
 };
 
 #[cfg(windows)]
@@ -343,6 +344,14 @@ pub(crate) fn status_from_failure(
     failure: &ClientFailure,
     previously_active: bool,
 ) -> RuntimeCollectorServiceStatus {
+    status_from_failure_with_clock(failure, previously_active, &MonotonicWireClock::new())
+}
+
+pub(crate) fn status_from_failure_with_clock(
+    failure: &ClientFailure,
+    previously_active: bool,
+    clock: &MonotonicWireClock,
+) -> RuntimeCollectorServiceStatus {
     let state = match failure.kind {
         ClientFailureKind::NotInstalled => RuntimeCollectorServiceState::NotInstalled,
         ClientFailureKind::Stopped => RuntimeCollectorServiceState::Stopped,
@@ -368,12 +377,19 @@ pub(crate) fn status_from_failure(
         negotiated_protocol_version: identity.map(|identity| identity.protocol_version),
         minimum_desktop_version: identity.map(|identity| identity.minimum_desktop_version.clone()),
         instance_id: identity.map(|identity| identity.instance_id.clone()),
-        last_connected_at_ms: identity.map(|_| now_ms()),
+        last_connected_at_ms: identity.map(|_| clock.now_ms()),
         detail: Some(failure.detail.clone()),
     }
 }
 
 fn active_status(identity: &ServiceIdentityV1) -> RuntimeCollectorServiceStatus {
+    active_status_with_clock(identity, &MonotonicWireClock::new())
+}
+
+pub(crate) fn active_status_with_clock(
+    identity: &ServiceIdentityV1,
+    clock: &MonotonicWireClock,
+) -> RuntimeCollectorServiceStatus {
     RuntimeCollectorServiceStatus {
         state: RuntimeCollectorServiceState::Active,
         release_identity: Some(runtime_release(&identity.release)),
@@ -381,7 +397,7 @@ fn active_status(identity: &ServiceIdentityV1) -> RuntimeCollectorServiceStatus 
         negotiated_protocol_version: Some(COLLECTOR_SERVICE_PROTOCOL_VERSION),
         minimum_desktop_version: Some(identity.minimum_desktop_version.clone()),
         instance_id: Some(identity.instance_id.clone()),
-        last_connected_at_ms: Some(now_ms()),
+        last_connected_at_ms: Some(clock.now_ms()),
         detail: None,
     }
 }
@@ -391,15 +407,6 @@ fn runtime_release(release: &ReleaseIdentityV1) -> RuntimeReleaseIdentity {
         app_version: release.app_version.clone(),
         source_commit_sha: release.source_commit_sha.clone(),
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn sample_from_snapshot(
