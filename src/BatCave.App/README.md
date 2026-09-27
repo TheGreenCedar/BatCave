@@ -156,7 +156,7 @@ The workload queue generally groups processes when executable or bundle identity
 
 Values update in place while ranking stays fixed when the pointer or keyboard focus is inside the Explore queue. The pending order applies when both leave the queue. Use `Ranking updated` to apply it while the order is held.
 
-At 1280px and wider, the resource rail and inspector remain visible. At 900 to 1279px, the resource selector becomes horizontal and the inspector opens in a drawer. Below 900px, the queue uses metric cards. Only the active list is mounted; resizing preserves group expansion and keyboard focus.
+Explore gives the workload list its full available width. The inspector starts closed and opens as a modal drawer when a workload or resource is selected at every width. Below 900px, the queue uses metric cards. Only the active list is mounted; resizing preserves group expansion, selection, drawer state, and keyboard focus.
 
 Selecting a group shows its aggregate CPU, memory, read/write I/O, network, and thread totals with measurement quality and coverage. The inspector reads from a bounded runtime archive, independently of search and ranking. It retains timestamped history across selection changes and process exit, subject to the global memory budget.
 
