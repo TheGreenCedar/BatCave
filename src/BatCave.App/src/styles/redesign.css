@@ -3383,6 +3383,13 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.overview-workloads > header > button {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
 .overview-workloads h3 {
   margin: 0;
   color: var(--text);

@@ -1091,6 +1091,39 @@ for (const viewport of [
     await expectNoAxeViolations(page);
     await page.locator('.overview-resource-card[data-resource-mode="disk"]').click();
     const leadingHeader = workloads.locator("header");
+    if (viewport.width === 360 && viewport.textScale === 200) {
+      // Wider glyphs reproduce the intrinsic CTA width boundary reached on Linux.
+      await page.addStyleTag({
+        content:
+          ".overview-workloads > header > button { font-family: monospace; letter-spacing: 2px; }",
+      });
+      const naturalActionWidth = await leadingHeader
+        .locator(":scope > button")
+        .evaluate((button) => {
+          const measurement = button.cloneNode(true);
+          if (!(measurement instanceof HTMLElement) || !button.parentElement)
+            throw new Error("Expected measurable action");
+          measurement.setAttribute("aria-hidden", "true");
+          measurement.tabIndex = -1;
+          Object.assign(measurement.style, {
+            position: "absolute",
+            visibility: "hidden",
+            width: "max-content",
+            maxWidth: "none",
+            whiteSpace: "nowrap",
+            flex: "none",
+          });
+          button.parentElement.append(measurement);
+          try {
+            return measurement.getBoundingClientRect().width;
+          } finally {
+            measurement.remove();
+          }
+        });
+      expect(naturalActionWidth).toBeGreaterThan(
+        await leadingHeader.evaluate((element) => element.clientWidth),
+      );
+    }
     const leadingContent = await leadingHeader.evaluate((element) => ({
       width: element.clientWidth,
       scrollWidth: element.scrollWidth,
