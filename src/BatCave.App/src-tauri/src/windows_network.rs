@@ -112,7 +112,7 @@ impl EtwQualityTracker {
             ));
         }
 
-        if !snapshot.consumer_started || snapshot.decoded_events == 0 {
+        if !snapshot.consumer_started {
             return EtwQualityDecision::PendingBaseline;
         }
         let Some(heartbeat_age_ms) = snapshot.consumer_heartbeat_age_ms else {
@@ -120,6 +120,9 @@ impl EtwQualityTracker {
                 "network_attribution_consumer_heartbeat_missing".to_string(),
             );
         };
+        if snapshot.decoded_events == 0 {
+            return EtwQualityDecision::PendingBaseline;
+        }
         if self.needs_clean_interval
             && (decoded_delta == 0 || heartbeat_age_ms > ETW_CALLBACK_FRESHNESS_MS)
         {
@@ -1394,6 +1397,15 @@ mod tests {
         assert_eq!(
             quality.evaluate(query_failed),
             EtwQualityDecision::Unavailable("network_attribution_query_trace_failed:5".to_string())
+        );
+
+        let mut no_heartbeat = health(true, 0, 0, Ok(EtwSessionStatistics::default()));
+        no_heartbeat.consumer_heartbeat_age_ms = None;
+        assert_eq!(
+            quality.evaluate(no_heartbeat),
+            EtwQualityDecision::Unavailable(
+                "network_attribution_consumer_heartbeat_missing".to_string()
+            )
         );
     }
 
