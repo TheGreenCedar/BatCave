@@ -36,13 +36,9 @@ function assertWorkflowCoverage(release, validation) {
     ["validation linux", workflowJob(validation, "linux")],
     ["validation macos", workflowJob(validation, "macos")],
   ]) {
+    assert.match(job, activeTestPattern(DMG_CAPTURE_TEST), `${label} must actively run ${DMG_CAPTURE_TEST}`);
     assert.match(job, activeTestPattern(), `${label} must actively run ${WORKFLOW_TEST}`);
   }
-  assert.match(
-    workflowJob(validation, "linux"),
-    activeTestPattern(DMG_CAPTURE_TEST),
-    `validation linux must actively run ${DMG_CAPTURE_TEST}`,
-  );
 }
 
 function commentActiveTest(source, id, testScript = WORKFLOW_TEST) {
@@ -381,40 +377,27 @@ test("validation and release workflows execute this contract", () => {
   assertWorkflowCoverage(release, validation);
 });
 
-test("workflow coverage rejects commented-out contract test commands", () => {
+test("workflow coverage rejects commented-out or removed persistence test commands", () => {
   const release = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
   const validation = fs.readFileSync(path.join(ROOT, ".github/workflows/validation.yml"), "utf8");
-  assert.throws(
-    () =>
-      assertWorkflowCoverage(commentActiveTest(release, "prepare"), validation),
-    /release prepare must actively run/u,
-  );
-  assert.throws(
-    () =>
-      assertWorkflowCoverage(release, commentActiveTest(validation, "linux")),
-    /validation linux must actively run/u,
-  );
-  assert.throws(
-    () =>
-      assertWorkflowCoverage(release, commentActiveTest(validation, "macos")),
-    /validation macos must actively run/u,
-  );
-  assert.throws(
-    () =>
-      assert.match(
-        workflowJob(commentActiveTest(validation, "linux", DMG_CAPTURE_TEST), "linux"),
-        activeTestPattern(DMG_CAPTURE_TEST),
-        `validation linux must actively run ${DMG_CAPTURE_TEST}`,
-      ),
-    /validation linux must actively run scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u,
-  );
-  assert.throws(
-    () =>
-      assert.match(
-        workflowJob(removeActiveTest(validation, "linux", DMG_CAPTURE_TEST), "linux"),
-        activeTestPattern(DMG_CAPTURE_TEST),
-        `validation linux must actively run ${DMG_CAPTURE_TEST}`,
-      ),
-    /validation linux must actively run scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u,
-  );
+  for (const [label, workflow, id] of [
+    ["release prepare", release, "prepare"],
+    ["validation linux", validation, "linux"],
+    ["validation macos", validation, "macos"],
+  ]) {
+    const expected = new RegExp(
+      `${label} must actively run scripts/capture-macos-dmg-current-user-persistence\\.test\\.mjs`,
+      "u",
+    );
+
+    for (const mutate of [
+      (source) => commentActiveTest(source, id, DMG_CAPTURE_TEST),
+      (source) => removeActiveTest(source, id, DMG_CAPTURE_TEST),
+    ]) {
+      const mutated = mutate(workflow);
+      const mutatedRelease = workflow === release ? mutated : release;
+      const mutatedValidation = workflow === validation ? mutated : validation;
+      assert.throws(() => assertWorkflowCoverage(mutatedRelease, mutatedValidation), expected);
+    }
+  }
 });

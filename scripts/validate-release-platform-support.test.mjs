@@ -94,6 +94,15 @@ function commentActiveTest(source, id) {
   return source.replace(job, commented);
 }
 
+function removeActiveTest(source, id) {
+  const job = workflowJob(source, id);
+  const removed = job.replace(activeTestPattern({ capture: true }), (command) =>
+    command.replace(WORKFLOW_TEST, ""),
+  );
+  assert.notEqual(removed, job, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  return source.replace(job, removed);
+}
+
 function shellReadonly(source, name) {
   const match = new RegExp(`^readonly ${RegExp.escape(name)}=(?:"([^"]+)"|([^\\s]+))$`, "mu").exec(
     source,
@@ -1206,7 +1215,7 @@ test("release and validation workflows run the focused platform contract tests",
   assertWorkflowCoverage(releaseWorkflow, validationWorkflow);
 });
 
-test("workflow coverage rejects commented-out platform test commands", () => {
+test("workflow coverage rejects commented-out or removed platform test commands", () => {
   const releaseWorkflow = fs.readFileSync(
     path.join(ROOT, ".github", "workflows", "release.yml"),
     "utf8",
@@ -1215,18 +1224,19 @@ test("workflow coverage rejects commented-out platform test commands", () => {
     path.join(ROOT, ".github", "workflows", "validation.yml"),
     "utf8",
   );
-  for (const [label, release, validation] of [
-    ["release prepare", commentActiveTest(releaseWorkflow, "prepare"), validationWorkflow],
-    ["validation linux", releaseWorkflow, commentActiveTest(validationWorkflow, "linux")],
-    [
-      "validation macos",
-      releaseWorkflow,
-      commentActiveTest(validationWorkflow, "macos"),
-    ],
+  for (const [label, source, id, targetsRelease] of [
+    ["release prepare", releaseWorkflow, "prepare", true],
+    ["validation linux", validationWorkflow, "linux", false],
+    ["validation macos", validationWorkflow, "macos", false],
   ]) {
-    assert.throws(
-      () => assertWorkflowCoverage(release, validation),
-      new RegExp(`${label} must actively run`, "u"),
-    );
+    for (const mutate of [commentActiveTest, removeActiveTest]) {
+      const mutated = mutate(source, id);
+      const release = targetsRelease ? mutated : releaseWorkflow;
+      const validation = targetsRelease ? validationWorkflow : mutated;
+      assert.throws(
+        () => assertWorkflowCoverage(release, validation),
+        new RegExp(`${label} must actively run`, "u"),
+      );
+    }
   }
 });
