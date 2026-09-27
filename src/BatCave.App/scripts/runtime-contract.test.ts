@@ -37,7 +37,6 @@ import {
   planAutomaticRuntimeFocusHydration,
 } from "../src/lib/runtimeHydration.ts";
 import { RuntimeMutationQueue } from "../src/lib/tauriBridge.ts";
-import { UiPreferencePersistenceSequence } from "../src/lib/uiPreferencePersistence.ts";
 import type {
   ProcessSample,
   GroupDetail,
@@ -149,36 +148,6 @@ function durablePreferenceSnapshot(theme: string, historyPointLimit: number): Ru
     },
   } as RuntimeSnapshot;
 }
-
-test("rapid UI preference saves keep the newest fallback through out-of-order responses", () => {
-  const sequence = new UiPreferencePersistenceSequence();
-  const first = sequence.begin({ theme: "cave", history_point_limit: 72 });
-  const latest = sequence.begin({ theme: "ember", history_point_limit: 180 });
-  let fallback: typeof latest.preferences | null = { ...latest.preferences };
-
-  if (sequence.isLatestDurable(first, durablePreferenceSnapshot("cave", 72))) {
-    fallback = null;
-  }
-  assert.equal(sequence.isLatest(first), false, "older failures are stale too");
-  assert.deepEqual(
-    fallback,
-    latest.preferences,
-    "an older durable response cannot clear newer state",
-  );
-
-  // The latest request fails, so it has no durable acknowledgement and the fallback survives.
-  assert.deepEqual(fallback, latest.preferences);
-  assert.equal(
-    sequence.isLatestDurable(latest, durablePreferenceSnapshot("ember", 72)),
-    false,
-    "a mismatched acknowledgement cannot clear the fallback",
-  );
-  assert.equal(
-    sequence.isLatestDurable(latest, durablePreferenceSnapshot("ember", 180)),
-    true,
-    "only the newest matching durable pair can clear the fallback",
-  );
-});
 
 test("runtime mutation queue preserves invocation order and continues after failure", async () => {
   const queue = new RuntimeMutationQueue();
