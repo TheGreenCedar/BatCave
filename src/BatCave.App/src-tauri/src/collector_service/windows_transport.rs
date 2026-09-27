@@ -344,13 +344,13 @@ fn verify_pipe_peer(
         .map_err(|error| error.to_string())
 }
 
-pub(super) struct TokenEvidence {
-    pub(super) session_id: u32,
-    pub(super) principal_identity: [u8; 32],
+pub(crate) struct TokenEvidence {
+    pub(crate) session_id: u32,
+    pub(crate) principal_identity: [u8; 32],
     pub(super) elevated: bool,
 }
 
-pub(super) fn token_evidence(token: HANDLE) -> Result<TokenEvidence, String> {
+pub(crate) fn token_evidence(token: HANDLE) -> Result<TokenEvidence, String> {
     let user = token_user_information(token)?;
     let token_user = unsafe { &*(user.as_ptr().cast::<TOKEN_USER>()) };
     if token_user.User.Sid.is_null() || unsafe { IsValidSid(token_user.User.Sid) } == 0 {
