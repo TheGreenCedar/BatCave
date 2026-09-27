@@ -199,6 +199,7 @@ mod macos {
         MountTimeout,
         CopyTimeout,
         SupervisionSettlementFailure,
+        DetachSupervisionSettlementFailure,
         CleanupFailure,
     }
 
@@ -231,6 +232,7 @@ mod macos {
         replacement_image_bytes: Vec<u8>,
         mounted: bool,
         force_cleanup_failure: bool,
+        fail_detach_after_spawn: bool,
         unsettled_process: Option<UnsettledProcess>,
     }
 
@@ -279,6 +281,7 @@ mod macos {
                 replacement_image_bytes,
                 mounted: false,
                 force_cleanup_failure: false,
+                fail_detach_after_spawn: false,
                 unsettled_process: None,
             })
         }
@@ -290,6 +293,7 @@ mod macos {
             if fault == Fault::CleanupFailure {
                 self.force_cleanup_failure = true;
             }
+            self.fail_detach_after_spawn = fault == Fault::DetachSupervisionSettlementFailure;
 
             if !self.image_binding_matches() {
                 return self.finish(
@@ -582,15 +586,27 @@ mod macos {
 
             if self.mounted || mount_is_active(&self.mount_point) {
                 self.mounted = true;
-                if self.detach().is_err() {
+                if let Err(error) = self.detach() {
+                    eprintln!("owned_fixture_cleanup:stage=detach;error={error}");
                     disposition = Disposition::RetainedCleanupFailed;
                     retained_boundary = Some(FailureBoundary::Cleanup);
                 }
             }
-            self.source.take();
-            if retained_boundary.is_none() && self.cleanup_root().is_err() {
-                disposition = Disposition::RetainedCleanupFailed;
-                retained_boundary = Some(FailureBoundary::Cleanup);
+            // Detach is another owned process: its supervision can retain a child
+            // even when all earlier destination commands had already settled.
+            let process_settled = self.unsettled_process.is_none();
+            if !process_settled {
+                disposition = Disposition::RetainedProcessUnsettled;
+                retained_boundary = Some(FailureBoundary::Supervision);
+            } else {
+                self.source.take();
+                if retained_boundary.is_none() {
+                    if let Err(error) = self.cleanup_root() {
+                        eprintln!("owned_fixture_cleanup:stage=root;error={error}");
+                        disposition = Disposition::RetainedCleanupFailed;
+                        retained_boundary = Some(FailureBoundary::Cleanup);
+                    }
+                }
             }
 
             ProbeOutcome {
@@ -624,14 +640,27 @@ mod macos {
                 .arg("detach")
                 .arg(&self.mount_point)
                 .args(["-force", "-quiet"]);
+            let fail_after_spawn = std::mem::take(&mut self.fail_detach_after_spawn);
             let result = self
-                .run_owned_process(&mut detach, "detach", NORMAL_TIMEOUT, false)
-                .map_err(|_| io::Error::other("owned fixture detach supervision failed"))?;
+                .run_owned_process(&mut detach, "detach", NORMAL_TIMEOUT, fail_after_spawn)
+                .map_err(|_| {
+                    io::Error::other(format!(
+                        "owned fixture detach supervision failed;unsettled={};mount_active={}",
+                        self.unsettled_process.is_some(),
+                        mount_is_active(&self.mount_point)
+                    ))
+                })?;
             if result.status.success() && !result.timed_out && !mount_is_active(&self.mount_point) {
                 self.mounted = false;
                 Ok(())
             } else {
-                Err(io::Error::other("owned fixture mount did not detach"))
+                Err(io::Error::other(format!(
+                    "owned fixture mount did not detach;status={};timed_out={};mount_active={};stderr={}",
+                    result.status,
+                    result.timed_out,
+                    mount_is_active(&self.mount_point),
+                    String::from_utf8_lossy(&result.stderr)
+                )))
             }
         }
 
@@ -781,13 +810,20 @@ mod macos {
             match run_process(command, &root, label, timeout, fail_after_spawn) {
                 Ok(output) => Ok(output),
                 Err(SupervisionFailure::AfterSpawn(process)) => {
+                    eprintln!(
+                        "owned_fixture_supervision:stage={label};after_spawn_unsettled;pid={};process_group={}",
+                        process.child.id(),
+                        process.process_group
+                    );
                     self.unsettled_process = Some(process);
                     Err(())
                 }
-                Err(
-                    SupervisionFailure::BeforeSpawn(error) | SupervisionFailure::Settled(error),
-                ) => {
-                    let _ = error.kind();
+                Err(SupervisionFailure::BeforeSpawn(error)) => {
+                    eprintln!("owned_fixture_supervision:stage={label};before_spawn;error={error}");
+                    Err(())
+                }
+                Err(SupervisionFailure::Settled(error)) => {
+                    eprintln!("owned_fixture_supervision:stage={label};settled;error={error}");
                     Err(())
                 }
             }
@@ -1626,6 +1662,61 @@ mod macos {
         assert!(authority.unsettled_process.is_none());
         assert!(!authority.force_cleanup_failure);
         assert!(!authority.root.as_ref().is_some_and(|root| root.exists()));
+        assert!(!mount_is_active(&authority.mount_point));
+    }
+
+    #[test]
+    fn detach_supervision_failure_retains_source_until_process_settles() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut authority = DestinationAuthority::valid().expect("acquire detach authority");
+        let root = authority.root.clone().expect("owned detach root");
+        let outcome = authority.execute(Fault::DetachSupervisionSettlementFailure);
+
+        assert_eq!(outcome.primary_boundary, FailureBoundary::DeveloperId);
+        assert!(outcome.fixture_dmg_mounted);
+        assert!(outcome.fixture_app_copied);
+        assert!(outcome.image_binding_checks_passed);
+        assert!(outcome.copied_tree_digest_matched);
+        assert!(outcome.destination_revalidation_completed);
+        assert!(outcome.gates.bundle_id);
+        assert!(outcome.gates.version);
+        assert!(outcome.gates.arm64_architecture);
+        assert!(outcome.gates.signature_integrity);
+        assert!(!outcome.gates.developer_id_authority);
+        assert!(!outcome.gates.all_required());
+        assert_eq!(outcome.disposition, Disposition::RetainedProcessUnsettled);
+        assert_eq!(
+            outcome.retained_boundary,
+            Some(FailureBoundary::Supervision)
+        );
+        assert!(outcome.process_started);
+        assert!(!outcome.process_settled, "detach process remains unsettled");
+        assert!(outcome.temporary_residue);
+        assert!(root.exists());
+        assert!(
+            authority.source.is_some(),
+            "unsettled detach retains the image source"
+        );
+        assert!(authority.unsettled_process.is_some());
+        assert_non_claims(&outcome);
+
+        assert!(authority.retry_cleanup().is_err());
+        assert!(authority.unsettled_process.is_some());
+        assert!(
+            authority.source.is_some(),
+            "failed settlement retains the image source"
+        );
+        assert!(root.exists());
+
+        authority
+            .retry_cleanup()
+            .expect("second retry settles detach and cleans retained authority");
+        assert!(authority.unsettled_process.is_none());
+        assert!(authority.source.is_none());
+        assert!(!root.exists());
+        assert!(authority.root.is_none());
         assert!(!mount_is_active(&authority.mount_point));
     }
 
