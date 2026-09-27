@@ -84,7 +84,8 @@ FunctionEnd
   ; Tauri CLI 2.11.4 uses this installer-owned switch for both the Common
   ; Programs and Public Desktop shortcuts. Its Wix migration path bypasses
   ; NoShortcutMode, but the prior Wix uninstall is complete before PREINSTALL,
-  ; so clear that shortcut-only bypass as well. BatCave owns neither surface.
+  ; so clear that shortcut-only bypass as well. The native provisioner owns the
+  ; single recorded CommonPrograms BatCave.lnk; stock Shell mutations stay off.
   StrCpy $NoShortcutMode 1
   StrCpy $WixMode 0
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
@@ -128,7 +129,7 @@ service_install_complete:
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro BATCAVE_REQUIRE_FIXED_INSTALL_DIR
-  ; The native retirement gate owns the only shared-shortcut deletion. Keep the
+  ; Native ownership cleanup and historical retirement own shared deletion. Keep the
   ; stock uninstaller from reopening either shared path after that gate.
   StrCpy $NoShortcutMode 1
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"

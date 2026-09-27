@@ -1,54 +1,57 @@
-# Automatic Windows Start entries and all-user cleanup
+# Automatic Windows Start entries and ownership cleanup
 
-Status: proposed ownership design for #216, not implemented or qualified. On 2026-09-26 the owner required automatic Start entries and guaranteed cleanup for every user. Manual cleanup and removing automatic discoverability do not satisfy that requirement.
+Status: installer-owned CommonPrograms implementation for #216; exact-package native lifecycle qualification remains required. The owner approved a shared Start entry on 2026-09-27, reversing the earlier shared-entry retirement restriction. Windows support remains `10.0.16299` or later. This mechanism needs neither sparse MSIX identity nor a new signing prerequisite.
 
-## Current gap
+## Managed projection
 
-`windows_user_launch.rs` creates a missing raw shortcut during an eligible unelevated installed launch. It preserves existing objects and records no creation receipt. Machine uninstall leaves those shortcuts behind. [ADR 0013](decisions/0013-windows-shared-shortcut-retirement.md) describes this current behavior, which does not meet the new requirement.
+The verified per-machine native provisioner owns one ordinary launch entry: `FOLDERID_CommonPrograms\BatCave.lnk`, displayed as **BatCave** in Start. It targets the verified fixed Program Files `BatCave Monitor\batcave-monitor.exe`, with no arguments, that directory as its working directory, the monitor icon, and AppUserModelID `dev.batcave.monitor`. It grants no elevated or service authority. Stock Tauri shortcut creation and deletion remain disabled. The historical `BatCave Monitor.lnk` retirement gate remains separate.
 
-Keep installer-owned App Paths and the LocalSystem collector lifecycle. Preserve shared-shortcut retirement, retained user data, standard-access fallback, and rejection of foreign objects. Do not enumerate profiles, load arbitrary user hives, infer the initiating user from elevation, or delete links based only on their name or target.
+The GUI no longer creates raw per-user links. The shared projection covers current, logged-out and future users without profile enumeration, loading user hives, or interpreting over-the-shoulder elevation as a user-selection API. App Paths, service authentication and retained user data keep their existing contracts.
 
-## Candidate: Windows-owned package projection
+## Creation and recovery
 
-First qualify a signed sparse MSIX identity package with an external location beside the existing NSIS installation. Windows would own Start entries through its deployment database, while NSIS would still own the executable directory and service. Microsoft documents [external-location identity packages](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps); this requires trusted package signing and Windows build 19041 or later. It is a feasibility candidate, not a promise that current BatCave packaging already supports it.
+The provisioner pins the OS-resolved CommonPrograms ancestry and the verified install directory without following reparse points. Directory pins request actual directory read access and deny delete sharing; every operation revalidates their file identity and handle-returned path. CommonPrograms keeps its ordinary Shell permissions, including user deletion where Windows grants it. Its ACL is never rewritten.
 
-Use visible manifest visual elements: the identity-only sample's `AppListEntry="none"` deliberately hides the app. User pinning remains separate from automatic All Apps discoverability.
+Creation uses exclusive native `NtCreateFile(FILE_CREATE)` on a fixed inert `BatCave-start-entry.tmp` relative to the pinned CommonPrograms directory handle. Fixed-component opens and creation use `OBJ_DONT_REPARSE` and non-directory/no-reparse options; there is no path-based fallback. A directory pin blocks reparenting but cannot by itself stop metadata-only in-place junction conversion. The native relative operation rejects that converted root before creating outside it. The leaf has an Administrators-owned protected DACL: SYSTEM and Administrators may write, ordinary users may read. The provisioner confirms its newly created identity before writing, then writes and flushes complete native ShellLink bytes while retaining the creation handle. It writes and flushes the protected immutable `start-entry.v1.json` relative to the pinned Program Files product directory handle. The receipt records the fixed target and root, volume/file identity, creation time, byte size, content digest, and owner/DACL digest. A readable description, nonce, name or matching target is never creation authority.
 
-Compatibility gate: BatCave's current Windows contract remains `10.0.16299` or later. External-location package identity requires build `19041`; skipping registration on builds 16299-19040 does not satisfy automatic Start discovery and guaranteed all-user cleanup there. Before implementation, qualify another ownership mechanism for that supported range or obtain explicit approval to change the support contract and release/upgrade qualification matrix. This proposal does not raise the Windows floor.
+Only after recording does `NtSetInformationFile(FileRenameInformation)` publish the same object as `BatCave.lnk`, relative to the pinned CommonPrograms handle, with replacement disabled. Every destination ancestor remains pinned and revalidated. Staging and publication stay on the same volume, even when the install directory is elsewhere. Microsoft's [native file creation](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile), [object attributes](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_object_attributes) and [rename information](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information) describe these native operations; qualification on the existing oldest Windows build remains required.
 
 ```mermaid
 flowchart LR
-    Install[Verified NSIS transaction] --> Stage[Stage signed fixed identity at verified external location]
-    Stage --> Provision[Provision fixed package family]
-    Provision --> Start[Windows-owned Start entries]
-    Uninstall[Verified uninstall transaction] --> Deprovision[Deprovision family]
-    Deprovision --> Remove[Remove matching package full names for all users]
-    Remove --> Observe[Confirm registration and provisioning absence]
-    Observe --> Binaries[Allow external binary removal]
+    Create[Exclusive inert staging object] --> Record[Flush immutable protected ownership receipt]
+    Record --> Publish[Same-handle no-replace publication]
+    Publish --> Observe[Verify original identity, bytes and security]
+    Cleanup[Verified uninstall] --> Delete[Same-handle owned leaf deletion]
+    Delete --> Absent[Confirm fixed leaf paths absent]
+    Absent --> Receipt[Delete ownership receipt]
+    Receipt --> Binaries[Allow installer binary removal]
 ```
 
-Use the OS package database to enumerate only the fixed family across users. Deprovision by **family name**, then remove each verified matching **full name** with `RemoveForAllUsers`; do not copy current-user-only enumeration from a sample. The API references define [provisioning](https://learn.microsoft.com/en-us/uwp/api/windows.management.deployment.packagemanager.provisionpackageforallusersasync), [deprovisioning](https://learn.microsoft.com/en-us/uwp/api/windows.management.deployment.packagemanager.deprovisionpackageforallusersasync), and [all-user removal](https://learn.microsoft.com/en-us/uwp/api/windows.management.deployment.removaloptions).
-
-## Work and acceptance order
-
-| Work | Acceptance evidence |
+| Observed state | Action |
 |---|---|
-| Bind publisher, name, family, version and external location | Exact signed package and manifest identity; reject colliding/foreign registrations without adopting them. Choose credentials before production signing changes. |
-| Scope desktop identity | Apply identity only to the monitor. `build.rs` currently embeds the release manifest through global linker arguments; service, proof and test binaries must not inherit GUI identity. |
-| Transfer Start-entry ownership | Disable the `windows_user_launch` raw-link creation path when package projection becomes the owner. Repeated launch, repair and concurrent stale processes must not create fresh raw links outside package cleanup; prove this during the transition. |
-| Integrate install, update and repair | Observe deployment results and read them back. Define retry, concurrent registration and user-removed-package repair behavior. Candidate failure restores the prior registration and service generation. |
-| Integrate uninstall | Remove all-user registration/provisioning before deleting external binaries. Failure keeps launch targets intact and reports incomplete cleanup; recovery must also handle later service-removal failure. |
-| Qualify native activation and data | Start launches the exact installed monitor with current WebView/native resources. Settings/cache remain governed by the existing retention policy. |
-| Resolve historical shortcuts | Establish an explicit migration contract before claiming cleanup of existing raw links; the new package cannot retroactively own them. |
+| No receipt and neither fixed leaf exists | Create a new exclusive projection; uninstall is already complete for this projection. |
+| Valid receipt and exact original staging object | Resume publication on install/repair, or delete that original on uninstall. |
+| Valid receipt and exact original final object | Reuse on repair/update; delete only that pinned original on uninstall. |
+| Receipt present, both leaves absent | Confirm absence, retire the stale receipt; repair may then create a new projection. |
+| No receipt but a staging object remains | Preserve/report ambiguous pre-record crash residue. It is inert, not a cleanup pass. |
+| Missing/invalid receipt, both objects present, or changed identity/content/security | Preserve objects and report incomplete cleanup; never adopt or overwrite them. |
 
-## Historical-link blocker
+A live failure before receipt creation rolls back only the exclusive staging handle. Failed publication retains the recorded staging object and receipt for normal recovery. A partially written receipt after interruption fails closed; it does not authorize publication or deletion. No namespace scan is needed to report the fixed staging residue.
 
-Existing raw links have no trustworthy creation receipt. A new receipt cannot establish who created an old object, and a package's all-user removal cannot delete unrelated raw links. Guaranteed cleanup of historical app-created links therefore remains unresolved under the current no-profile-crawl/no-unowned-deletion constraints. Do not silently narrow #216 to new installations or report platform registration as the completed migration.
+## Cleanup guarantee and ordinary user changes
 
-## Disposable Windows proof
+Install and upgrade preflight ownership before service mutation; the final launch-registration gate is coupled to existing service rollback. Uninstall checks ownership before service mutation and removes the projection and receipt before NSIS may remove target binaries. Service-absent recovery uses the same cleanup. Errors abort native success, leaving target binaries available for recovery.
 
-Use genuine standard users A/B, an existing logged-out user C, a newly created user, and an over-the-shoulder administrator. Prove automatic Start discovery and activation, repeat launch, repair, upgrade, rejected signatures/identities/locations, interrupted deployment, and rollback. Then exercise uninstall separately through Apps & Features, admin and SYSTEM paths. Verify all-user registration and provisioning absence, no broken package-owned Start entry after another login, no new-user reprojection, and retained user data. Preserve user-created collisions and record legacy links separately.
+Cleanup guarantees removal of the **unchanged recorded current projection** for all users. The shared parent remains ordinarily mutable: users may delete, move or replace links and create their own copies or pins. A changed object at the managed path is preserved and reported incomplete. A moved object outside that fixed path becomes user-managed state; the installer does not search for or delete it. If both fixed leaf paths are absent, that projection is absent, without claiming that arbitrary user copies are gone. File IDs alone are insufficient: recovery also requires exact creation/content binding and an independently trusted owner and protected DACL.
 
-Qualify the oldest supported Windows build and the first sparse-capable build, 19041, separately. This needs disposable Windows hosts and exact approved signed artifacts. Hosted compilation cannot replace these observations. #240's historical rc.2 upgrade proof is a separate gate: its existing controller finishes with uninstall and must not be run against an unrelated installed baseline. Coordinate the two evidence packets only after their exact package identities and starting states agree.
+Deletion uses the opened original file handle. The receipt remains until the owned leaf is gone and both fixed paths are observed absent. Cleanup then deletes the receipt and checks both Shell paths again at completion. A replacement observed by either absence check is preserved and prevents success; a late replacement can leave the already retired receipt absent. Later user changes are outside the completed transaction. This is ordinary Shell ownership, separate from the stricter service/installer executable trust boundary.
 
-The current unsigned-release path remains unchanged. This proposal creates a signing prerequisite for the proposed #216 implementation; it does not authorize credentials, paid resources, public releases, or installed lifecycle actions, and it does not close #42, #216, #240 or #76.
+## Historical per-user links
+
+The removed GUI creator left `FOLDERID_Programs\BatCave Monitor.lnk` without ownership receipts. New ownership cannot retroactively distinguish those app-created links from identical user-created links. The owner approved a bounded legacy inventory; deletion still needs a separate reviewed exact-path list. This implementation performs no profile crawl and no name/target-only legacy deletion. Incomplete legacy inventory remains explicit; #216 is not closed by source tests or by cleanup of new projections alone.
+
+## Required native proof
+
+Use exact approved NSIS artifacts on disposable Windows hosts. Prove Start enumeration and activation for standard users, over-the-shoulder administration, a logged-out user and a future user. Exercise fresh install, update, failed update rollback, repeat repair, interrupted staging/receipt/publication, foreign collisions, user changes, and uninstall through Apps & Features, administrator and SYSTEM paths. Observe fixed projection/receipt absence before binary deletion and retained user data afterward. Preserve legacy inventory separately.
+
+Qualify build 16299 and current Windows independently; hosted tests do not establish Start/Search refresh or installed activation. The original historical rc.2 producer is not recovered. #240 now qualifies the approved supported public-package lifecycle, with its strict service/root/rollback regression guards retained. Native environment actions and legacy deletion retain their separate approval gates.
