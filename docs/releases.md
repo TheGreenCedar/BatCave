@@ -14,13 +14,13 @@ Run `node scripts/verify-release-version.mjs <tag>` before building. Build and p
 
 Dispatch `Versioned release` manually from `main` with the tag, channel, and approved 40-character source SHA. The SHA must match both the checked-out commit and the current tip of protected `main`. The workflow has no tag default and does not publish in response to a pushed tag.
 
-Use the default `publish: false` for a dry run. It retains the complete workflow artifact without creating a tag or GitHub Release. Use `publish: true` only for an approved release.
+Use the default `publish: false` for a dry run. It retains the complete workflow artifact and candidate inventory without creating a tag or GitHub Release or moving the public latest release. A dry run still builds packages and invokes the selected signing providers. Use `publish: true` only for an approved release.
 
-The repository owner can merge a PR after its six required checks pass; a second account is not required. Release preparation then requires successful `Validation` on the exact `main` commit. The workflow checks the latest run and attempt, requires all five main validation jobs to pass, and allows only the PR-only dependency review to be skipped. It repeats this check before publication. These reads use the built-in `GITHUB_TOKEN`; no admin-read token or environment reviewer is needed.
+The repository owner can merge a PR after its six required checks pass; a second account is not required. Release preparation then requires successful `Validation` on the exact `main` commit. The workflow checks the latest run and attempt, requires all five main validation jobs to pass, and allows only the PR-only dependency review to be skipped. It repeats this check before publication. These reads use the built-in `GITHUB_TOKEN`; no admin-read token is needed. The default unsigned Windows path needs no release environment approval.
 
 Repository immutable releases must remain enabled. The workflow verifies the published release's immutable state, attestations, and public bytes. It does not read repository administration settings during the build.
 
-Windows packages are not Authenticode-signed. The release workflow has no Azure dependency or Store submission step. All three platforms still require the existing Tauri updater signing key.
+`windows_signing` defaults to `unsigned`, preserving Windows packages without Authenticode or an Azure dependency. Explicit `azure` mode requires the approved signing authority and existing `release` environment described below. Missing readiness, configuration, failed signing, or invalid evidence fails the selected mode; it never falls back to unsigned. Neither mode submits to the Microsoft Store. All three platforms still require the existing Tauri updater signing key.
 
 `macos_signing` defaults to `notarized` and requires the Apple credentials below. A prerelease may explicitly select `adhoc`; that preview is not notarized and its release notes say so. Stable releases reject `adhoc`. A missing or failed Apple credential never silently switches the selected mode.
 
@@ -89,11 +89,27 @@ Published Apple Silicon macOS updater archives run a separate [protected post-pu
 
 After the platform lanes produce sanitized packets for one exact public release, assemble `docs/evidence/releases/<tag>/index.json` and run `node scripts/validate-release-evidence-index.mjs` against it. The index binds packet file digests, release/workflow identity, support profiles, package roles, and selected public assets; it has no passing or accepted disposition. Its successful validation proves only that the review input is internally consistent. Stable-release readiness still depends on live public verification, native platform evidence, and updater proof; a prerelease does not claim those open native checks are complete.
 
-## Optional Windows signing tools
+## Optional Azure Windows signing
 
-Versioned downloads use the ordinary unsigned Windows package configuration and a mandatory Tauri updater signature. The workflow verifies that signature against the embedded public key after packaging. It publishes no Authenticode or Store readiness claim.
+Ordinary local builds and the default `windows_signing: unsigned` release use the existing unsigned Windows package configuration. The release still creates and verifies a mandatory Tauri updater signature against the embedded public key after packaging. It makes no Authenticode or Store readiness claim.
 
-The repository retains `scripts/build-signed-windows-release.ps1` and its Azure Artifact Signing helpers for a future signed distribution. They are not called by the release workflow. Their certificate, timestamp, byte-order, and tamper checks remain intact. The [Store source checklist](store/windows-submission-checklist.md) describes that separate signed distribution; unsigned preview packages do not satisfy it.
+Select `windows_signing: azure` only after reviewing an existing Azure account's verified identity and Public Trust certificate profile, confirming the actual subject matches the pinned `CN=Albert Najjar` contract, and granting the signing principal `Artifact Signing Certificate Profile Signer` at that profile's scope. Historical onboarding and this source configuration do not prove that account or profile is ready. The workflow creates no Azure account, certificate profile, role assignment, or federated credential.
+
+Before enabling dispatch, review the existing GitHub `release` environment's branch restriction and approval model and the federated subject `repo:TheGreenCedar/BatCave:environment:release`. GitHub can automatically create a referenced missing environment; its name alone proves no protection. Set the repository variable `BATCAVE_ARTIFACT_SIGNING_READY` to the exact value `true` only after the account and environment review is approved. This variable is an operator readiness assertion, not an automated protection or identity verification. Preparation rejects unapproved Azure mode before selecting that environment, and the signed job independently requires the same readiness flag. No second-account or repository-administration read token is introduced.
+
+The signed job requires these configured `release` environment variables, rather than workflow inputs:
+
+- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`: the approved OIDC principal and account identifiers.
+- `BATCAVE_ARTIFACT_SIGNING_ENDPOINT`: the exact regional HTTPS `https://<region>.codesigning.azure.net` endpoint.
+- `BATCAVE_ARTIFACT_SIGNING_ACCOUNT` and `BATCAVE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE`: the reviewed account and Public Trust profile.
+
+Only the Azure Windows job receives signing OIDC authority. Its pinned Azure login authenticates the metadata helper's Azure CLI credential; a client secret is not used. The existing Tauri signing secrets remain mandatory. Required inputs are checked before login, and selected-mode success is required before any platform assets are finalized.
+
+`scripts/build-signed-windows-release.ps1` signs the GUI, standalone CLI, collector service, permitted Foundry dependency, generated uninstaller, and outer NSIS installer. It preserves verified Microsoft signatures on upstream files, validates the pinned unsigned Foundry source before its sole re-signing exception, verifies RFC3161 timestamps, and rejects a byte-tampered installer. It creates and verifies the Tauri updater signature only after the Authenticode installer bytes are final. The generated NSIS ownership contract is checked before collection; no signing or rebundling follows updater verification. Manifest generation, checksums, and build provenance then use those same final bytes.
+
+An Azure dry run uses the approved exact main SHA, matching unused version/tag, `windows_signing: azure`, and `publish: false`. Review `windows-signing-evidence-<tag>` for the inner/final signature inventories, certificate and timestamp fingerprints, source and final hashes, post-sign uninstaller, and signing/tamper receipt. This separate workflow artifact is excluded from the public distributable glob. The retained `batcave-release-candidate-<tag>` includes the validated final production inventory and binds it to the source SHA and exact GUI, CLI, and installer digests. Azure mode cannot finalize without that evidence; all candidate rebuilds repeat the check. Artifact retention remains 30 days.
+
+This candidate is concrete signing/build evidence, not clean-machine publisher trust or installed lifecycle proof. Attended Windows trust, tamper, install/update/repair/uninstall checks remain separate qualification. Store submission is optional and requires its own [Store source checklist](store/windows-submission-checklist.md); Authenticode candidate validation accepts signing evidence without a Store preflight receipt.
 
 ## macOS signing and notarization
 

@@ -365,7 +365,7 @@ test("Windows validation and release verify the generated NSIS contract", async 
     "npm run verify:windows-installer-generated",
     releaseInstaller,
   );
-  const windowsReleaseJob = between(release, "\n  windows:\n", "\n  linux:\n");
+  const windowsReleaseJob = between(release, "\n  windows:\n", "\n  windows_signed:\n");
   assert.equal(
     windowsReleaseJob.split(releaseBuild).length - 1,
     1,
@@ -393,6 +393,36 @@ test("Windows validation and release verify the generated NSIS contract", async 
     afterVerification,
     /(?:tauri\s+(?:build|bundle)|sign-artifact\.ps1|signtool\s+sign)/iu,
     "updater verification may inspect the installer but cannot rebuild or mutate it",
+  );
+  const signedWindowsReleaseJob = between(release, "\n  windows_signed:\n", "\n  linux:\n");
+  const signedBuilder = "run: ./scripts/build-signed-windows-release.ps1";
+  assert.equal(
+    signedWindowsReleaseJob.split(signedBuilder).length - 1,
+    1,
+    "the Azure Windows job must finalize signed bytes exactly once",
+  );
+  assert.equal(
+    signedWindowsReleaseJob.split(releaseVerification).length - 1,
+    1,
+    "the Azure Windows job must verify the generated installer exactly once",
+  );
+  assertOrdered(
+    signedWindowsReleaseJob,
+    signedBuilder,
+    "name: Verify generated release NSIS shortcut contract",
+    releaseVerification,
+    "name: Verify finalized Windows updater signature",
+    "name: Collect Windows distributables",
+  );
+  const signedVerificationEnd =
+    signedWindowsReleaseJob.indexOf(releaseVerification) + releaseVerification.length;
+  const signedCollectionStart = signedWindowsReleaseJob.indexOf(
+    "      - name: Collect Windows distributables",
+  );
+  assert.doesNotMatch(
+    signedWindowsReleaseJob.slice(signedVerificationEnd, signedCollectionStart),
+    /(?:tauri\s+(?:build|bundle)|sign-artifact\.ps1|signtool\s+sign|build-signed-windows-release\.ps1)/iu,
+    "Azure updater verification cannot rebuild or mutate the signed installer",
   );
 });
 
