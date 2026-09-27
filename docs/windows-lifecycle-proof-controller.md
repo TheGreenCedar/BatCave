@@ -16,6 +16,8 @@ The rollback operation remains the controller's fixed production provisioner hel
 
 Both plans use the same authenticated worker, settlement and create-new evidence boundaries. Public initial and upgrade-ready receipts have distinct assertions; the public success packet preserves the ordered 28-receipt manifest and exact service generations. Public initial restoration requires running rc6 authority and upgrade-ready restoration requires a clean running rc6 baseline. Unknown observations, a CLI reappearance, shared shortcut residue, mismatched App Paths, an unsettled process or an unbound artifact still fail closed. These source gates do not establish installed qualification; acceptance requires the independently reviewed exact input packet and a successful attended run with its verified sanitized export.
 
+Service-only missing-service restoration retains and revalidates the original monitor and App Paths registration through removal, the desktop phase and failure recovery. It does not run the production install/upgrade launch-projection gate. The public profile requires `BatCave.lnk` and `BatCave-start-entry.tmp` in the OS-resolved Common Programs folder, and `start-entry.v1.json` in the machine product-data root, to remain absent at initial, restoration and final checks. Preexisting or unreadable objects block the proof; the controller does not adopt or delete objects the pinned public uninstallers cannot remove.
+
 ## Fixed architecture
 
 The private Rust proof binary runs as a standard-user parent and one elevated worker. They follow this sequence:

@@ -4,7 +4,7 @@ use super::native::{
     DirectorySnapshot, ElevatedMachineSnapshot, FileSnapshot, ParentCurrentUserAuthority,
     ParentCurrentUserCapturePoint, ParentCurrentUserObjects, ParentCurrentUserResidueTimeline,
     ParentHelperFileSnapshot, ProcessSnapshot, RegistrySnapshot, RegistryView, ServiceSnapshot,
-    VerifiedEvidenceFile,
+    StartEntryResidueSnapshot, VerifiedEvidenceFile,
 };
 use super::private_evidence::{
     parse_private_success_packet, PrivateSuccessPacket, PrivateSuccessPayload,
@@ -160,6 +160,7 @@ struct SanitizedMachineSnapshot {
     service_binary: Observation<SanitizedFileSnapshot>,
     uninstaller: Observation<SanitizedFileSnapshot>,
     legacy_cli: Observation<SanitizedFileSnapshot>,
+    start_entry_residue: StartEntryResidueSnapshot,
     uninstall_registry: Observation<SanitizedRegistrySnapshot>,
     product_processes: Observation<Vec<SanitizedProcessSnapshot>>,
     product_data_root: Observation<SanitizedDirectorySnapshot>,
@@ -1045,6 +1046,7 @@ fn project_machine_snapshot_without_parent_residue(
         service_binary: project_file_observation(&raw.machine.service_binary)?,
         uninstaller: project_file_observation(&raw.machine.uninstaller)?,
         legacy_cli: project_file_observation(&raw.machine.legacy_cli)?,
+        start_entry_residue: raw.machine.start_entry_residue.clone(),
         uninstall_registry: project_registry_observation(&raw.machine.uninstall_registry, &roots)?,
         product_processes: project_process_observation(&raw.machine.product_processes, &roots)?,
         product_data_root: project_directory_observation(
@@ -1600,6 +1602,11 @@ pub(super) fn validate_restoration_machine_authority(
     raw: &ElevatedMachineSnapshot,
     expectation: RestorationAuthorityExpectation,
 ) -> Result<(), String> {
+    if expectation == RestorationAuthorityExpectation::PublicBaselineRunning
+        || cfg!(feature = "private-windows-lifecycle-public-rc6-stable")
+    {
+        raw.machine.start_entry_residue.require_absent()?;
+    }
     let service = project_service_projection(
         &raw.machine.service,
         &raw.machine.service_binary,
@@ -3580,6 +3587,9 @@ fn validate_stage_machine_assertion(
     machine: &SanitizedMachineSnapshot,
     plan: &ProofPlan,
 ) -> Result<(), String> {
+    if plan.is_public_pair() {
+        machine.start_entry_residue.require_absent()?;
+    }
     match assertion {
         SanitizedEvidenceAssertion::InitialLegacyStopped => {
             validate_installed_machine(
@@ -5573,6 +5583,65 @@ mod tests {
     }
 
     #[test]
+    fn public_start_entry_residue_is_rejected_at_initial_restoration_and_final_cleanup() {
+        let mut plan = parse_plan().expect("plan");
+        plan.profile = crate::windows_lifecycle_proof_contract::PUBLIC_PAIR_PROFILE.to_string();
+        let baseline = installed_machine(
+            baseline_artifacts(&plan),
+            ServiceExpectation::Running,
+            false,
+        );
+        for index in 0..3 {
+            for observation in [
+                Observation::Present(()),
+                Observation::Unknown("fixture read denied".to_string()),
+            ] {
+                let mut residue = StartEntryResidueSnapshot::absent();
+                match index {
+                    0 => residue.common_start_menu_entry = observation,
+                    1 => residue.common_start_menu_temporary = observation,
+                    _ => residue.ownership_receipt = observation,
+                }
+                let mut initial = baseline.clone();
+                initial.start_entry_residue = residue.clone();
+                let original = initial.clone();
+                let expected =
+                    Err("lifecycle_public_start_entry_residue_present_or_unknown".to_string());
+                assert_eq!(
+                    validate_stage_machine_assertion(
+                        SanitizedEvidenceAssertion::InitialPublicRunning,
+                        &initial,
+                        &plan,
+                    ),
+                    expected,
+                );
+                let raw = raw_machine(&initial);
+                assert_eq!(
+                    validate_restoration_machine_authority(
+                        &raw,
+                        RestorationAuthorityExpectation::PublicBaselineRunning,
+                    ),
+                    expected,
+                );
+                let mut uninstalled = absent_machine(true);
+                uninstalled.start_entry_residue = residue;
+                assert_eq!(
+                    validate_stage_machine_assertion(
+                        SanitizedEvidenceAssertion::FinalUninstalledPreservingDeclaredCurrentUserObjects,
+                        &uninstalled,
+                        &plan,
+                    ),
+                    expected,
+                );
+                assert_eq!(
+                    initial, original,
+                    "rejection must preserve unowned observations"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn public_baseline_requires_running_authority_and_absent_legacy_components() {
         let mut plan = parse_plan().expect("plan");
         let historical: ProofPlan =
@@ -7098,6 +7167,7 @@ mod tests {
                 service_binary: raw_observation(&machine.service_binary, raw_file),
                 uninstaller: raw_observation(&machine.uninstaller, raw_file),
                 legacy_cli: raw_observation(&machine.legacy_cli, raw_file),
+                start_entry_residue: machine.start_entry_residue.clone(),
                 uninstall_registry: raw_observation(&machine.uninstall_registry, |registry| {
                     RegistrySnapshot {
                         view: if registry.view == "32" {
@@ -8254,6 +8324,7 @@ mod tests {
         };
         SanitizedMachineSnapshot {
             service: Observation::Present(service_snapshot),
+            start_entry_residue: StartEntryResidueSnapshot::absent(),
             install_root: Observation::Present(directory(LogicalRoot::Install, "")),
             monitor: Observation::Present(file(artifacts.monitor_sha256)),
             service_binary: Observation::Present(file_with_size(
@@ -8360,6 +8431,7 @@ mod tests {
     fn absent_machine(preserve_unknown_sentinel: bool) -> SanitizedMachineSnapshot {
         SanitizedMachineSnapshot {
             service: Observation::Absent,
+            start_entry_residue: StartEntryResidueSnapshot::absent(),
             install_root: Observation::Absent,
             monitor: Observation::Absent,
             service_binary: Observation::Absent,

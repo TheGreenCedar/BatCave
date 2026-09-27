@@ -684,6 +684,7 @@ mod tests {
                 service_binary: Observation::Absent,
                 uninstaller: Observation::Absent,
                 legacy_cli: Observation::Absent,
+                start_entry_residue: super::super::native::StartEntryResidueSnapshot::absent(),
                 uninstall_registry: Observation::Present(super::super::native::RegistrySnapshot {
                     view: RegistryView::Registry64,
                     install_location: r"C:\Program Files\BatCave Monitor".to_string(),

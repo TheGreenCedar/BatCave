@@ -103,8 +103,8 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_LocalAppData, GetUserProfileDirectoryW, SHGetKnownFolderPath, ShellExecuteExW,
-    SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    FOLDERID_CommonPrograms, FOLDERID_LocalAppData, GetUserProfileDirectoryW, SHGetKnownFolderPath,
+    ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SW_HIDE,
@@ -243,8 +243,41 @@ pub(crate) struct PreflightSnapshot {
     pub(crate) service_binary: Observation<FileSnapshot>,
     pub(crate) uninstaller: Observation<FileSnapshot>,
     pub(crate) legacy_cli: Observation<FileSnapshot>,
+    pub(crate) start_entry_residue: StartEntryResidueSnapshot,
     pub(crate) uninstall_registry: Observation<RegistrySnapshot>,
     pub(crate) product_processes: Observation<Vec<ProcessSnapshot>>,
+}
+
+// Presence is enough to reject these objects. This proof never adopts, opens for
+// writing, or deletes projections that the pinned public uninstallers do not own.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StartEntryResidueSnapshot {
+    pub(crate) common_start_menu_entry: Observation<()>,
+    pub(crate) common_start_menu_temporary: Observation<()>,
+    pub(crate) ownership_receipt: Observation<()>,
+}
+
+impl StartEntryResidueSnapshot {
+    pub(crate) fn require_absent(&self) -> Result<(), String> {
+        if matches!(self.common_start_menu_entry, Observation::Absent)
+            && matches!(self.common_start_menu_temporary, Observation::Absent)
+            && matches!(self.ownership_receipt, Observation::Absent)
+        {
+            Ok(())
+        } else {
+            Err("lifecycle_public_start_entry_residue_present_or_unknown".to_string())
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn absent() -> Self {
+        Self {
+            common_start_menu_entry: Observation::Absent,
+            common_start_menu_temporary: Observation::Absent,
+            ownership_receipt: Observation::Absent,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -4242,9 +4275,67 @@ pub(crate) fn capture_machine_snapshot(controller_bindings: &[PeerBinding]) -> P
         service_binary: observe_file(Path::new(SERVICE_PATH), "service_binary"),
         uninstaller: observe_file(Path::new(UNINSTALLER_PATH), "uninstaller"),
         legacy_cli: observe_file(Path::new(LEGACY_CLI_PATH), "legacy_cli"),
+        start_entry_residue: observe_start_entry_residue(),
         uninstall_registry: observe_uninstall_registry(),
         product_processes: observe_product_processes(controller_bindings),
     }
+}
+
+fn observe_start_entry_residue() -> StartEntryResidueSnapshot {
+    let programs = common_programs_for_start_entry_proof();
+    let (common_start_menu_entry, common_start_menu_temporary) = match programs {
+        Ok(root) => (
+            observe_start_entry_leaf(&root.join("BatCave.lnk")),
+            observe_start_entry_leaf(&root.join("BatCave-start-entry.tmp")),
+        ),
+        Err(reason) => (
+            Observation::Unknown(reason.clone()),
+            Observation::Unknown(reason),
+        ),
+    };
+    let ownership_receipt =
+        match crate::collector_service::windows_provisioner::data_roots_for_proof() {
+            Ok((product, _)) => observe_start_entry_leaf(&product.join("start-entry.v1.json")),
+            Err(reason) => Observation::Unknown(reason),
+        };
+    StartEntryResidueSnapshot {
+        common_start_menu_entry,
+        common_start_menu_temporary,
+        ownership_receipt,
+    }
+}
+
+fn observe_start_entry_leaf(path: &Path) -> Observation<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Observation::Present(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Observation::Absent,
+        Err(error) => Observation::Unknown(format!(
+            "lifecycle_start_entry_metadata_failed:{}",
+            error.raw_os_error().unwrap_or_default()
+        )),
+    }
+}
+
+fn common_programs_for_start_entry_proof() -> Result<PathBuf, String> {
+    let mut value = null_mut();
+    let result =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_CommonPrograms, 0, null_mut(), &mut value) };
+    if result < 0 || value.is_null() {
+        return Err("lifecycle_common_programs_query_failed".to_string());
+    }
+    let mut length = 0_usize;
+    while unsafe { *value.add(length) } != 0 {
+        length += 1;
+        if length > WINDOWS_PATH_BUFFER_SIZE {
+            unsafe { CoTaskMemFree(value.cast()) };
+            return Err("lifecycle_common_programs_path_invalid".to_string());
+        }
+    }
+    let path = PathBuf::from(OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(value, length)
+    }));
+    unsafe { CoTaskMemFree(value.cast()) };
+    Ok(path)
 }
 
 pub(crate) fn capture_elevated_machine_snapshot(
@@ -4480,6 +4571,7 @@ pub(crate) fn require_allowlisted_parent_preflight(
     plan: &ProofPlan,
 ) -> Result<(), String> {
     if plan.is_public_pair() {
+        snapshot.start_entry_residue.require_absent()?;
         require_installed_candidate(snapshot, &plan.baseline, true, "public_start")?;
         let registry = require_present(&snapshot.uninstall_registry, "uninstall_registry")?;
         return validate_allowlisted_product_version(
@@ -4546,6 +4638,9 @@ pub(crate) fn require_installed_candidate(
     expect_legacy_cli_absent: bool,
     label: &str,
 ) -> Result<(), String> {
+    if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        snapshot.start_entry_residue.require_absent()?;
+    }
     let service = require_present(&snapshot.service, label)?;
     if service.state != windows_sys::Win32::System::Services::SERVICE_RUNNING
         || service.process_id == 0
@@ -4782,6 +4877,9 @@ pub(crate) fn require_total_product_absence(
     snapshot: &PreflightSnapshot,
     label: &str,
 ) -> Result<(), String> {
+    if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        snapshot.start_entry_residue.require_absent()?;
+    }
     require_absent(&snapshot.service, &format!("{label}_service"))?;
     require_absent(&snapshot.install_root, &format!("{label}_install_root"))?;
     require_absent(&snapshot.monitor, &format!("{label}_monitor"))?;
@@ -6831,6 +6929,35 @@ impl AlignedBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_start_entry_observer_rejects_and_preserves_fixed_leaf_residue() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-public-start-entry-{}",
+            random_hex(16).expect("unique start-entry scratch")
+        ));
+        fs::create_dir(&root).expect("create start-entry scratch");
+        for leaf in [
+            "BatCave.lnk",
+            "BatCave-start-entry.tmp",
+            "start-entry.v1.json",
+        ] {
+            let path = root.join(leaf);
+            assert_eq!(observe_start_entry_leaf(&path), Observation::Absent);
+            fs::write(&path, b"preexisting unowned object").expect("seed unowned object");
+            assert_eq!(observe_start_entry_leaf(&path), Observation::Present(()));
+            assert_eq!(
+                fs::read(&path).expect("retained object"),
+                b"preexisting unowned object"
+            );
+            fs::remove_file(&path).expect("remove test-owned fixture");
+            fs::create_dir(&path).expect("seed wrong-kind residue");
+            assert_eq!(observe_start_entry_leaf(&path), Observation::Present(()));
+            assert!(path.is_dir(), "observer must preserve wrong-kind residue");
+            fs::remove_dir(&path).expect("remove test-owned directory");
+        }
+        fs::remove_dir(&root).expect("remove empty test-owned scratch");
+    }
 
     struct ScratchEvidence {
         evidence: Option<ProtectedEvidenceRoot>,
