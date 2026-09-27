@@ -7852,15 +7852,15 @@ mod native {
                 store.observe(owner.authority()).unwrap().observation(),
                 &EtwLeaseObservation::Trusted(lease)
             );
-            drop(owner);
             let moved_owner = service.join("replaced-owner.lock");
             assert!(
                 std::fs::rename(&owner_path, &moved_owner).is_err(),
-                "root guard retains the immutable owner identity"
+                "exclusive owner guard prevents owner replacement"
             );
+            drop(owner);
             drop(root);
             std::fs::rename(&owner_path, &moved_owner)
-                .expect("owner identity releases with the root guard");
+                .expect("owner replacement succeeds after guards release");
         }
     }
 
