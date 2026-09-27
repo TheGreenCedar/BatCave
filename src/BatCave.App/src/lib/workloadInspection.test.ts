@@ -104,19 +104,22 @@ test("a response delivered after its pane hides is decoded and acknowledged befo
 });
 
 test("inspection decoder rejects unvalidated details and contradictory history", () => {
-  assert.throws(() =>
-    decodeWorkloadInspection({
-      inspection_version: 1,
-      runtime_protocol_version: 4,
-      stable_id: "A",
-      publication_seq: 2,
-      sample_seq: 2,
-      status: "current",
-      catalog: null,
-      history: [],
-    }),
+  const archive = new FixtureInspectionArchive();
+  const snapshot = makeFixtureSnapshot(8);
+  archive.observe(snapshot);
+  const id = snapshot.process_view_rows[0].detail.workload_id;
+  const wire = { inspection_version: 1, runtime_protocol_version: 4, ...archive.read(id, 72) };
+  assert.equal(decodeWorkloadInspection(wire).row?.detail.workload_id, id);
+  assert.throws(() => decodeWorkloadInspection({ ...wire, catalog: null }));
+  const invalidDetail = structuredClone(wire);
+  assert.ok(invalidDetail.catalog);
+  invalidDetail.catalog.workloads[0].detail.metrics[0][1] = -1;
+  assert.throws(() => decodeWorkloadInspection(invalidDetail), /observation value is invalid/);
+  assert.throws(
+    () => decodeWorkloadInspection({ ...wire, history: [], retained_points: 0 }),
+    /identity or sample is inconsistent/,
   );
-  assert.throws(() => decodeWorkloadInspection({ inspection_version: 2 }));
+  assert.throws(() => decodeWorkloadInspection({ ...wire, inspection_version: 2 }), /malformed/);
 });
 
 test("timestamp chart retains real zero and inserts nulls for gaps", () => {

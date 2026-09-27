@@ -28,6 +28,28 @@ const transitions = fixtureArray(
   "../src-tauri/src/fixtures/runtime-protocol-v4/quality-transitions.json",
 );
 
+test("Overview keeps its complete catalog when the Explore catalog is filtered", () => {
+  const envelope = structuredClone(windows);
+  assert.equal(envelope.event.kind, "runtime_snapshot");
+  if (envelope.event.kind !== "runtime_snapshot") throw new Error("expected snapshot fixture");
+  const expectedIds = envelope.event.payload.overview_workloads.map(
+    (workload) => workload.detail.stable_id,
+  );
+  assert.ok(expectedIds.length > 0);
+  envelope.event.payload.workloads = [];
+  envelope.event.payload.visible_process_count = 0;
+  envelope.event.payload.settings.query.filter_text = "no matching workload";
+  const decoded = decodeProtocolEnvelope(envelope);
+  assert.equal(decoded.kind, "snapshot");
+  if (decoded.kind !== "snapshot") throw new Error(decoded.mismatch.message);
+  const snapshot = adaptRuntimePayload(decoded.payload);
+  assert.deepEqual(snapshot.process_view_rows, []);
+  assert.deepEqual(
+    snapshot.overview_rows.map((row) => row.detail.workload_id),
+    expectedIds,
+  );
+});
+
 test("generated semantic policy is complete, unique, and internally coherent", () => {
   assert.deepEqual(RUNTIME_PROTOCOL_POLICY.quality_codes, [
     "native",

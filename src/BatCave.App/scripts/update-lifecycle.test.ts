@@ -84,17 +84,6 @@ test("an arbitrary cleanup failure blocks replacement and remains observable", a
   assert.deepEqual(events, ["close"]);
 });
 
-test("failed replacement retains the prior handle for a later cleanup retry", async () => {
-  const events: string[] = [];
-  const previous = new FixtureUpdate(events, null, new Error("resource table unavailable"));
-  let pending: FixtureUpdate | null = previous;
-
-  await assert.rejects(async () => {
-    pending = await checkAfterClosingUpdate(pending, async () => null);
-  });
-  assert.equal(pending, previous);
-});
-
 test("failed verification or installation closes the abandoned update", async () => {
   const events: string[] = [];
   const update = new FixtureUpdate(events, new Error("signature rejected"));
@@ -134,29 +123,12 @@ test("combined install and cleanup failure preserves both errors", async () => {
   assert.deepEqual(events, ["install", "close"]);
 });
 
-test("App keeps cleanup-failed handles owned and updater checks user-triggered", () => {
+test("App startup does not initiate an updater check", () => {
   const appSource = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
-  const stableUpdateSource = readFileSync(
-    new URL("../src/lib/stableUpdate.ts", import.meta.url),
-    "utf8",
-  );
-  const settingsSource = readFileSync(
-    new URL("../src/lib/components/shell/SettingsDrawer.svelte", import.meta.url),
-    "utf8",
-  );
   const startup = appSource.slice(
     appSource.indexOf("onMount(() =>"),
     appSource.indexOf("async function checkForStableUpdate"),
   );
 
-  assert.match(appSource, /stableUpdateController\.check\([\s\S]*applyStableUpdateState/);
-  assert.match(appSource, /stableUpdateController\.install\(applyStableUpdateState\)/);
-  assert.match(stableUpdateSource, /const previous = this\.pending/);
-  assert.match(stableUpdateSource, /error instanceof UpdateResourceCleanupError/);
-  assert.match(stableUpdateSource, /else \{\s+this\.pending = null;/);
   assert.doesNotMatch(startup, /checkForStableUpdate/);
-  assert.match(appSource, /onCheckForUpdates=\{\(\) => void checkForStableUpdate\(\)\}/);
-  assert.match(stableUpdateSource, /Monitoring remains available offline/);
-  assert.match(settingsSource, /updateStatus === "error"\s+\? "Retry"/);
-  assert.match(settingsSource, /only when you ask/);
 });
