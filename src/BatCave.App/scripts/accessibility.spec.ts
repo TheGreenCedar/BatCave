@@ -437,6 +437,84 @@ test("system detail stays open after collapsing and restores navigation on dismi
   await expect(page.locator('[data-view="explore"]')).toBeFocused();
 });
 
+test("view navigation restores visible destinations and preserves search and inspector focus", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 430 });
+  await openFixture(page, "overview");
+  await page.locator('.overview-resource-card[data-resource-mode="disk"]').click();
+  const exploreAction = page.getByRole("button", { name: "View all in Explore", exact: true });
+  await exploreAction.scrollIntoViewIfNeeded();
+  await exploreAction.focus();
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await exploreAction.press("Enter");
+  const explore = page.locator(".explore-view");
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(explore).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Workloads", exact: true })).toBeInViewport();
+  const search = page.getByRole("textbox", { name: "Search apps and processes" });
+  await search.fill("retained query");
+  await search.press("Enter");
+  await explore.focus();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await page.keyboard.press("1");
+  await expect(page.locator(".overview-view")).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.keyboard.press("/");
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue("retained query");
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await explore.focus();
+  // Competing synchronous navigation must leave focus on the latest view, not a stale search task.
+  await page.evaluate(() => {
+    for (const key of ["1", "/", "1", "2"]) {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    }
+  });
+  await expect(explore).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.locator('[data-view="overview"]').click();
+  await expect(page.locator(".overview-view")).toBeFocused();
+  await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    for (const key of ["/", "2"]) {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    }
+  });
+  await expect(search, "latest Explore request supersedes pending search focus").not.toBeFocused();
+  await expect(explore).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.locator('[data-view="overview"]').click();
+  await expect(page.locator(".overview-view")).toBeFocused();
+  const workload = page.locator(".overview-workload-list [data-workload-id]").first();
+  const workloadId = await workload.getAttribute("data-workload-id");
+  await workload.scrollIntoViewIfNeeded();
+  await workload.focus();
+  await workload.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Resource detail" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
+  const selectedWorkload = page
+    .locator(`[data-workload-id="${workloadId}"]`)
+    .filter({ visible: true })
+    .first();
+  await selectedWorkload.scrollIntoViewIfNeeded();
+  await selectedWorkload.focus();
+  const sameViewScroll = await page.evaluate(() => window.scrollY);
+  expect(sameViewScroll).toBeGreaterThan(0);
+  await selectedWorkload.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(sameViewScroll);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(selectedWorkload).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(sameViewScroll);
+});
+
 test("Overview selection and leading rows survive Explore query controls", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "overview");

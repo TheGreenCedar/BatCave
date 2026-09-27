@@ -19,7 +19,7 @@ pub(crate) struct EtwSessionProofSnapshot {
 }
 
 #[cfg(any(windows, test))]
-const ETW_CONSUMER_STALL_MS: u64 = 5_000;
+const ETW_CALLBACK_FRESHNESS_MS: u64 = 5_000;
 
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -60,6 +60,7 @@ struct EtwHealthSnapshot {
 enum EtwQualityDecision {
     Native,
     PendingBaseline,
+    Held(String),
     DataLoss(String),
     Unavailable(String),
 }
@@ -119,27 +120,48 @@ impl EtwQualityTracker {
                 "network_attribution_consumer_heartbeat_missing".to_string(),
             );
         };
-        if heartbeat_age_ms > ETW_CONSUMER_STALL_MS {
-            return EtwQualityDecision::Unavailable(format!(
-                "network_attribution_consumer_stalled:{heartbeat_age_ms}ms"
-            ));
-        }
-
         if snapshot.decoded_events == 0 {
             return EtwQualityDecision::PendingBaseline;
         }
-
-        if self.needs_clean_interval {
-            if decoded_delta == 0 {
-                return EtwQualityDecision::DataLoss(
-                    "ETW process-network attribution is waiting for a clean decoded interval after data loss."
-                        .to_string(),
-                );
-            }
-            self.needs_clean_interval = false;
+        if self.needs_clean_interval
+            && (decoded_delta == 0 || heartbeat_age_ms > ETW_CALLBACK_FRESHNESS_MS)
+        {
+            return EtwQualityDecision::DataLoss(
+                "ETW process-network attribution is waiting for a clean decoded interval after data loss."
+                    .to_string(),
+            );
         }
 
+        // Event/buffer callbacks are delivery evidence, not a periodic liveness
+        // heartbeat: FlushTimer does not deliver empty buffers during quiet traffic.
+        if heartbeat_age_ms > ETW_CALLBACK_FRESHNESS_MS {
+            return EtwQualityDecision::Held(format!(
+                "Network attribution is waiting for fresh ETW delivery ({heartbeat_age_ms} ms since the last callback)."
+            ));
+        }
+
+        self.needs_clean_interval = false;
+
         EtwQualityDecision::Native
+    }
+}
+
+#[cfg(any(windows, test))]
+fn sample_from_etw_quality(
+    decision: EtwQualityDecision,
+    rates_by_process: HashMap<ObservedProcessGeneration, ProcessNetworkRates>,
+) -> NetworkAttributionSample {
+    match decision {
+        EtwQualityDecision::Native => NetworkAttributionSample::Ready { rates_by_process },
+        EtwQualityDecision::PendingBaseline => NetworkAttributionSample::PendingBaseline(
+            "Waiting for a supported ETW process-network event baseline.".to_string(),
+        ),
+        EtwQualityDecision::Held(message) => NetworkAttributionSample::Held(message),
+        EtwQualityDecision::DataLoss(message) => NetworkAttributionSample::Partial {
+            rates_by_process,
+            message,
+        },
+        EtwQualityDecision::Unavailable(message) => NetworkAttributionSample::Failed(message),
     }
 }
 
@@ -392,7 +414,7 @@ mod windows_impl {
     use super::EtwSessionProofSnapshot;
     use super::{
         apply_network_event, classify_direction, first_matching_property, rate_map_from_deltas,
-        EtwHealthSnapshot, EtwQualityDecision, EtwQualityTracker, EtwSessionStatistics,
+        sample_from_etw_quality, EtwHealthSnapshot, EtwQualityTracker, EtwSessionStatistics,
         NetworkAttributionSample, NetworkByteCounters, NetworkDirection, ObservedProcessGeneration,
     };
     use crate::collector_service::etw_lease::{EtwSessionIdentityV1, EtwSessionObservation};
@@ -594,19 +616,7 @@ mod windows_impl {
                 }
             };
 
-            match decision {
-                EtwQualityDecision::Native => NetworkAttributionSample::Ready { rates_by_process },
-                EtwQualityDecision::PendingBaseline => NetworkAttributionSample::PendingBaseline(
-                    "Waiting for a supported ETW process-network event baseline.".to_string(),
-                ),
-                EtwQualityDecision::DataLoss(message) => NetworkAttributionSample::Partial {
-                    rates_by_process,
-                    message,
-                },
-                EtwQualityDecision::Unavailable(message) => {
-                    NetworkAttributionSample::Failed(message)
-                }
-            }
+            sample_from_etw_quality(decision, rates_by_process)
         }
 
         pub fn shutdown(&mut self) -> Result<(), String> {
@@ -1368,6 +1378,7 @@ mod tests {
     fn etw_quality_fails_closed_on_consumer_or_session_failure() {
         let mut quality = EtwQualityTracker::default();
         let mut consumer_failed = health(true, 1, 0, Ok(EtwSessionStatistics::default()));
+        consumer_failed.consumer_heartbeat_age_ms = Some(ETW_CALLBACK_FRESHNESS_MS + 1);
         consumer_failed.consumer_error = Some("network_attribution_process_trace_ended:0".into());
         assert_eq!(
             quality.evaluate(consumer_failed),
@@ -1376,33 +1387,57 @@ mod tests {
             )
         );
 
+        let mut query_failed = health(
+            true,
+            1,
+            0,
+            Err("network_attribution_query_trace_failed:5".to_string()),
+        );
+        query_failed.consumer_heartbeat_age_ms = Some(ETW_CALLBACK_FRESHNESS_MS + 1);
         assert_eq!(
-            quality.evaluate(health(
-                true,
-                1,
-                0,
-                Err("network_attribution_query_trace_failed:5".to_string())
-            )),
+            quality.evaluate(query_failed),
             EtwQualityDecision::Unavailable("network_attribution_query_trace_failed:5".to_string())
+        );
+
+        let mut no_heartbeat = health(true, 0, 0, Ok(EtwSessionStatistics::default()));
+        no_heartbeat.consumer_heartbeat_age_ms = None;
+        assert_eq!(
+            quality.evaluate(no_heartbeat),
+            EtwQualityDecision::Unavailable(
+                "network_attribution_consumer_heartbeat_missing".to_string()
+            )
         );
     }
 
     #[test]
-    fn etw_quality_rejects_a_stalled_consumer_and_restarts_unproven() {
+    fn etw_quality_holds_expired_callback_evidence_and_recovers_on_fresh_delivery() {
         let mut quality = EtwQualityTracker::default();
         assert_eq!(
             quality.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
             EtwQualityDecision::Native
         );
 
-        let mut stalled = health(true, 1, 0, Ok(EtwSessionStatistics::default()));
-        stalled.consumer_heartbeat_age_ms = Some(ETW_CONSUMER_STALL_MS + 1);
+        let mut fresh_boundary = health(true, 1, 0, Ok(EtwSessionStatistics::default()));
+        fresh_boundary.consumer_heartbeat_age_ms = Some(ETW_CALLBACK_FRESHNESS_MS);
+        assert_eq!(quality.evaluate(fresh_boundary), EtwQualityDecision::Native);
+        let mut expired = health(true, 1, 0, Ok(EtwSessionStatistics::default()));
+        expired.consumer_heartbeat_age_ms = Some(ETW_CALLBACK_FRESHNESS_MS + 1);
         assert!(matches!(
-            quality.evaluate(stalled),
-            EtwQualityDecision::Unavailable(message) if message.contains("consumer_stalled")
+            quality.evaluate(expired),
+            EtwQualityDecision::Held(message) if message.contains("fresh ETW delivery")
         ));
+        assert_eq!(
+            quality.evaluate(health(true, 2, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native,
+        );
 
         let mut restarted = EtwQualityTracker::default();
+        let mut no_baseline = health(true, 0, 0, Ok(EtwSessionStatistics::default()));
+        no_baseline.consumer_heartbeat_age_ms = Some(ETW_CALLBACK_FRESHNESS_MS + 1);
+        assert_eq!(
+            restarted.evaluate(no_baseline),
+            EtwQualityDecision::PendingBaseline
+        );
         assert_eq!(
             restarted.evaluate(health(true, 0, 0, Ok(EtwSessionStatistics::default()))),
             EtwQualityDecision::PendingBaseline
@@ -1410,6 +1445,62 @@ mod tests {
         assert_eq!(
             restarted.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
             EtwQualityDecision::Native
+        );
+    }
+
+    #[test]
+    fn etw_quality_requires_fresh_decoded_recovery_after_loss() {
+        let mut quality = EtwQualityTracker::default();
+        assert_eq!(
+            quality.evaluate(health(true, 1, 0, Ok(EtwSessionStatistics::default()))),
+            EtwQualityDecision::Native,
+        );
+        let loss = EtwSessionStatistics {
+            events_lost: 1,
+            ..EtwSessionStatistics::default()
+        };
+        let mut expired = health(true, 2, 0, Ok(loss));
+        expired.consumer_heartbeat_age_ms = Some(ETW_CALLBACK_FRESHNESS_MS + 1);
+        assert!(matches!(
+            quality.evaluate(expired.clone()),
+            EtwQualityDecision::DataLoss(_)
+        ));
+        assert!(matches!(
+            quality.evaluate(expired.clone()),
+            EtwQualityDecision::DataLoss(_)
+        ));
+        expired.decoded_events = 3;
+        assert!(matches!(
+            quality.evaluate(expired.clone()),
+            EtwQualityDecision::DataLoss(_)
+        ));
+        assert!(
+            quality.needs_clean_interval,
+            "expired delivery cannot clear loss recovery"
+        );
+        assert!(matches!(
+            quality.evaluate(expired),
+            EtwQualityDecision::DataLoss(_)
+        ));
+        assert_eq!(
+            quality.evaluate(health(true, 4, 0, Ok(loss))),
+            EtwQualityDecision::Native
+        );
+        assert!(!quality.needs_clean_interval);
+    }
+
+    #[test]
+    fn etw_quality_sample_mapping_keeps_expired_rates_absent() {
+        let rates = HashMap::from([(
+            ObservedProcessGeneration::pid_only(42),
+            ProcessNetworkRates {
+                received_bps: 123,
+                transmitted_bps: 456,
+            },
+        )]);
+        assert_eq!(
+            sample_from_etw_quality(EtwQualityDecision::Held("freshness expired".into()), rates),
+            NetworkAttributionSample::Held("freshness expired".into()),
         );
     }
 

@@ -996,12 +996,10 @@ mod macos {
         fs::copy(&arm64, &executable)?;
         let mut sign = Command::new(CODESIGN);
         sign.args(["--force", "--deep", "--sign", "-"]).arg(&app);
-        require_success(run_fixture_process(
-            &mut sign,
-            root,
+        require_success(
             "fixture-sign",
-            NORMAL_TIMEOUT,
-        )?)?;
+            run_fixture_process(&mut sign, root, "fixture-sign", NORMAL_TIMEOUT)?,
+        )?;
 
         let image = root.join("fixture.dmg");
         let mut create = Command::new(HDIUTIL);
@@ -1009,12 +1007,10 @@ mod macos {
             .args(["create", "-quiet", "-ov", "-format", "UDRO", "-srcfolder"])
             .arg(&image_source)
             .arg(&image);
-        require_success(run_fixture_process(
-            &mut create,
-            root,
+        require_success(
             "fixture-image",
-            NORMAL_TIMEOUT,
-        )?)?;
+            run_fixture_process(&mut create, root, "fixture-image", NORMAL_TIMEOUT)?,
+        )?;
 
         let replacement_source = root.join("replacement-source");
         DirBuilder::new().mode(0o700).create(&replacement_source)?;
@@ -1028,12 +1024,15 @@ mod macos {
             .args(["create", "-quiet", "-ov", "-format", "UDRO", "-srcfolder"])
             .arg(&replacement_source)
             .arg(&replacement);
-        require_success(run_fixture_process(
-            &mut create_replacement,
-            root,
+        require_success(
             "replacement-image",
-            NORMAL_TIMEOUT,
-        )?)?;
+            run_fixture_process(
+                &mut create_replacement,
+                root,
+                "replacement-image",
+                NORMAL_TIMEOUT,
+            )?,
+        )?;
 
         Ok(FixtureTemplate {
             image_bytes: fs::read(image)?,
@@ -1053,19 +1052,24 @@ mod macos {
             ])
             .arg("-o")
             .arg(output);
-        require_success(run_fixture_process(
-            &mut compile,
-            root,
-            &format!("fixture-{target}"),
-            NORMAL_TIMEOUT,
-        )?)
+        let label = format!("fixture-{target}");
+        require_success(
+            &label,
+            run_fixture_process(&mut compile, root, &label, NORMAL_TIMEOUT)?,
+        )
     }
 
-    fn require_success(result: ProcessOutput) -> io::Result<()> {
+    fn require_success(label: &str, result: ProcessOutput) -> io::Result<()> {
         if result.status.success() && !result.timed_out {
             Ok(())
         } else {
-            Err(io::Error::other("fixed fixture command failed"))
+            Err(io::Error::other(format!(
+                "fixed fixture command `{label}` failed ({}; timed_out={}):\nstdout:\n{}\nstderr:\n{}",
+                result.status,
+                result.timed_out,
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            )))
         }
     }
 

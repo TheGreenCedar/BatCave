@@ -9,13 +9,13 @@
       "data_directory": "C:\\Users\\test\\AppData\\Local\\BatCaveMonitor"
     },
     "admin_mode": {
-      "state": "active",
-      "source": "current_process",
+      "state": "off",
+      "source": "none",
       "detail": null,
-      "last_success_at_ms": 1783944000000
+      "last_success_at_ms": null
     },
     "expected_process_label": "Administrator token",
-    "expected_collection_label": "Current process",
+    "expected_collection_label": "Off",
     "expected_package_label": "NSIS install"
   },
   {
