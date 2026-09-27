@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readCargoVersion } from "./verify-release-version.mjs";
 import {
   BUILD_PROVENANCE_ROLE,
   RELEASE_ASSET_PHASE,
@@ -445,6 +446,7 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
       sourceSha,
       false,
       root,
+      "azure",
       signing,
       store,
     );
@@ -455,7 +457,7 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
     unsignedPe.files.find(({ name }) => name === "batcave-monitor.exe").authenticode_status =
       "not_signed";
     assert.throws(
-      () => buildReleaseInventory(stableTag, sourceSha, false, root, unsignedPe, store),
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "azure", unsignedPe, store),
       /not fully verified/u,
     );
     const changedFoundrySource = structuredClone(signing);
@@ -463,7 +465,7 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
       ({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll",
     ).original_sha256 = `sha256:${"f".repeat(64)}`;
     assert.throws(
-      () => buildReleaseInventory(stableTag, sourceSha, false, root, changedFoundrySource, store),
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "azure", changedFoundrySource, store),
       /exact unsigned SDK source/u,
     );
     const falselyPreservedFoundry = structuredClone(signing);
@@ -472,7 +474,7 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
     ).disposition = "upstream_preserved";
     assert.throws(
       () =>
-        buildReleaseInventory(stableTag, sourceSha, false, root, falselyPreservedFoundry, store),
+        buildReleaseInventory(stableTag, sourceSha, false, root, "azure", falselyPreservedFoundry, store),
       /exact unsigned SDK source/u,
     );
     const unrelatedException = structuredClone(signing);
@@ -481,14 +483,14 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
     unrelated.original_sha256 =
       "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea";
     assert.throws(
-      () => buildReleaseInventory(stableTag, sourceSha, false, root, unrelatedException, store),
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "azure", unrelatedException, store),
       /invalid signing disposition/u,
     );
     const mutableUrl = structuredClone(store);
     mutableUrl.package.url =
       "https://github.com/TheGreenCedar/BatCave/releases/latest/download/setup.exe";
     assert.throws(
-      () => buildReleaseInventory(stableTag, sourceSha, false, root, signing, mutableUrl),
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "azure", signing, mutableUrl),
       /immutable versioned release URL/u,
     );
 
@@ -497,6 +499,89 @@ test("builds a deterministic exact name, size, and digest inventory", () => {
       () => buildReleaseInventory(stableTag, sourceSha, false, root),
       /unexpected asset unexpected\.bin/,
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Azure mode requires final publisher evidence without making Store submission a prerequisite", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-azure-inventory-"));
+  try {
+    for (const { name } of contractAssets()) fs.writeFileSync(path.join(root, name), assetContents(name));
+    const signing = windowsSigningFixture();
+    const store = windowsStoreFixture();
+    const signed = buildReleaseInventory(stableTag, sourceSha, false, root, "azure", signing);
+    assert.deepEqual(signed.windows_signing, signing);
+    assert.equal(Object.hasOwn(signed, "windows_store_preflight"), false);
+    assert.deepEqual(buildReleaseInventory(stableTag, sourceSha, false, root, "unsigned"), candidateFixture());
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "azure"),
+      /requires a final production signing inventory/u,
+    );
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "azure", undefined, store),
+      /requires a final production signing inventory/u,
+    );
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "unsigned", signing),
+      /unsigned Windows mode cannot include/u,
+    );
+    assert.throws(
+      () => buildReleaseInventory(stableTag, sourceSha, false, root, "unsigned", undefined, store),
+      /unsigned Windows mode cannot include/u,
+    );
+    for (const mode of ["", "Azure", "signed", "test", null]) {
+      assert.throws(() => buildReleaseInventory(stableTag, sourceSha, false, root, mode, signing), /unknown Windows signing mode/u);
+    }
+    for (const [mutate, error] of [
+      [s => s.profile = "test", /production profile/u],
+      [s => s.phase = "inner", /must be final/u],
+      [s => s.source_sha = "f".repeat(40), /match the release source SHA/u],
+      [s => s.publisher.required_subject = "CN=Someone Else", /publisher contract/u],
+      [s => s.files.pop(), /cover every shipped PE/u],
+      [s => s.files.find(f => f.name === "batcave-monitor.exe").publisher_subject = "CN=Someone Else", /wrong publisher/u],
+      [s => s.files.find(f => f.name === "batcave-monitor.exe").rfc3161_timestamp_utc = null, /invalid timestamp/u],
+      [s => s.files.find(f => f.name === "batcave-monitor.exe").certificate_sha256 = `sha256:${"e".repeat(64)}`, /one Artifact Signing leaf/u],
+      [s => s.files.find(f => f.name === "batcave-monitor.exe").sha256 = `sha256:${"e".repeat(64)}`, /does not match its Windows signing inventory/u],
+    ]) {
+      const invalid = structuredClone(signing);
+      mutate(invalid);
+      assert.throws(() => buildReleaseInventory(stableTag, sourceSha, false, root, "azure", invalid), error);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("inventory CLI retains signing-only evidence and rejects a missing selected Azure inventory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-azure-cli-"));
+  try {
+    const repo = fileURLToPath(new URL("../", import.meta.url));
+    const tag = `v${readCargoVersion(repo)}`;
+    const script = fileURLToPath(new URL("./verify-release-candidate.mjs", import.meta.url));
+    const assets = path.join(root, "assets");
+    fs.mkdirSync(assets);
+    for (const { name } of contractAssets(tag)) fs.writeFileSync(path.join(assets, name), assetContents(name));
+    const signing = windowsSigningFixture(tag);
+    const signingFile = path.join(root, "signing.json");
+    fs.writeFileSync(signingFile, JSON.stringify(signing));
+    const output = path.join(root, "candidate.json");
+    const args = [script, "inventory", tag, sourceSha, "false", assets, output];
+    for (const mode of [[], ["unsigned", ""], ["azure", signingFile]]) {
+      const result = spawnSync(process.execPath, [...args, ...mode], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      const candidate = JSON.parse(fs.readFileSync(output, "utf8"));
+      assert.deepEqual(candidate.assets, contractAssets(tag));
+      assert.deepEqual(candidate.windows_signing, mode[0] === "azure" ? signing : undefined);
+      assert.equal(Object.hasOwn(candidate, "windows_store_preflight"), false);
+    }
+    fs.unlinkSync(output);
+    for (const mode of [["azure"], ["azure", ""], ["unsigned", signingFile], ["Azure", signingFile]]) {
+      const result = spawnSync(process.execPath, [...args, ...mode], { encoding: "utf8" });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /requires a final production signing inventory|unsigned Windows mode cannot include|unknown Windows signing mode/u);
+      assert.equal(fs.existsSync(output), false);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import { runInNewContext } from "node:vm";
 import {
   REQUIRED_STATUS_CHECK_CONTEXTS,
   verifyLiveReleaseControls,
@@ -114,16 +116,18 @@ test("live verification uses only contents and Actions reads and rejects newer f
 });
 
 test("workflow checks green main before builds and again before publication with built-in token", () => {
-  assert.doesNotMatch(releaseWorkflow, /RELEASE_ADMIN_READ_TOKEN|environment: release/);
+  assert.doesNotMatch(releaseWorkflow, /RELEASE_ADMIN_READ_TOKEN/);
   const prepare = workflowJob("prepare");
   const finalize = workflowJob("finalize");
+  assert.doesNotMatch(prepare, /environment:/u);
+  assert.doesNotMatch(workflowJob("windows"), /environment:/u);
   for (const job of [prepare, finalize]) {
     assert.match(job, /actions: read/);
     assert.match(job, /GH_TOKEN: \$\{\{ github.token \}\}/);
     assert.match(job, /node scripts\/verify-release-controls\.mjs/);
   }
   assert.ok(finalize.indexOf("verify-release-controls.mjs") < finalize.indexOf("gh \"${args[@]}\""));
-  for (const name of ["windows", "linux", "macos"]) {
+  for (const name of ["windows", "windows_signed", "linux", "macos"]) {
     assert.match(workflowJob(name), /needs: prepare/);
     assert.match(workflowJob(name), /ref: \$\{\{ needs.prepare.outputs.source_sha \}\}/);
   }
@@ -249,6 +253,121 @@ test("gates pre-attestation and complete release inventories before unconditiona
   assert.doesNotMatch(steps[candidateUpload], /^\s*if:/mu);
 });
 
+
+test("Windows signing selection rejects unknown or unapproved Azure modes before selecting an environment", () => {
+  assert.match(releaseWorkflow, /windows_signing:[\s\S]*?options:\s+- unsigned\s+- azure\s+default: unsigned/u);
+  assert.match(releaseWorkflow, /publish:[\s\S]*?default: false/u);
+  const prepare = workflowJob("prepare");
+  assert.match(prepare, /AZURE_SIGNING_READY: \$\{\{ vars.BATCAVE_ARTIFACT_SIGNING_READY \}\}/u);
+  assert.doesNotMatch(prepare, /environment:/u);
+  const guard = prepare.match(/          case "\$\{WINDOWS_SIGNING\}"[\s\S]*?          fi/u)?.[0];
+  assert.ok(guard, "prepare must reject Azure before the environment job can start");
+  for (const [mode, ready, expected] of [
+    ["unsigned", "", 0], ["unsigned", "false", 0], ["unsigned", "true", 0],
+    ["azure", "true", 0], ["azure", "", 1], ["azure", "false", 1], ["azure", "True", 1],
+    ["", "true", 1], ["Azure", "true", 1], ["signed", "true", 1],
+  ]) {
+    const result = spawnSync("bash", ["-c", guard], {
+      env: { ...process.env, WINDOWS_SIGNING: mode, AZURE_SIGNING_READY: ready }, encoding: "utf8",
+    });
+    assert.equal(result.status, expected, `${mode} ready=${ready}: ${result.stderr}`);
+    if (mode === "azure" && expected === 1) assert.match(result.stderr, /existing release environment must be approved/u);
+  }
+  assert.match(workflowJob("windows_signed"), /if: needs.prepare.outputs.windows_signing == 'azure' && vars.BATCAVE_ARTIFACT_SIGNING_READY == 'true'/u);
+  const signedCondition = workflowJob("windows_signed").match(/^    if: (.+)$/mu)[1];
+  for (const mode of ["unsigned", "azure"]) {
+    for (const ready of ["", "false", "True", "true"]) {
+      assert.equal(runInNewContext(signedCondition, {
+        needs: { prepare: { outputs: { windows_signing: mode } } },
+        vars: { BATCAVE_ARTIFACT_SIGNING_READY: ready },
+      }), mode === "azure" && ready === "true");
+    }
+  }
+});
+
+test("Azure pre-login validation requires readiness and every configured authority input", () => {
+  const job = workflowJob("windows_signed");
+  const preflight = workflowSteps(job).find(s => s.includes("Validate protected Azure signing inputs"));
+  const code = preflight.split("        run: |\n")[1];
+  assert.ok(code, "signed job must validate inputs before login");
+  const required = ["AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID", "BATCAVE_ARTIFACT_SIGNING_ENDPOINT", "BATCAVE_ARTIFACT_SIGNING_ACCOUNT", "BATCAVE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"];
+  for (const name of required.filter(n => !n.startsWith("TAURI_"))) {
+    assert.ok(job.includes(name + ": ${{ vars." + name + " }}"), `${name} must come from configured variables`);
+  }
+  assert.doesNotMatch(job, /inputs\.(?:AZURE_|BATCAVE_ARTIFACT_)/u);
+  const env = { ...process.env, BATCAVE_ARTIFACT_SIGNING_READY: "true", ...Object.fromEntries(required.map(name => [name, "fixture-present"])) };
+  const run = (overrides) => spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", code], {
+    env: { ...env, ...overrides }, encoding: "utf8",
+  });
+  const clean = run({});
+  assert.equal(clean.status, 0, clean.stderr || clean.error?.message);
+  for (const name of required) {
+    const result = run({ [name]: "" });
+    assert.equal(result.status, 1, name);
+    assert.ok(result.stderr.includes(`Required protected Azure release input ${name} is missing.`));
+  }
+  const unapproved = run({ BATCAVE_ARTIFACT_SIGNING_READY: "" });
+  assert.equal(unapproved.status, 1);
+  assert.match(unapproved.stderr, /must be explicitly confirmed before signing/u);
+});
+
+test("finalization requires success of the selected Windows job and preserves all platform gates", () => {
+  const job = workflowJob("finalize");
+  assert.match(job, /needs: \[prepare, windows, windows_signed, linux, macos\]/u);
+  const expression = job.split("    if: >-\n")[1]?.split("\n    runs-on:")[0].trim();
+  assert.ok(expression, "finalize must handle the intentionally skipped sibling job");
+  const state = (mode) => ({
+    prepare: { result: "success", outputs: { windows_signing: mode } },
+    linux: { result: "success" }, macos: { result: "success" },
+    windows: { result: mode === "unsigned" ? "success" : "skipped" },
+    windows_signed: { result: mode === "azure" ? "success" : "skipped" },
+  });
+  const allowed = (needs, cancelled = false) => runInNewContext(expression, {
+    needs, always: () => true, cancelled: () => cancelled,
+  });
+  for (const mode of ["unsigned", "azure"]) {
+    assert.equal(allowed(state(mode)), true);
+    assert.equal(allowed(state(mode), true), false);
+    for (const name of ["prepare", "linux", "macos", mode === "azure" ? "windows_signed" : "windows"]) {
+      for (const result of ["skipped", "failure", "cancelled", "pending"]) {
+        const needs = state(mode);
+        needs[name].result = result;
+        assert.equal(allowed(needs), false, `${mode}: ${name} ${result}`);
+      }
+    }
+    const both = state(mode);
+    both.windows.result = both.windows_signed.result = "success";
+    assert.equal(allowed(both), false);
+  }
+  assert.equal(allowed(state("unknown")), false);
+});
+
+test("signing evidence stays outside public assets and every candidate rebuild uses the selected mode", () => {
+  const steps = workflowSteps(workflowJob("finalize"));
+  const evidence = steps.find(s => s.includes("Download selected Azure signing evidence"));
+  assert.match(evidence, /if: needs.prepare.outputs.windows_signing == 'azure'/u);
+  assert.match(evidence, /name: windows-signing-evidence-\$\{\{ needs.prepare.outputs.tag \}\}/u);
+  assert.match(evidence, /path: \$\{\{ runner.temp \}\}\/windows-signing-evidence/u);
+  assert.doesNotMatch(evidence, /release-input|\b(?:dist|merge-multiple):/u);
+  const publicDownload = steps.find(s => s.includes("pattern:"));
+  assert.match(publicDownload, /pattern: batcave-release-\*-\$\{\{ needs.prepare.outputs.tag \}\}/u);
+  const resolveTag = text => text.replaceAll("${{ needs.prepare.outputs.tag }}", "v0.2.0");
+  const evidenceName = resolveTag(evidence.match(/          name: (.+)/u)[1]);
+  const publicPattern = resolveTag(publicDownload.match(/          pattern: (.+)/u)[1]);
+  assert.equal(path.matchesGlob(evidenceName, publicPattern), false, "signing evidence cannot match the public distributable glob");
+  const binding = steps.find(s => s.includes("Bind selected Windows signing evidence"));
+  assert.match(binding, /Azure signing inventory is missing/u);
+  const inventories = steps.filter(s => /verify-release-candidate\.mjs inventory /u.test(s));
+  assert.equal(inventories.length, 3);
+  for (const step of inventories) assert.match(step, /"\$\{WINDOWS_SIGNING\}" "\$\{WINDOWS_SIGNING_INVENTORY\}"/u);
+  for (const label of ["Create and verify draft GitHub Release", "Publish verified GitHub Release", "Verify anonymous public release bytes and attestations"]) {
+    assert.match(steps.find(s => s.includes(`name: ${label}`)), /if: needs.prepare.outputs.publish == 'true'/u);
+  }
+  const create = steps.find(s => s.includes("Create and verify draft GitHub Release"));
+  assert.ok(create.indexOf("verify-release-candidate.mjs inventory") < create.indexOf('if [[ "${WINDOWS_SIGNING}" == "azure" ]]'));
+  assert.match(create, /Authenticode-signed by Albert Najjar/u);
+  assert.match(create, /Windows downloads are not Authenticode-signed/u);
+});
 
 test("ad-hoc macOS publication is explicit and restricted to previews", () => {
   const guard = releaseWorkflow.match(/          case "\$\{MACOS_SIGNING\}"[\s\S]*?          fi/)[0];
