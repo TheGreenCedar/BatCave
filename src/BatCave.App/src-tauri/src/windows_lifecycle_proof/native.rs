@@ -4282,26 +4282,24 @@ pub(crate) fn capture_machine_snapshot(controller_bindings: &[PeerBinding]) -> P
 }
 
 fn observe_start_entry_residue() -> StartEntryResidueSnapshot {
-    let programs = common_programs_for_start_entry_proof();
-    let (common_start_menu_entry, common_start_menu_temporary) = match programs {
-        Ok(root) => (
-            observe_start_entry_leaf(&root.join("BatCave.lnk")),
-            observe_start_entry_leaf(&root.join("BatCave-start-entry.tmp")),
-        ),
-        Err(reason) => (
-            Observation::Unknown(reason.clone()),
-            Observation::Unknown(reason),
-        ),
-    };
-    let ownership_receipt =
-        match crate::collector_service::windows_provisioner::data_roots_for_proof() {
-            Ok((product, _)) => observe_start_entry_leaf(&product.join("start-entry.v1.json")),
-            Err(reason) => Observation::Unknown(reason),
-        };
+    let install = Path::new(INSTALL_ROOT);
+    match common_programs_for_start_entry_proof() {
+        Ok(programs) => observe_start_entry_residue_at(&programs, install),
+        Err(reason) => StartEntryResidueSnapshot {
+            common_start_menu_entry: Observation::Unknown(reason.clone()),
+            common_start_menu_temporary: Observation::Unknown(reason),
+            ownership_receipt: observe_start_entry_leaf(&install.join("start-entry.v1.json")),
+        },
+    }
+}
+
+fn observe_start_entry_residue_at(programs: &Path, install: &Path) -> StartEntryResidueSnapshot {
     StartEntryResidueSnapshot {
-        common_start_menu_entry,
-        common_start_menu_temporary,
-        ownership_receipt,
+        common_start_menu_entry: observe_start_entry_leaf(&programs.join("BatCave.lnk")),
+        common_start_menu_temporary: observe_start_entry_leaf(
+            &programs.join("BatCave-start-entry.tmp"),
+        ),
+        ownership_receipt: observe_start_entry_leaf(&install.join("start-entry.v1.json")),
     }
 }
 
@@ -6929,6 +6927,38 @@ impl AlignedBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_start_entry_observer_requires_the_install_receipt_root() {
+        let temporary = tempfile::tempdir().expect("isolated receipt-root fixture");
+        let programs = temporary.path().join("Programs");
+        let install = temporary.path().join("BatCave Monitor");
+        let data = temporary.path().join("ProductData");
+        for root in [&programs, &install, &data] {
+            fs::create_dir(root).expect("create isolated fixture root");
+        }
+        fs::write(data.join("start-entry.v1.json"), b"wrong root object")
+            .expect("seed wrong-root object");
+        assert_eq!(
+            observe_start_entry_residue_at(&programs, &install).require_absent(),
+            Ok(()),
+            "a similarly named product-data object cannot substitute for the install receipt"
+        );
+        let receipt = install.join("start-entry.v1.json");
+        fs::write(&receipt, b"preexisting install receipt").expect("seed install residue");
+        let observed = observe_start_entry_residue_at(&programs, &install);
+        assert_eq!(observed.ownership_receipt, Observation::Present(()));
+        assert_eq!(
+            observed.require_absent(),
+            Err("lifecycle_public_start_entry_residue_present_or_unknown".to_string()),
+            "the actual install receipt must block public qualification"
+        );
+        assert_eq!(fs::read(receipt).unwrap(), b"preexisting install receipt");
+        assert_eq!(
+            fs::read(data.join("start-entry.v1.json")).unwrap(),
+            b"wrong root object"
+        );
+    }
 
     #[test]
     fn public_start_entry_observer_rejects_and_preserves_fixed_leaf_residue() {
