@@ -558,6 +558,7 @@ test("inventory CLI retains signing-only evidence and rejects a missing selected
   try {
     const repo = fileURLToPath(new URL("../", import.meta.url));
     const tag = `v${readCargoVersion(repo)}`;
+    const { prerelease } = expectedReleaseAssetRoles(tag);
     const script = fileURLToPath(new URL("./verify-release-candidate.mjs", import.meta.url));
     const assets = path.join(root, "assets");
     fs.mkdirSync(assets);
@@ -566,16 +567,25 @@ test("inventory CLI retains signing-only evidence and rejects a missing selected
     const signingFile = path.join(root, "signing.json");
     fs.writeFileSync(signingFile, JSON.stringify(signing));
     const output = path.join(root, "candidate.json");
-    const args = [script, "inventory", tag, sourceSha, "false", assets, output];
+    const args = [script, "inventory", tag, sourceSha, String(prerelease), assets, output];
     for (const mode of [[], ["unsigned", ""], ["azure", signingFile]]) {
       const result = spawnSync(process.execPath, [...args, ...mode], { encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
       const candidate = JSON.parse(fs.readFileSync(output, "utf8"));
+      assert.equal(candidate.prerelease, prerelease);
       assert.deepEqual(candidate.assets, contractAssets(tag));
       assert.deepEqual(candidate.windows_signing, mode[0] === "azure" ? signing : undefined);
       assert.equal(Object.hasOwn(candidate, "windows_store_preflight"), false);
     }
     fs.unlinkSync(output);
+    const wrongChannel = spawnSync(
+      process.execPath,
+      [script, "inventory", tag, sourceSha, String(!prerelease), assets, output],
+      { encoding: "utf8" },
+    );
+    assert.equal(wrongChannel.status, 1, wrongChannel.stderr);
+    assert.match(wrongChannel.stderr, /channel does not match/u);
+    assert.equal(fs.existsSync(output), false);
     for (const mode of [["azure"], ["azure", ""], ["unsigned", signingFile], ["Azure", signingFile]]) {
       const result = spawnSync(process.execPath, [...args, ...mode], { encoding: "utf8" });
       assert.equal(result.status, 1, result.stderr);
