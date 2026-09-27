@@ -7820,9 +7820,26 @@ mod native {
             ] {
                 let sddl = format!("O:{system_sid}D:P(A;OICI;FA;;;{system_sid})(A;OICI;FA;;;BA)(A;OICI;0x{mask:08x};;;{service_sid})");
                 create_or_verify_root(path, &sddl, service_leaf, &principals, &mut false)
-                    .expect("isolated root policy verifies");
+                    .unwrap_or_else(|error| {
+                        panic!("fixture directory policy, service_leaf={service_leaf}: {error}")
+                    });
             }
-            let open_root = || {
+            let set_fixture_owner = |path: &Path, stage: &str| {
+                let path = wide_path(path);
+                let status = unsafe {
+                    SetNamedSecurityInfoW(
+                        path.as_ptr(),
+                        SE_FILE_OBJECT,
+                        OWNER_SECURITY_INFORMATION,
+                        principals.system.as_psid(),
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                    )
+                };
+                assert_eq!(status, ERROR_SUCCESS, "{stage}: fixture owner assignment");
+            };
+            let open_root = |stage: &str| {
                 open_protected_etw_lease_root_at(
                     FixedRoots {
                         program_data: program_data.clone(),
@@ -7831,9 +7848,9 @@ mod native {
                     },
                     &principals,
                 )
-                .expect("production protected-root verification")
+                .unwrap_or_else(|error| panic!("{stage}: protected-root verification: {error}"))
             };
-            let root = open_root();
+            let root = open_root("empty fixture roots");
             let mut lease = EtwLeaseV1 {
                 schema_version: ETW_LEASE_SCHEMA_VERSION,
                 phase: EtwLeasePhase::Intent,
@@ -7855,9 +7872,18 @@ mod native {
             drop(root);
             let lease_path = service.join(ETW_LEASE_FILE_NAME);
             let owner_path = service.join(ETW_OWNER_LOCK_FILE_NAME);
-            std::fs::write(&lease_path, serde_json::to_vec(&lease).unwrap()).unwrap();
-            std::fs::write(&owner_path, b"owner").unwrap();
-            let root = open_root();
+            std::fs::write(
+                &lease_path,
+                serde_json::to_vec(&lease).expect("seeded lease serializes"),
+            )
+            .expect("seeded lease bytes write");
+            std::fs::write(&owner_path, b"owner").expect("seeded owner lock bytes write");
+            // Inherited ACLs do not inherit the owner. Both seeded files and
+            // atomic replacement files may default to Administrators when the
+            // runner is elevated, so assign only these fixture files explicitly.
+            set_fixture_owner(&lease_path, "seeded lease");
+            set_fixture_owner(&owner_path, "seeded owner lock");
+            let root = open_root("seeded fixture roots and leaves");
             let owner = match WindowsEtwOwnerGuard::try_acquire(&root).expect("fixture owner opens")
             {
                 WindowsEtwOwnerAcquire::Acquired(owner) => owner,
@@ -7875,6 +7901,12 @@ mod native {
             store
                 .replace(owner.authority(), &prior, &lease)
                 .expect("verified mutable lease replaces atomically");
+            set_fixture_owner(&lease_path, "atomically replaced lease");
+            drop(
+                verify_optional_leaf(&lease_path, &principals)
+                    .expect("replacement owner and ACL verify")
+                    .expect("replaced lease remains present"),
+            );
             assert_eq!(
                 store.observe(owner.authority()).unwrap().observation(),
                 &EtwLeaseObservation::Trusted(lease)
