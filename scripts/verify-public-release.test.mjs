@@ -34,6 +34,47 @@ const subjectNames = contract.roles
   .filter((name) => name !== CHECKSUM_MANIFEST && name !== provenanceName)
   .sort((left, right) => left.localeCompare(right));
 const testSubject = "batcave-monitor.exe";
+const WORKFLOW_TEST = "scripts/verify-public-release.test.mjs";
+
+function workflowJob(source, id) {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => line === `  ${id}:`);
+  assert.notEqual(start, -1, `workflow must define the ${id} job`);
+  let end = lines.findIndex((line, index) => index > start && /^  [a-z0-9_-]+:$/u.test(line));
+  if (end === -1) end = lines.length;
+  return lines.slice(start, end).join("\n");
+}
+
+function activeTestPattern({ capture = false } = {}) {
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(WORKFLOW_TEST)}[^#\\n]*`;
+  return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
+}
+
+function assertWorkflowCoverage(release, validation) {
+  for (const [label, job] of [
+    ["release prepare", workflowJob(release, "prepare")],
+    ["validation linux", workflowJob(validation, "linux")],
+    ["validation macos", workflowJob(validation, "macos")],
+  ]) {
+    assert.match(job, activeTestPattern(), `${label} must actively run ${WORKFLOW_TEST}`);
+  }
+}
+
+function commentActiveTest(source, id) {
+  const job = workflowJob(source, id);
+  const commented = job.replace(activeTestPattern({ capture: true }), "$1# $2");
+  assert.notEqual(job, commented, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  return source.replace(job, commented);
+}
+
+function removeActiveTest(source, id) {
+  const job = workflowJob(source, id);
+  const removed = job.replace(activeTestPattern({ capture: true }), (command) =>
+    command.replace(WORKFLOW_TEST, ""),
+  );
+  assert.notEqual(job, removed, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  return source.replace(job, removed);
+}
 
 function digest(contents) {
   return `sha256:${crypto.createHash("sha256").update(contents).digest("hex")}`;
@@ -479,6 +520,31 @@ test("runs the public verifier after publication and in every release contract s
     releaseWorkflow.slice(publicProof),
     /node scripts\/verify-public-release\.mjs "\$\{candidate\}" "\$\{readback\}" "\$\{public_downloads\}"/u,
   );
-  assert.equal(releaseWorkflow.match(/scripts\/verify-public-release\.test\.mjs/gu)?.length, 1);
-  assert.equal(validationWorkflow.match(/scripts\/verify-public-release\.test\.mjs/gu)?.length, 2);
+  assertWorkflowCoverage(releaseWorkflow, validationWorkflow);
+});
+
+test("workflow coverage rejects commented-out or removed public release test commands", () => {
+  const releaseWorkflow = fs.readFileSync(
+    new URL("../.github/workflows/release.yml", import.meta.url),
+    "utf8",
+  );
+  const validationWorkflow = fs.readFileSync(
+    new URL("../.github/workflows/validation.yml", import.meta.url),
+    "utf8",
+  );
+  for (const [label, source, id, targetsRelease] of [
+    ["release prepare", releaseWorkflow, "prepare", true],
+    ["validation linux", validationWorkflow, "linux", false],
+    ["validation macos", validationWorkflow, "macos", false],
+  ]) {
+    for (const mutate of [commentActiveTest, removeActiveTest]) {
+      const mutated = mutate(source, id);
+      const release = targetsRelease ? mutated : releaseWorkflow;
+      const validation = targetsRelease ? validationWorkflow : mutated;
+      assert.throws(
+        () => assertWorkflowCoverage(release, validation),
+        new RegExp(`${label} must actively run`, "u"),
+      );
+    }
+  }
 });
