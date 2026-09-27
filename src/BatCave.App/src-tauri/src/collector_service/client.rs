@@ -798,36 +798,155 @@ mod tests {
 
     #[test]
     fn failed_safe_read_reconnects_and_retries_only_once() {
-        let identity = identity("instance-1");
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let reconnects = Arc::new(AtomicUsize::new(0));
-        let mut session = ServiceClientSession::connect(RenewingTransport {
-            peer: peer(identity.release.clone()),
-            responses: VecDeque::from([negotiated_response(&identity)]),
-            replacement_responses: vec![
-                negotiated_response(&identity),
-                response(
+        for replacement_succeeds in [true, false] {
+            let identity = identity("instance-1");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let reconnects = Arc::new(AtomicUsize::new(0));
+            let mut replacement_responses = vec![negotiated_response(&identity)];
+            if replacement_succeeds {
+                replacement_responses.push(response(
                     2,
                     ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
                         snapshot("instance-1", 7),
                     ))),
-                ),
-            ],
-            requests,
-            reconnects: Arc::clone(&reconnects),
-        })
-        .unwrap();
+                ));
+            }
+            let mut session = ServiceClientSession::connect(RenewingTransport {
+                peer: peer(identity.release.clone()),
+                responses: VecDeque::from([negotiated_response(&identity)]),
+                replacement_responses,
+                requests: Arc::clone(&requests),
+                reconnects: Arc::clone(&reconnects),
+            })
+            .unwrap();
 
-        assert_eq!(
-            session
-                .latest_sample()
-                .unwrap()
-                .source_provenance
-                .unwrap()
-                .source_sample_seq,
-            7
-        );
-        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+            let result = session.latest_sample();
+            if replacement_succeeds {
+                assert_eq!(
+                    result.unwrap().source_provenance.unwrap().source_sample_seq,
+                    7
+                );
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(failure.kind, ClientFailureKind::Failed);
+                assert_eq!(failure.detail, "fake_transport_disconnected");
+                assert_eq!(failure.service_identity.as_deref(), Some(&identity));
+            }
+            assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|request| request.request_id)
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 1, 2]
+            );
+        }
+    }
+
+    #[test]
+    fn session_rejects_duplicate_regressed_and_old_instance_snapshots() {
+        for (instance, sequence) in [("instance-1", 7), ("instance-1", 6), ("old-instance", 8)] {
+            let identity = identity("instance-1");
+            let mut session = ServiceClientSession::connect(FakeTransport {
+                peer: peer(identity.release.clone()),
+                responses: VecDeque::from([
+                    negotiated_response(&identity),
+                    response(
+                        2,
+                        ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                            snapshot("instance-1", 7),
+                        ))),
+                    ),
+                    response(
+                        3,
+                        ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                            snapshot(instance, sequence),
+                        ))),
+                    ),
+                    response(
+                        4,
+                        ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                            snapshot("instance-1", 8),
+                        ))),
+                    ),
+                ]),
+                requests: Vec::new(),
+            })
+            .unwrap();
+            session.latest_sample().unwrap();
+            let failure = session.latest_sample().unwrap_err();
+            assert_eq!(failure.kind, ClientFailureKind::Incompatible);
+            assert_eq!(
+                failure.detail,
+                "collector_service_snapshot_sequence_invalid"
+            );
+            assert_eq!(session.last_sample_seq, Some(7));
+            assert_eq!(session.last_snapshot.as_ref().unwrap().sample_seq, 7);
+            assert_eq!(
+                session
+                    .latest_sample()
+                    .unwrap()
+                    .source_provenance
+                    .unwrap()
+                    .source_sample_seq,
+                8
+            );
+        }
+    }
+
+    #[test]
+    fn session_rejects_unchanged_without_exact_authenticated_snapshot() {
+        for (baseline, instance, sequence) in [
+            (false, "instance-1", 7),
+            (true, "instance-1", 6),
+            (true, "instance-1", 8),
+            (true, "old-instance", 7),
+        ] {
+            let identity = identity("instance-1");
+            let mut responses = VecDeque::from([negotiated_response(&identity)]);
+            if baseline {
+                responses.push_back(response(
+                    2,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                        snapshot("instance-1", 7),
+                    ))),
+                ));
+            }
+            responses.push_back(response(
+                if baseline { 3 } else { 2 },
+                ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Unchanged(
+                    super::super::protocol::UnchangedSnapshotV1 {
+                        service_instance_id: instance.to_string(),
+                        sample_seq: sequence,
+                    },
+                )),
+            ));
+            let mut session = ServiceClientSession::connect(FakeTransport {
+                peer: peer(identity.release.clone()),
+                responses,
+                requests: Vec::new(),
+            })
+            .unwrap();
+            if baseline {
+                session.latest_sample().unwrap();
+            }
+            let failure = session.latest_sample().unwrap_err();
+            assert_eq!(failure.kind, ClientFailureKind::Incompatible);
+            assert_eq!(
+                failure.detail,
+                "collector_service_unchanged_sequence_invalid"
+            );
+            assert_eq!(session.last_sample_seq, baseline.then_some(7));
+            assert_eq!(
+                session
+                    .last_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.sample_seq),
+                baseline.then_some(7)
+            );
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
     Foundation::{GetLastError, ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, HANDLE},
-    Security::{CreateWellKnownSid, WinLocalSystemSid, TOKEN_QUERY},
+    Security::{CreateWellKnownSid, WinLocalSystemSid, SECURITY_ATTRIBUTES, TOKEN_QUERY},
     Storage::FileSystem::{
         CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES,
         FILE_READ_DATA, FILE_SHARE_READ, FILE_WRITE_DATA, OPEN_EXISTING,
@@ -66,18 +66,8 @@ impl WindowsServiceTransport {
         if unsafe { WaitNamedPipeW(pipe_name.as_ptr(), CONNECT_TIMEOUT_MS) } == 0 {
             return Err(classify_unavailable("collector_service_pipe_wait_failed"));
         }
-        let pipe = OwnedHandle::new(unsafe {
-            CreateFileW(
-                pipe_name.as_ptr(),
-                FILE_READ_DATA | FILE_WRITE_DATA,
-                0,
-                std::ptr::null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                std::ptr::null_mut(),
-            )
-        })
-        .ok_or_else(|| classify_unavailable("collector_service_pipe_open_failed"))?;
+        let pipe = open_pipe_with(&pipe_name, CreateFileW)
+            .ok_or_else(|| classify_unavailable("collector_service_pipe_open_failed"))?;
         let peer = verify_service_peer(pipe.raw(), expectation)?;
         Ok(Self {
             pipe,
@@ -195,6 +185,31 @@ impl WindowsServiceTransport {
             });
         }
     }
+}
+
+fn open_pipe_with(
+    pipe_name: &[u16],
+    create_file: unsafe extern "system" fn(
+        *const u16,
+        u32,
+        u32,
+        *const SECURITY_ATTRIBUTES,
+        u32,
+        u32,
+        HANDLE,
+    ) -> HANDLE,
+) -> Option<OwnedHandle> {
+    OwnedHandle::new(unsafe {
+        create_file(
+            pipe_name.as_ptr(),
+            FILE_READ_DATA | FILE_WRITE_DATA,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    })
 }
 
 struct ProofPeerExpectation<'a> {
@@ -714,8 +729,27 @@ mod tests {
 
     #[test]
     fn client_uses_fixed_versioned_local_pipe_and_exact_data_rights() {
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+        static PATH: AtomicUsize = AtomicUsize::new(0);
+        static ACCESS: AtomicU32 = AtomicU32::new(0);
+        unsafe extern "system" fn capture_open(
+            path: *const u16,
+            access: u32,
+            _: u32,
+            _: *const SECURITY_ATTRIBUTES,
+            _: u32,
+            _: u32,
+            _: HANDLE,
+        ) -> HANDLE {
+            PATH.store(path as usize, Ordering::SeqCst);
+            ACCESS.store(access, Ordering::SeqCst);
+            -1_isize as HANDLE
+        }
         assert_eq!(PIPE_NAME, r"\\.\pipe\BatCaveCollector.v1");
-        assert_eq!(FILE_READ_DATA | FILE_WRITE_DATA, 0x0000_0003);
+        let name = wide(PIPE_NAME);
+        assert!(open_pipe_with(&name, capture_open).is_none());
+        assert_eq!(PATH.load(Ordering::SeqCst), name.as_ptr() as usize);
+        assert_eq!(ACCESS.load(Ordering::SeqCst), 0x0000_0003);
     }
 
     #[test]

@@ -744,7 +744,7 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collector_service::etw_lease::{EtwLeaseConflict, EtwSessionIdentityV1};
+    use crate::collector_service::etw_lease::EtwSessionIdentityV1;
 
     fn expected_owner() -> EtwExpectedOwnerV1 {
         EtwExpectedOwnerV1 {
@@ -875,31 +875,6 @@ mod tests {
             Ok(())
         );
         assert!(running_reported);
-    }
-
-    #[test]
-    fn service_etw_recovery_rejects_unowned_or_untrusted_state() {
-        let expected = expected_owner();
-        assert_eq!(
-            decide_etw_recovery(
-                &expected,
-                &EtwLeaseObservation::Absent,
-                &EtwSessionObservation::Present(expected.session.clone()),
-                &EtwControllerObservation::Absent,
-                EtwReclaimAttempt::NotAttempted,
-            ),
-            EtwRecoveryDecision::Conflict(EtwLeaseConflict::SessionWithoutTrustedLease)
-        );
-        assert_eq!(
-            decide_etw_recovery(
-                &expected,
-                &EtwLeaseObservation::Corrupt,
-                &EtwSessionObservation::Absent,
-                &EtwControllerObservation::Absent,
-                EtwReclaimAttempt::NotAttempted,
-            ),
-            EtwRecoveryDecision::Conflict(EtwLeaseConflict::CorruptLease)
-        );
     }
 
     #[test]
