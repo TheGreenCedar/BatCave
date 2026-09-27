@@ -4906,12 +4906,29 @@ mod tests {
 
     #[test]
     fn system_history_ring_retains_latest_points_and_filters_after_seq() {
-        let (collector, _) =
+        let (collector, collect_count) =
             FakeCollector::new((0..SYSTEM_HISTORY_CAPACITY + 2).map(|_| FakeOutcome::Sample));
-        let (state, base_dir) = state_with_collector("system-history-ring", collector, false);
+        let base_dir = runtime_test_dir("system-history-ring");
+        let clock = Arc::new(MonotonicWireClock::new());
+        // Retention uses the real engine and writer queue, without disk timing dependencies.
+        let persistence =
+            RuntimePersistenceCoordinator::in_memory_for_test(base_dir.clone(), clock.now_ms());
+        let store =
+            RuntimeStore::from_base_dir_with_persistence(base_dir.clone(), clock, persistence);
+        assert!(
+            !base_dir.exists(),
+            "history fixture must not create a disk root"
+        );
+        let state =
+            RuntimeState::from_store_with_collector(store, false, Some(Box::new(collector)))
+                .expect("engine starts");
         for _ in 0..SYSTEM_HISTORY_CAPACITY + 2 {
             state.refresh_now().unwrap();
         }
+        assert_eq!(
+            collect_count.load(TestOrdering::SeqCst),
+            SYSTEM_HISTORY_CAPACITY + 2,
+        );
 
         let all = state.system_history(0).unwrap();
         assert_eq!(all.len(), SYSTEM_HISTORY_CAPACITY);
@@ -4950,6 +4967,10 @@ mod tests {
         assert!(state.system_history(999).unwrap().is_empty());
 
         state.shutdown().unwrap();
+        assert!(
+            !base_dir.exists(),
+            "shutdown must keep history persistence in memory"
+        );
         let _ = fs::remove_dir_all(base_dir);
     }
 
