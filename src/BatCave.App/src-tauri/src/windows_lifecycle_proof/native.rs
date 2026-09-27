@@ -103,8 +103,8 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_LocalAppData, GetUserProfileDirectoryW, SHGetKnownFolderPath, ShellExecuteExW,
-    SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    FOLDERID_CommonPrograms, FOLDERID_LocalAppData, GetUserProfileDirectoryW, SHGetKnownFolderPath,
+    ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SW_HIDE,
@@ -243,8 +243,41 @@ pub(crate) struct PreflightSnapshot {
     pub(crate) service_binary: Observation<FileSnapshot>,
     pub(crate) uninstaller: Observation<FileSnapshot>,
     pub(crate) legacy_cli: Observation<FileSnapshot>,
+    pub(crate) start_entry_residue: StartEntryResidueSnapshot,
     pub(crate) uninstall_registry: Observation<RegistrySnapshot>,
     pub(crate) product_processes: Observation<Vec<ProcessSnapshot>>,
+}
+
+// Presence is enough to reject these objects. This proof never adopts, opens for
+// writing, or deletes projections that the pinned public uninstallers do not own.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StartEntryResidueSnapshot {
+    pub(crate) common_start_menu_entry: Observation<()>,
+    pub(crate) common_start_menu_temporary: Observation<()>,
+    pub(crate) ownership_receipt: Observation<()>,
+}
+
+impl StartEntryResidueSnapshot {
+    pub(crate) fn require_absent(&self) -> Result<(), String> {
+        if matches!(self.common_start_menu_entry, Observation::Absent)
+            && matches!(self.common_start_menu_temporary, Observation::Absent)
+            && matches!(self.ownership_receipt, Observation::Absent)
+        {
+            Ok(())
+        } else {
+            Err("lifecycle_public_start_entry_residue_present_or_unknown".to_string())
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn absent() -> Self {
+        Self {
+            common_start_menu_entry: Observation::Absent,
+            common_start_menu_temporary: Observation::Absent,
+            ownership_receipt: Observation::Absent,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -4242,9 +4275,65 @@ pub(crate) fn capture_machine_snapshot(controller_bindings: &[PeerBinding]) -> P
         service_binary: observe_file(Path::new(SERVICE_PATH), "service_binary"),
         uninstaller: observe_file(Path::new(UNINSTALLER_PATH), "uninstaller"),
         legacy_cli: observe_file(Path::new(LEGACY_CLI_PATH), "legacy_cli"),
+        start_entry_residue: observe_start_entry_residue(),
         uninstall_registry: observe_uninstall_registry(),
         product_processes: observe_product_processes(controller_bindings),
     }
+}
+
+fn observe_start_entry_residue() -> StartEntryResidueSnapshot {
+    let install = Path::new(INSTALL_ROOT);
+    match common_programs_for_start_entry_proof() {
+        Ok(programs) => observe_start_entry_residue_at(&programs, install),
+        Err(reason) => StartEntryResidueSnapshot {
+            common_start_menu_entry: Observation::Unknown(reason.clone()),
+            common_start_menu_temporary: Observation::Unknown(reason),
+            ownership_receipt: observe_start_entry_leaf(&install.join("start-entry.v1.json")),
+        },
+    }
+}
+
+fn observe_start_entry_residue_at(programs: &Path, install: &Path) -> StartEntryResidueSnapshot {
+    StartEntryResidueSnapshot {
+        common_start_menu_entry: observe_start_entry_leaf(&programs.join("BatCave.lnk")),
+        common_start_menu_temporary: observe_start_entry_leaf(
+            &programs.join("BatCave-start-entry.tmp"),
+        ),
+        ownership_receipt: observe_start_entry_leaf(&install.join("start-entry.v1.json")),
+    }
+}
+
+fn observe_start_entry_leaf(path: &Path) -> Observation<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Observation::Present(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Observation::Absent,
+        Err(error) => Observation::Unknown(format!(
+            "lifecycle_start_entry_metadata_failed:{}",
+            error.raw_os_error().unwrap_or_default()
+        )),
+    }
+}
+
+fn common_programs_for_start_entry_proof() -> Result<PathBuf, String> {
+    let mut value = null_mut();
+    let result =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_CommonPrograms, 0, null_mut(), &mut value) };
+    if result < 0 || value.is_null() {
+        return Err("lifecycle_common_programs_query_failed".to_string());
+    }
+    let mut length = 0_usize;
+    while unsafe { *value.add(length) } != 0 {
+        length += 1;
+        if length > WINDOWS_PATH_BUFFER_SIZE {
+            unsafe { CoTaskMemFree(value.cast()) };
+            return Err("lifecycle_common_programs_path_invalid".to_string());
+        }
+    }
+    let path = PathBuf::from(OsString::from_wide(unsafe {
+        std::slice::from_raw_parts(value, length)
+    }));
+    unsafe { CoTaskMemFree(value.cast()) };
+    Ok(path)
 }
 
 pub(crate) fn capture_elevated_machine_snapshot(
@@ -4451,7 +4540,7 @@ pub(crate) fn open_installed_service(candidate: &Candidate) -> Result<OwnedFile,
 
 pub(crate) fn open_allowlisted_legacy_cli(plan: &ProofPlan) -> Result<OwnedFile, String> {
     let legacy = OwnedFile::open_unchecked(Path::new(LEGACY_CLI_PATH), "allowlisted_legacy_cli")?;
-    if legacy.sha256_hex() != plan.allowlisted_start.legacy_cli_sha256 {
+    if legacy.sha256_hex() != plan.historical_cli_sha256()? {
         return Err("lifecycle_allowlisted_legacy_cli_identity_mismatch".to_string());
     }
     Ok(legacy)
@@ -4479,6 +4568,15 @@ pub(crate) fn require_allowlisted_parent_preflight(
     snapshot: &PreflightSnapshot,
     plan: &ProofPlan,
 ) -> Result<(), String> {
+    if plan.is_public_pair() {
+        snapshot.start_entry_residue.require_absent()?;
+        require_installed_candidate(snapshot, &plan.baseline, true, "public_start")?;
+        let registry = require_present(&snapshot.uninstall_registry, "uninstall_registry")?;
+        return validate_allowlisted_product_version(
+            &registry.display_version,
+            &plan.allowlisted_start.product_version,
+        );
+    }
     let service = require_present(&snapshot.service, "service")?;
     if service.state != windows_sys::Win32::System::Services::SERVICE_STOPPED
         || service.process_id != 0
@@ -4505,7 +4603,7 @@ pub(crate) fn require_allowlisted_parent_preflight(
     )?;
     require_file_hash(
         &snapshot.legacy_cli,
-        &plan.allowlisted_start.legacy_cli_sha256,
+        plan.historical_cli_sha256()?,
         "start_legacy_cli",
     )?;
     let registry = require_present(&snapshot.uninstall_registry, "uninstall_registry")?;
@@ -4538,6 +4636,9 @@ pub(crate) fn require_installed_candidate(
     expect_legacy_cli_absent: bool,
     label: &str,
 ) -> Result<(), String> {
+    if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        snapshot.start_entry_residue.require_absent()?;
+    }
     let service = require_present(&snapshot.service, label)?;
     if service.state != windows_sys::Win32::System::Services::SERVICE_RUNNING
         || service.process_id == 0
@@ -4563,7 +4664,7 @@ pub(crate) fn require_installed_candidate(
         &candidate.uninstaller_sha256,
         &format!("{label}_uninstaller"),
     )?;
-    if expect_legacy_cli_absent {
+    if expect_legacy_cli_absent || cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
         require_absent(&snapshot.legacy_cli, &format!("{label}_legacy_cli"))?;
     }
     let registry = require_present(
@@ -4738,7 +4839,7 @@ fn require_elevated_stopped_candidate_inner(
         &candidate.uninstaller_sha256,
         &format!("{label}_uninstaller"),
     )?;
-    if expect_legacy_cli_absent {
+    if expect_legacy_cli_absent || cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
         require_absent(&snapshot.machine.legacy_cli, &format!("{label}_legacy_cli"))?;
     }
     let registry = require_present(
@@ -4774,6 +4875,9 @@ pub(crate) fn require_total_product_absence(
     snapshot: &PreflightSnapshot,
     label: &str,
 ) -> Result<(), String> {
+    if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        snapshot.start_entry_residue.require_absent()?;
+    }
     require_absent(&snapshot.service, &format!("{label}_service"))?;
     require_absent(&snapshot.install_root, &format!("{label}_install_root"))?;
     require_absent(&snapshot.monitor, &format!("{label}_monitor"))?;
@@ -6823,6 +6927,67 @@ impl AlignedBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_start_entry_observer_requires_the_install_receipt_root() {
+        let temporary = tempfile::tempdir().expect("isolated receipt-root fixture");
+        let programs = temporary.path().join("Programs");
+        let install = temporary.path().join("BatCave Monitor");
+        let data = temporary.path().join("ProductData");
+        for root in [&programs, &install, &data] {
+            fs::create_dir(root).expect("create isolated fixture root");
+        }
+        fs::write(data.join("start-entry.v1.json"), b"wrong root object")
+            .expect("seed wrong-root object");
+        assert_eq!(
+            observe_start_entry_residue_at(&programs, &install).require_absent(),
+            Ok(()),
+            "a similarly named product-data object cannot substitute for the install receipt"
+        );
+        let receipt = install.join("start-entry.v1.json");
+        fs::write(&receipt, b"preexisting install receipt").expect("seed install residue");
+        let observed = observe_start_entry_residue_at(&programs, &install);
+        assert_eq!(observed.ownership_receipt, Observation::Present(()));
+        assert_eq!(
+            observed.require_absent(),
+            Err("lifecycle_public_start_entry_residue_present_or_unknown".to_string()),
+            "the actual install receipt must block public qualification"
+        );
+        assert_eq!(fs::read(receipt).unwrap(), b"preexisting install receipt");
+        assert_eq!(
+            fs::read(data.join("start-entry.v1.json")).unwrap(),
+            b"wrong root object"
+        );
+    }
+
+    #[test]
+    fn public_start_entry_observer_rejects_and_preserves_fixed_leaf_residue() {
+        let root = std::env::temp_dir().join(format!(
+            "batcave-public-start-entry-{}",
+            random_hex(16).expect("unique start-entry scratch")
+        ));
+        fs::create_dir(&root).expect("create start-entry scratch");
+        for leaf in [
+            "BatCave.lnk",
+            "BatCave-start-entry.tmp",
+            "start-entry.v1.json",
+        ] {
+            let path = root.join(leaf);
+            assert_eq!(observe_start_entry_leaf(&path), Observation::Absent);
+            fs::write(&path, b"preexisting unowned object").expect("seed unowned object");
+            assert_eq!(observe_start_entry_leaf(&path), Observation::Present(()));
+            assert_eq!(
+                fs::read(&path).expect("retained object"),
+                b"preexisting unowned object"
+            );
+            fs::remove_file(&path).expect("remove test-owned fixture");
+            fs::create_dir(&path).expect("seed wrong-kind residue");
+            assert_eq!(observe_start_entry_leaf(&path), Observation::Present(()));
+            assert!(path.is_dir(), "observer must preserve wrong-kind residue");
+            fs::remove_dir(&path).expect("remove test-owned directory");
+        }
+        fs::remove_dir(&root).expect("remove empty test-owned scratch");
+    }
 
     struct ScratchEvidence {
         evidence: Option<ProtectedEvidenceRoot>,

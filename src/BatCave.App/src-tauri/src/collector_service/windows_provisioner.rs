@@ -568,6 +568,24 @@ fn restore_after_settled_body<T, E>(
 }
 
 #[cfg(feature = "private-windows-lifecycle-proof")]
+pub(super) fn restore_missing_service_with_registration<T>(
+    mut revalidate_registration: impl FnMut() -> Result<(), String>,
+    restore_service: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    revalidate_registration()?;
+    let restoration = restore_service();
+    let registration = revalidate_registration();
+    match (restoration, registration) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(registration)) => Err(registration),
+        (Err(primary), Err(registration)) => Err(format!(
+            "{primary};collector_service_proof_registration_changed:{registration}"
+        )),
+    }
+}
+
+#[cfg(feature = "private-windows-lifecycle-proof")]
 pub(crate) fn terminate_running_service_for_proof(
     expected_sha256: [u8; 32],
 ) -> Result<TerminatedServiceForProof, Box<ServiceTerminationFailure>> {
@@ -594,10 +612,15 @@ pub(crate) fn with_missing_service_for_proof<T, E>(
     body: impl FnOnce() -> Result<T, E>,
     body_settled: impl FnOnce(&E) -> bool,
 ) -> Result<ServiceStateTransactionOutcome<T, E>, Box<ServiceStateTransitionFailure>> {
-    native::remove_service_boundary_for_proof(final_service_bytes, expected_final_sha256)?;
+    let registration =
+        native::remove_service_boundary_for_proof(final_service_bytes, expected_final_sha256)?;
     let body = body();
     let restoration = restore_after_settled_body(&body, body_settled, || {
-        native::restore_service_boundary_for_proof(final_service_bytes, expected_final_sha256)
+        native::restore_service_boundary_for_proof(
+            final_service_bytes,
+            expected_final_sha256,
+            &registration,
+        )
     });
     Ok(ServiceStateTransactionOutcome { body, restoration })
 }
@@ -1217,6 +1240,30 @@ mod native {
     impl VerifiedMonitorImage {
         fn path(&self) -> &Path {
             &self.path
+        }
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    pub(super) struct MissingServiceRegistrationForProof {
+        monitor: VerifiedMonitorImage,
+        app_path: PinnedAppPathRegistration,
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    impl MissingServiceRegistrationForProof {
+        fn capture(image: &VerifiedServiceImage) -> Result<Self, String> {
+            let monitor = verify_monitor_image(image)?;
+            let AppPathPreflight::Exact(app_path) = preflight_app_path_registration(&monitor)?
+            else {
+                return Err("collector_service_proof_original_app_path_missing".to_string());
+            };
+            let registration = Self { monitor, app_path };
+            registration.revalidate()?;
+            Ok(registration)
+        }
+
+        fn revalidate(&self) -> Result<(), String> {
+            revalidate_app_path_registration(&self.app_path, self.monitor.path())
         }
     }
 
@@ -5515,7 +5562,7 @@ mod native {
     pub(super) fn remove_service_boundary_for_proof(
         final_service_bytes: &[u8],
         expected_final_sha256: [u8; 32],
-    ) -> Result<(), Box<ServiceStateTransitionFailure>> {
+    ) -> Result<MissingServiceRegistrationForProof, Box<ServiceStateTransitionFailure>> {
         let before_mutation = |reason| service_state_failure(reason, true);
         require_elevated().map_err(before_mutation)?;
         validate_service_image_bytes(final_service_bytes, expected_final_sha256)
@@ -5530,6 +5577,12 @@ mod native {
                 "collector_service_proof_original_digest_invalid".to_string(),
             ));
         }
+        let image = verify_service_image_at(&stable, &program_files).map_err(before_mutation)?;
+        let registration =
+            MissingServiceRegistrationForProof::capture(&image).map_err(before_mutation)?;
+        // The service image must be deletable; only the untouched monitor and
+        // original App Paths key remain pinned throughout the missing-service proof.
+        drop(image);
         let manager = open_manager(SC_MANAGER_CONNECT).map_err(before_mutation)?;
         let service = open_service(&manager, SERVICE_ALL_ACCESS)
             .map_err(before_mutation)?
@@ -5549,6 +5602,7 @@ mod native {
         let protected_root = open_protected_etw_lease_root().map_err(before_mutation)?;
 
         let operation = (|| -> Result<(), String> {
+            registration.revalidate()?;
             settle_service_for_replacement(&service)?;
             if unsafe { DeleteService(service.raw()) } == 0 {
                 return Err(last_error("collector_service_delete_failed"));
@@ -5568,13 +5622,16 @@ mod native {
             {
                 return Err("collector_service_proof_missing_state_invalid".to_string());
             }
-            Ok(())
+            registration.revalidate()
         })();
         match operation {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(registration),
             Err(primary) => {
-                let recovery =
-                    restore_service_boundary_inner(final_service_bytes, expected_final_sha256);
+                let recovery = restore_service_boundary_inner(
+                    final_service_bytes,
+                    expected_final_sha256,
+                    &registration,
+                );
                 Err(service_state_failure(
                     match &recovery {
                         Ok(()) => primary,
@@ -5592,8 +5649,9 @@ mod native {
     pub(super) fn restore_service_boundary_for_proof(
         final_service_bytes: &[u8],
         expected_final_sha256: [u8; 32],
+        registration: &MissingServiceRegistrationForProof,
     ) -> Result<(), Box<ServiceStateTransitionFailure>> {
-        restore_service_boundary_inner(final_service_bytes, expected_final_sha256)
+        restore_service_boundary_inner(final_service_bytes, expected_final_sha256, registration)
             .map_err(|reason| service_state_failure(reason, false))
     }
 
@@ -5601,73 +5659,84 @@ mod native {
     fn restore_service_boundary_inner(
         final_service_bytes: &[u8],
         expected_final_sha256: [u8; 32],
+        registration: &MissingServiceRegistrationForProof,
     ) -> Result<(), String> {
         require_elevated()?;
         validate_service_image_bytes(final_service_bytes, expected_final_sha256)?;
-        let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
-        let stable = expected_service_path(&program_files);
-        if path_exists_no_follow(&stable)? {
-            if trusted_file_digest(&stable, "collector_service_stable_image")?
-                != expected_final_sha256
-            {
-                return Err("collector_service_proof_restore_image_untrusted".to_string());
-            }
-        } else {
-            crate::atomic_json::write_bytes_atomic(&stable, final_service_bytes).map_err(
-                |error| {
-                    format!(
-                        "collector_service_proof_restore_image_write_failed:{:?}:{}",
-                        error.operation, error.error
-                    )
-                },
-            )?;
-        }
-        let image = verify_service_image_at(&stable, &program_files)?;
-        let monitor = verify_monitor_image(&image)?;
-        preflight_app_path_registration(&monitor)?;
-        if trusted_file_digest(image.path(), "collector_service_stable_image")?
-            != expected_final_sha256
-        {
-            return Err("collector_service_proof_restore_digest_invalid".to_string());
-        }
-        let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
-        if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
-            validate_service_contract(&service, &stable)?;
-            let mut roots_created = RootCreationJournal::default();
-            provision_roots(&mut roots_created)?;
-            start_service_and_wait(&service)?;
-            validate_proof_running_generation(&service, &stable, expected_final_sha256)?;
-        } else {
-            let service = create_service(&manager, &stable)?;
-            let mut roots_created = RootCreationJournal::default();
-            let install = (|| {
-                configure_new_service(&service)?;
-                set_owner_marker()?;
-                provision_roots(&mut roots_created)?;
-                validate_service_contract(&service, &stable)?;
-                start_service_and_wait(&service)?;
-                validate_proof_running_generation(&service, &stable, expected_final_sha256)?;
-                Ok(())
-            })();
-            if let Err(primary) = install {
-                return match rollback_new_install(
-                    service,
-                    &manager,
-                    roots_created.product,
-                    roots_created.service,
-                    None,
-                    monitor.path(),
-                ) {
-                    Ok(()) => Err(primary),
-                    Err(rollback) => Err(format!(
+        restore_missing_service_with_registration(
+            || registration.revalidate(),
+            || {
+                let program_files = known_folder(CSIDL_PROGRAM_FILES)?;
+                let stable = expected_service_path(&program_files);
+                if path_exists_no_follow(&stable)? {
+                    if trusted_file_digest(&stable, "collector_service_stable_image")?
+                        != expected_final_sha256
+                    {
+                        return Err("collector_service_proof_restore_image_untrusted".to_string());
+                    }
+                } else {
+                    crate::atomic_json::write_bytes_atomic(&stable, final_service_bytes).map_err(
+                        |error| {
+                            format!(
+                                "collector_service_proof_restore_image_write_failed:{:?}:{}",
+                                error.operation, error.error
+                            )
+                        },
+                    )?;
+                }
+                let image = verify_service_image_at(&stable, &program_files)?;
+                let monitor = verify_monitor_image(&image)?;
+                registration.revalidate()?;
+                if trusted_file_digest(image.path(), "collector_service_stable_image")?
+                    != expected_final_sha256
+                {
+                    return Err("collector_service_proof_restore_digest_invalid".to_string());
+                }
+                let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
+                if let Some(service) = open_service(&manager, SERVICE_ALL_ACCESS)? {
+                    validate_service_contract(&service, &stable)?;
+                    let mut roots_created = RootCreationJournal::default();
+                    provision_roots(&mut roots_created)?;
+                    start_service_and_wait(&service)?;
+                    validate_proof_running_generation(&service, &stable, expected_final_sha256)?;
+                } else {
+                    let service = create_service(&manager, &stable)?;
+                    let mut roots_created = RootCreationJournal::default();
+                    let install = (|| {
+                        configure_new_service(&service)?;
+                        set_owner_marker()?;
+                        provision_roots(&mut roots_created)?;
+                        validate_service_contract(&service, &stable)?;
+                        start_service_and_wait(&service)?;
+                        validate_proof_running_generation(
+                            &service,
+                            &stable,
+                            expected_final_sha256,
+                        )?;
+                        Ok(())
+                    })();
+                    if let Err(primary) = install {
+                        return match rollback_new_install(
+                            service,
+                            &manager,
+                            roots_created.product,
+                            roots_created.service,
+                            None,
+                            monitor.path(),
+                        ) {
+                            Ok(()) => Err(primary),
+                            Err(rollback) => Err(format!(
                         "{primary};collector_service_proof_restore_rollback_failed:{rollback}"
                     )),
-                };
-            }
-        }
-        app_path_upgrade_gate(&image, &monitor)?;
-        retire_legacy_cli(&image)?;
-        retire_staged_upgrade_image(&image)
+                        };
+                    }
+                }
+                // Service-only restoration must not adopt or create launch projections
+                // that the original public installer's uninstaller does not own.
+                retire_legacy_cli(&image)?;
+                retire_staged_upgrade_image(&image)
+            },
+        )
     }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
@@ -8607,6 +8676,76 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn missing_service_restoration_revalidates_original_registration_on_every_outcome() {
+        use std::cell::Cell;
+
+        for restore_failed in [false, true] {
+            for registration_changed in [false, true] {
+                let calls = Cell::new(0);
+                let result = restore_missing_service_with_registration(
+                    || {
+                        calls.set(calls.get() + 1);
+                        if calls.get() == 2 && registration_changed {
+                            Err("original_registration_changed".to_string())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    || {
+                        assert_eq!(calls.get(), 1, "original pin must precede service mutation");
+                        if restore_failed {
+                            Err("service_restore_failed".to_string())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
+                assert_eq!(
+                    calls.get(),
+                    2,
+                    "even failed restoration must revalidate original pin"
+                );
+                let expected = match (restore_failed, registration_changed) {
+                    (false, false) => Ok(()),
+                    (true, false) => Err("service_restore_failed".to_string()),
+                    (false, true) => Err("original_registration_changed".to_string()),
+                    (true, true) => Err("service_restore_failed;collector_service_proof_registration_changed:original_registration_changed".to_string()),
+                };
+                assert_eq!(result, expected);
+            }
+        }
+        assert_eq!(
+            restore_missing_service_with_registration(
+                || Err("original_registration_missing".to_string()),
+                || -> Result<(), String> { panic!("missing registration must prevent mutation") },
+            ),
+            Err("original_registration_missing".to_string()),
+        );
+    }
+
+    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[test]
+    fn missing_service_restore_wiring_excludes_new_launch_projection_creation() {
+        // This is a wiring guard, not execution of an installed service helper.
+        // Real native mutation remains part of the attended guest qualification.
+        let source = include_str!("windows_provisioner.rs");
+        let restoration = source
+            .split("    fn restore_service_boundary_inner(")
+            .nth(1)
+            .expect("private restoration implementation")
+            .split("    #[cfg(feature = \"private-windows-lifecycle-proof\")]")
+            .next()
+            .expect("bounded private restoration implementation");
+        assert!(restoration.contains("restore_missing_service_with_registration("));
+        assert!(
+            !restoration.contains("app_path_upgrade_gate(")
+                && !restoration.contains("ensure_owned_start_entry("),
+            "private service-only restoration must not create a new launch projection"
+        );
+    }
 
     #[cfg(feature = "private-windows-lifecycle-proof")]
     #[test]

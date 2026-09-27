@@ -1,5 +1,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
+    [ValidateSet("historical", "public-rc6-stable")]
+    [string]$Profile = "historical",
     [string]$BaselineInstaller = "",
     [string]$FinalInstaller = "",
     [switch]$SkipBuild,
@@ -9,11 +11,38 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $cargoManifest = Join-Path $repoRoot "src/BatCave.App/src-tauri/Cargo.toml"
-$planPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/src/windows_lifecycle_proof_plan.v1.json"
+$planLeaf = if ($Profile -eq "public-rc6-stable") {
+    "windows_lifecycle_proof_public_rc6_stable_plan.v1.json"
+}
+else {
+    "windows_lifecycle_proof_plan.v1.json"
+}
+$controllerFeature = if ($Profile -eq "public-rc6-stable") {
+    "private-windows-lifecycle-public-rc6-stable"
+}
+else {
+    "private-windows-lifecycle-proof"
+}
+$planPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/src/$planLeaf"
 $artifactRoot = Join-Path $repoRoot "artifacts/windows-lifecycle-proof"
 $builtControllerPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/target/release/batcave-windows-lifecycle-proof.exe"
 $controllerPath = Join-Path $artifactRoot "batcave-windows-lifecycle-proof.exe"
 $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+
+function Assert-CompiledControllerIdentity {
+    param(
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][object]$Plan,
+        [Parameter(Mandatory = $true)][string]$PlanSha256,
+        [Parameter(Mandatory = $true)][string]$SourceCommit
+    )
+
+    if ($Identity.profile -cne $Plan.profile -or
+        $Identity.plan_sha256 -cne $PlanSha256 -or
+        $Identity.controller_source_commit_sha -cne $SourceCommit) {
+        throw "The lifecycle controller source, profile or compiled plan does not match this requested run."
+    }
+}
 
 function Assert-FixedArtifact {
     param(
@@ -111,7 +140,7 @@ if ($LASTEXITCODE -ne 0 -or -not [string]::IsNullOrWhiteSpace(($worktreeStatus -
 
 $env:BATCAVE_SOURCE_COMMIT_SHA = $sourceCommit
 if (-not $SkipBuild.IsPresent) {
-    cargo build --locked --release --manifest-path $cargoManifest --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof
+    cargo build --locked --release --manifest-path $cargoManifest --bin batcave-windows-lifecycle-proof --features $controllerFeature
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -125,6 +154,14 @@ $stagedControllerSha256 = (Get-FileHash -LiteralPath $controllerPath -Algorithm 
 if ($stagedControllerSha256 -cne $builtControllerSha256) {
     throw "Staged lifecycle proof controller does not match the built bytes."
 }
+
+$identityJson = & $controllerPath identity
+if ($LASTEXITCODE -ne 0) {
+    throw "The lifecycle controller could not report its compiled identity."
+}
+$identity = $identityJson | ConvertFrom-Json
+$expectedPlanSha256 = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Assert-CompiledControllerIdentity -Identity $identity -Plan $plan -PlanSha256 $expectedPlanSha256 -SourceCommit $sourceCommit
 
 $action = if ($Run.IsPresent) { "run" } else { "preflight" }
 & $controllerPath $action

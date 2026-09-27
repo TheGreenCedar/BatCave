@@ -462,24 +462,45 @@ mod tests {
     fn rejected_latest_settings_stay_unsaved_after_older_writes_and_recover_only_on_new_write() {
         let (mut writer, path) = writer("overflow");
         let release = writer.block_for_test();
-        for seq in 0..QUEUE_CAPACITY {
+        writer
+            .write_json(
+                UserStorageComponent::Settings,
+                &serde_json::json!({"seq":0}),
+                0,
+            )
+            .unwrap();
+        // Queue capacity is independent of disk work. Keep one older durable
+        // settings write and fill the other blocked slots without redundant I/O.
+        for _ in 1..QUEUE_CAPACITY {
+            writer
+                .submit(Job {
+                    generation: 0,
+                    at_ms: 0,
+                    component: None,
+                    coalescible: false,
+                    operation: Box::new(|_| {}),
+                })
+                .unwrap();
+        }
+        assert_eq!(
             writer
                 .write_json(
                     UserStorageComponent::Settings,
-                    &serde_json::json!({"seq":seq}),
-                    seq as u64,
+                    &serde_json::json!({"seq":999}),
+                    999
                 )
-                .unwrap();
-        }
-        assert!(writer
-            .write_json(
-                UserStorageComponent::Settings,
-                &serde_json::json!({"seq":999}),
-                999
-            )
-            .is_err());
+                .unwrap_err()
+                .summary,
+            "writer queue full"
+        );
         release.send(()).unwrap();
-        assert!(writer.flush(Duration::from_secs(3)).is_err());
+        assert_eq!(
+            writer.flush(Duration::from_secs(3)),
+            Err("persistence_flush_failed".into())
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(persisted, serde_json::json!({"seq":0}));
         writer
             .write_json(
                 UserStorageComponent::WarmCache,
@@ -487,7 +508,10 @@ mod tests {
                 1000,
             )
             .unwrap();
-        assert!(writer.flush(Duration::from_secs(3)).is_err());
+        assert_eq!(
+            writer.flush(Duration::from_secs(3)),
+            Err("persistence_flush_failed".into())
+        );
         let settings = writer
             .health()
             .components
@@ -514,6 +538,9 @@ mod tests {
             writer.health().state,
             crate::contracts::RuntimePersistenceState::Healthy
         );
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(persisted, serde_json::json!({"seq":1001}));
         drop(writer);
         let _ = std::fs::remove_dir_all(path);
     }
