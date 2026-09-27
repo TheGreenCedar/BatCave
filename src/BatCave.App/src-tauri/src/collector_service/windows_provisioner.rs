@@ -7329,12 +7329,19 @@ mod native {
     pub(super) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, String> {
         let roots = fixed_roots()?;
         let principals = SecurityPrincipals::load_with_service()?;
+        open_protected_etw_lease_root_at(roots, &principals)
+    }
+
+    fn open_protected_etw_lease_root_at(
+        roots: FixedRoots,
+        principals: &SecurityPrincipals,
+    ) -> Result<ProtectedEtwLeaseRoot, String> {
         let program_data = open_directory(
             &roots.program_data,
             "collector_service_programdata_open_failed",
         )?;
-        let product = open_and_verify_root(&roots.product, false, &principals)?;
-        let service = open_and_verify_root(&roots.service, true, &principals)?;
+        let product = open_and_verify_root(&roots.product, false, principals)?;
+        let service = open_and_verify_root(&roots.service, true, principals)?;
         let install_id = protected_root_install_id(service.raw())?;
         let mut leaves = Vec::new();
         for leaf in [
@@ -7342,7 +7349,7 @@ mod native {
             ETW_OWNER_LOCK_FILE_NAME,
             UPGRADE_JOURNAL_FILE_NAME,
         ] {
-            if let Some(handle) = verify_optional_leaf(&roots.service.join(leaf), &principals)? {
+            if let Some(handle) = verify_optional_leaf(&roots.service.join(leaf), principals)? {
                 if retain_verified_leaf(leaf) {
                     leaves.push(handle);
                 }
@@ -7751,8 +7758,110 @@ mod native {
     }
 
     #[cfg(test)]
-    pub(super) fn mutable_lease_handle_is_released_after_verification() -> bool {
-        !retain_verified_leaf(ETW_LEASE_FILE_NAME) && retain_verified_leaf(ETW_OWNER_LOCK_FILE_NAME)
+    mod protected_root_tests {
+        use super::*;
+        use crate::collector_service::etw_lease::{
+            EtwControllerIdentityV1, EtwLeaseObservation, EtwLeasePhase, EtwLeaseStore, EtwLeaseV1,
+            EtwSessionIdentityV1, WindowsEtwOwnerAcquire, WindowsEtwOwnerGuard,
+            ETW_LEASE_SCHEMA_VERSION,
+        };
+
+        #[test]
+        fn mutable_lease_verification_does_not_block_atomic_replacement() {
+            let temporary = tempfile::tempdir().expect("isolated protected-root fixture");
+            let program_data = temporary.path().to_path_buf();
+            let mut principals = SecurityPrincipals::load_with_service().expect("fixed principals");
+            let directory = open_directory(&program_data, "fixture owner").expect("fixture opens");
+            let security = OwnedSecurityInfo::read(directory.raw(), "fixture owner")
+                .expect("fixture security");
+            let sid_size = unsafe { GetLengthSid(security.owner) } as usize;
+            assert!(sid_size > 0);
+            // Only this isolated fixture maps its user owner to the system role;
+            // production still loads the fixed LocalSystem SID.
+            principals.system = OwnedSid(
+                unsafe { std::slice::from_raw_parts(security.owner.cast::<u8>(), sid_size) }
+                    .to_vec(),
+            );
+            drop((security, directory));
+            let system_sid = sid_string(&principals.system).expect("fixture owner SID");
+            let service_sid = sid_string(principals.service().unwrap()).unwrap();
+            let product = program_data.join(PRODUCT_ROOT_NAME);
+            let service = product.join(SERVICE_ROOT_NAME);
+            for (path, service_leaf, mask) in [
+                (&product, false, FILE_GENERIC_READ_EXECUTE),
+                (&service, true, FILE_MODIFY),
+            ] {
+                let sddl = format!("O:{system_sid}D:P(A;OICI;FA;;;{system_sid})(A;OICI;FA;;;BA)(A;OICI;0x{mask:08x};;;{service_sid})");
+                create_or_verify_root(path, &sddl, service_leaf, &principals, &mut false)
+                    .expect("isolated root policy verifies");
+            }
+            let open_root = || {
+                open_protected_etw_lease_root_at(
+                    FixedRoots {
+                        program_data: program_data.clone(),
+                        product: product.clone(),
+                        service: service.clone(),
+                    },
+                    &principals,
+                )
+                .expect("production protected-root verification")
+            };
+            let root = open_root();
+            let mut lease = EtwLeaseV1 {
+                schema_version: ETW_LEASE_SCHEMA_VERSION,
+                phase: EtwLeasePhase::Intent,
+                install_id: root.install_id(),
+                service_generation: [2; 16],
+                service_instance_id: [3; 16],
+                boot_identity: [4; 16],
+                controller: EtwControllerIdentityV1 {
+                    process_id: 10,
+                    process_started_at: 20,
+                },
+                session: EtwSessionIdentityV1 {
+                    name: "BatCave isolated lease fixture".to_string(),
+                    provider_id: [5; 16],
+                    session_flags: 1,
+                    configuration_digest: [6; 32],
+                },
+            };
+            drop(root);
+            let lease_path = service.join(ETW_LEASE_FILE_NAME);
+            let owner_path = service.join(ETW_OWNER_LOCK_FILE_NAME);
+            std::fs::write(&lease_path, serde_json::to_vec(&lease).unwrap()).unwrap();
+            std::fs::write(&owner_path, b"owner").unwrap();
+            let root = open_root();
+            let owner = match WindowsEtwOwnerGuard::try_acquire(&root).expect("fixture owner opens")
+            {
+                WindowsEtwOwnerAcquire::Acquired(owner) => owner,
+                WindowsEtwOwnerAcquire::Contended => panic!("fixture owner unexpectedly contended"),
+            };
+            let store = EtwLeaseStore::new(&root);
+            let prior = store
+                .observe(owner.authority())
+                .expect("existing lease observed");
+            assert_eq!(
+                prior.observation,
+                EtwLeaseObservation::Trusted(lease.clone())
+            );
+            lease.phase = EtwLeasePhase::Active;
+            store
+                .replace(owner.authority(), &prior, &lease)
+                .expect("verified mutable lease replaces atomically");
+            assert_eq!(
+                store.observe(owner.authority()).unwrap().observation,
+                EtwLeaseObservation::Trusted(lease)
+            );
+            drop(owner);
+            let moved_owner = service.join("replaced-owner.lock");
+            assert!(
+                std::fs::rename(&owner_path, &moved_owner).is_err(),
+                "root guard retains the immutable owner identity"
+            );
+            drop(root);
+            std::fs::rename(&owner_path, &moved_owner)
+                .expect("owner identity releases with the root guard");
+        }
     }
 
     fn protected_root_install_id(handle: HANDLE) -> Result<[u8; 16], String> {
@@ -8876,11 +8985,6 @@ mod tests {
     #[test]
     fn lifecycle_probe_requests_access_that_conflicts_with_the_owner() {
         assert!(native::lifecycle_probe_requests_write_access());
-    }
-
-    #[test]
-    fn mutable_lease_verification_does_not_block_atomic_replacement() {
-        assert!(native::mutable_lease_handle_is_released_after_verification());
     }
 
     #[test]

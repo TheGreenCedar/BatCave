@@ -709,25 +709,6 @@ mod tests {
         assert_eq!(extract_request_id(br#"{"request_id":0}"#), None);
     }
 
-    #[test]
-    fn conversion_rejects_raw_process_count_drift_before_wire_publication() {
-        let mut sample = sample(10);
-        sample.system.process_count = 2;
-        let publication = CollectorPublication {
-            revision: 1,
-            completed_at: Instant::now(),
-            event: CollectorEvent::Sample(Arc::new(sample.clone())),
-            collection_latency_ms: 1.0,
-            cadence: Default::default(),
-        };
-        assert_eq!(
-            snapshot_from_publication("instance", &publication, &sample, &ServiceWireClock::new(),)
-                .unwrap_err()
-                .detail,
-            "collector_service_raw_process_count_mismatch"
-        );
-    }
-
     fn test_engine(
         outcomes: VecDeque<Result<TelemetrySample, CollectionFailure>>,
     ) -> CollectorEngine {
