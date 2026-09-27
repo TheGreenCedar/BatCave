@@ -14,6 +14,8 @@ First qualify a signed sparse MSIX identity package with an external location be
 
 Use visible manifest visual elements: the identity-only sample's `AppListEntry="none"` deliberately hides the app. User pinning remains separate from automatic All Apps discoverability.
 
+Compatibility gate: BatCave's current Windows contract remains `10.0.16299` or later. External-location package identity requires build `19041`; skipping registration on builds 16299-19040 does not satisfy automatic Start discovery and guaranteed all-user cleanup there. Before implementation, qualify another ownership mechanism for that supported range or obtain explicit approval to change the support contract and release/upgrade qualification matrix. This proposal does not raise the Windows floor.
+
 ```mermaid
 flowchart LR
     Install[Verified NSIS transaction] --> Stage[Stage signed fixed identity at verified external location]
@@ -47,6 +49,6 @@ Existing raw links have no trustworthy creation receipt. A new receipt cannot es
 
 Use genuine standard users A/B, an existing logged-out user C, a newly created user, and an over-the-shoulder administrator. Prove automatic Start discovery and activation, repeat launch, repair, upgrade, rejected signatures/identities/locations, interrupted deployment, and rollback. Then exercise uninstall separately through Apps & Features, admin and SYSTEM paths. Verify all-user registration and provisioning absence, no broken package-owned Start entry after another login, no new-user reprojection, and retained user data. Preserve user-created collisions and record legacy links separately.
 
-This needs a disposable Windows host and exact approved signed artifacts. Hosted compilation cannot replace these observations. #240's historical rc.2 upgrade proof is a separate gate: its existing controller finishes with uninstall and must not be run against an unrelated installed baseline. Coordinate the two evidence packets only after their exact package identities and starting states agree.
+Qualify the oldest supported Windows build and the first sparse-capable build, 19041, separately. This needs disposable Windows hosts and exact approved signed artifacts. Hosted compilation cannot replace these observations. #240's historical rc.2 upgrade proof is a separate gate: its existing controller finishes with uninstall and must not be run against an unrelated installed baseline. Coordinate the two evidence packets only after their exact package identities and starting states agree.
 
 The current unsigned-release path remains unchanged. This proposal creates a signing prerequisite for the proposed #216 implementation; it does not authorize credentials, paid resources, public releases, or installed lifecycle actions, and it does not close #42, #216, #240 or #76.
