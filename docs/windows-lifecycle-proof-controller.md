@@ -4,6 +4,18 @@ The installed collector-service acceptance matrix must run through one source-co
 
 This contract defines the attended Windows verification tracked in #69 and #70. The private controller owns the fixed plan, verified artifacts, authenticated elevation broker, protected evidence directory, and child Job Objects. Its readiness gates are enabled after integrated review. Installed lifecycle proof still requires a successful attended run and a verified sanitized export.
 
+## Supported public pair
+
+Issue #240 qualifies the supported public `v0.2.0-rc.6` package to public `v0.2.0` pair. It does not require reconstructing the unrecovered mixed development rc2 installation. The original historical v1 plan and its stopped `1066/1`, exact CLI, shortcut and rollback guards remain the default profile.
+
+Select the separate, fixed public pair with `scripts/run-windows-lifecycle-proof.ps1 -Profile public-rc6-stable`. Its private compile feature embeds only the rc6/stable v1 plan; the controller does not accept another version, plan path or operation from the caller. Before `preflight` or `-Run`, including `-SkipBuild`, the wrapper compares the controller's read-only `identity` output with the requested profile, physical plan SHA-256 and exact clean source commit. A stale controller built for another profile or source cannot reach UAC.
+
+The public profile starts from the exact running rc6 service, monitor and uninstaller with no historical CLI, no shared desktop or Start Menu shortcuts, and the exact machine App Paths registration. It first upgrades to stable, then uninstalls and reinstalls the bound rc6 baseline. The baseline restart, crash recovery and failed-replacement rollback checks use that same running rc6 authority. `PublicBaselineUpgradeReady` records the clean rc6 state; it does not copy or seed a historical CLI. The standard parent still seeds the declared retired-helper fixtures and unknown sentinel, then verifies their migration and retention after stable upgrade and the immediate same-version retry.
+
+The rollback operation remains the controller's fixed production provisioner helper with a separately bound failing service fixture, restoring the exact public rc6 baseline. This is failed-replacement rollback evidence, not a fault injected into the published stable installer. The incompatible and failing service roles retain fixed behavior, exact source, bytes, size and ProductVersion. `scripts/build-windows-lifecycle-service-fixture.ps1 -Profile public-rc6-stable` verifies the selected retained bytes; rebuilding does not authorize replacing their pins.
+
+Both plans use the same authenticated worker, settlement and create-new evidence boundaries. Public initial and upgrade-ready receipts have distinct assertions; the public success packet preserves the ordered 28-receipt manifest and exact service generations. Public initial restoration requires running rc6 authority and upgrade-ready restoration requires a clean running rc6 baseline. Unknown observations, a CLI reappearance, shared shortcut residue, mismatched App Paths, an unsettled process or an unbound artifact still fail closed. These source gates do not establish installed qualification; acceptance requires the independently reviewed exact input packet and a successful attended run with its verified sanitized export.
+
 ## Fixed architecture
 
 The private Rust proof binary runs as a standard-user parent and one elevated worker. They follow this sequence:

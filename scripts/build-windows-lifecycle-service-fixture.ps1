@@ -1,5 +1,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
+    [ValidateSet("historical", "public-rc6-stable")]
+    [string]$Profile = "historical",
     [Parameter(Mandatory = $true)]
     [string]$SourceRoot,
 
@@ -9,7 +11,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$planPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/src/windows_lifecycle_proof_plan.v1.json"
+$planLeaf = if ($Profile -eq "public-rc6-stable") {
+    "windows_lifecycle_proof_public_rc6_stable_plan.v1.json"
+}
+else {
+    "windows_lifecycle_proof_plan.v1.json"
+}
+$planPath = Join-Path $repoRoot "src/BatCave.App/src-tauri/src/$planLeaf"
 $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
 $fixturePlan = if ($Fixture -eq "incompatible") {
     $plan.incompatible_service_fixture
@@ -20,11 +28,12 @@ else {
 $fixtureSourceCommit = [string]$fixturePlan.build_source_commit_sha
 $fixtureProductVersion = [string]$fixturePlan.product_version
 $artifactRoot = Join-Path $repoRoot "artifacts/windows-lifecycle-proof"
+$targetPrefix = if ($Profile -eq "public-rc6-stable") { "public-rc6-stable-" } else { "" }
 $targetRoot = if ($Fixture -eq "incompatible") {
-    Join-Path $artifactRoot "incompatible-service-target"
+    Join-Path $artifactRoot "${targetPrefix}incompatible-service-target"
 }
 else {
-    Join-Path $artifactRoot "rollback-failing-target"
+    Join-Path $artifactRoot "${targetPrefix}rollback-failing-target"
 }
 $fixtureBinary = if ($Fixture -eq "incompatible") {
     "batcave-collector-service"

@@ -1,0 +1,51 @@
+{
+  "schema_version": "batcave_windows_lifecycle_proof_plan_v1",
+  "profile": "supported_public_rc6_to_stable",
+  "sequence": 1,
+  "baseline": {
+    "source_commit_sha": "a2f16f222d276dfd93cc898c6b337f232bd80dc2",
+    "installer_relative_path": "artifacts/windows-lifecycle-proof/public-rc6-installer.exe",
+    "installer_size": 277010916,
+    "installer_sha256": "fda302c180fd7ffb6d2b1a6cd9ab16d8404675ea3b72ed3f3bebfac88eed5374",
+    "monitor_sha256": "b65b638f67dc48efc811a3bca44cff7fcec8960fd75809185e9043fb1f407df6",
+    "service_sha256": "cb9f542dc61fbfcc432c32be3f9ded204e8678266d91920d74a7fca8614f82de",
+    "uninstaller_size": 151876,
+    "uninstaller_sha256": "1cf8c8567e85d30cf369cf65da51a178780bd3de238889e8b8117a27e5372e52"
+  },
+  "final_candidate": {
+    "source_commit_sha": "2355d82b08a097259a67ccd789da032945768027",
+    "installer_relative_path": "artifacts/windows-lifecycle-proof/public-stable-installer.exe",
+    "installer_size": 276990386,
+    "installer_sha256": "a3826ad78a0370fc534abc3d84c8c92a09ea99ac93c6baa2391e9fe45a386cb4",
+    "monitor_sha256": "9b8c01d426e83467f3dd0e1612bac9cb28901a3380cb94d90dd23b5c07ecf78b",
+    "service_sha256": "00684ac1207fe7d396bbca642c914001fab1835eece277139dc391d5d7f6d029",
+    "uninstaller_size": 151846,
+    "uninstaller_sha256": "c04216119683d8378c804805f858208e552f99b454ef2c2eb04e506c3161f04b"
+  },
+  "incompatible_service_fixture": {
+    "build_source_commit_sha": "2355d82b08a097259a67ccd789da032945768027",
+    "relative_path": "artifacts/windows-lifecycle-proof/public-incompatible-service.exe",
+    "size": 1692160,
+    "sha256": "0ae59d585041e02da6ca7257f3f6de402a8b07972717cd7ae866cafaa219cd47",
+    "product_version": "0.2.0-rc.3",
+    "behavior": "incompatible_release"
+  },
+  "rollback_failing_service_fixture": {
+    "build_source_commit_sha": "2355d82b08a097259a67ccd789da032945768027",
+    "relative_path": "artifacts/windows-lifecycle-proof/public-rollback-failing-service.exe",
+    "size": 1697792,
+    "sha256": "7378726877ab5aa787fab7088746bd042c2fb67bf17796402e94ac65c76c43ee",
+    "product_version": "0.2.0",
+    "behavior": "fail_on_scm_start"
+  },
+  "allowlisted_start": {
+    "state": "public_rc6_running",
+    "product_version": "0.2.0-rc.6",
+    "monitor_sha256": "b65b638f67dc48efc811a3bca44cff7fcec8960fd75809185e9043fb1f407df6",
+    "service_sha256": "cb9f542dc61fbfcc432c32be3f9ded204e8678266d91920d74a7fca8614f82de",
+    "uninstaller_sha256": "1cf8c8567e85d30cf369cf65da51a178780bd3de238889e8b8117a27e5372e52",
+    "legacy_cli_sha256": null,
+    "win32_exit_code": 0,
+    "service_specific_exit_code": 0
+  }
+}

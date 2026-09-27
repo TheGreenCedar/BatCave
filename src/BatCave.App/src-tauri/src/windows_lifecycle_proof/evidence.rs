@@ -27,7 +27,7 @@ use crate::windows_lifecycle_proof_contract::{
     DesktopFileObservation, DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult,
     DesktopProcessObservation, DesktopSecondInstanceObservation, DesktopServiceProcessObservation,
     DesktopVisibleObservation, EvidenceReceipt, LifecycleStage, Observation, ProofPlan,
-    SUCCESS_PRIVATE_EVIDENCE_LEAVES,
+    SUCCESS_PRIVATE_EVIDENCE_LEAVES, UPGRADE_READY_EVIDENCE_LEAF,
 };
 use crate::windows_network::NetworkAttributionMonitor;
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,7 @@ struct SanitizedPrivateEvidence {
 #[serde(rename_all = "snake_case")]
 enum SanitizedEvidenceAssertion {
     InitialLegacyStopped,
+    InitialPublicRunning,
     FinalInstalledRunning,
     ProductAbsent,
     BaselineInstalledRunning,
@@ -139,6 +140,7 @@ enum SanitizedEvidenceAssertion {
     BaselineRecovered,
     BaselineRollbackRecovered,
     LegacyResidueSeeded,
+    PublicBaselineUpgradeReady,
     FinalUpgradedRunning,
     FinalStopped,
     FinalCrashed,
@@ -1114,6 +1116,9 @@ fn parent_residue_capture_point(
         "legacy-residue-seeded-state.private.json" => {
             ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::LegacyResidueSeeded)
         }
+        "baseline-upgrade-ready-state.private.json" => {
+            ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::PublicBaselineUpgradeReady)
+        }
         "final-upgrade-state.private.json" => {
             ParentCurrentUserCapturePoint::Checkpoint(LifecycleStage::FinalUpgrade)
         }
@@ -1302,6 +1307,7 @@ struct ProjectedMachineRegistration {
 pub(super) enum RestorationAuthorityExpectation {
     AllowlistedStopped,
     BaselineRunning,
+    PublicBaselineRunning,
     FinalRunning,
     ProductAbsent,
 }
@@ -1649,6 +1655,7 @@ pub(super) fn validate_restoration_machine_authority(
     let (installed, expect_runtime, expect_shortcuts, expect_app_path) = match expectation {
         RestorationAuthorityExpectation::AllowlistedStopped => (true, false, None, false),
         RestorationAuthorityExpectation::BaselineRunning => (true, true, Some(true), false),
+        RestorationAuthorityExpectation::PublicBaselineRunning => (true, true, Some(false), true),
         RestorationAuthorityExpectation::FinalRunning => (true, true, Some(false), true),
         RestorationAuthorityExpectation::ProductAbsent => (false, false, Some(false), false),
     };
@@ -2456,7 +2463,7 @@ fn validate_sanitized_private_evidence(
         .map(|entry| (entry.receipt.name.as_str(), entry))
         .collect::<BTreeMap<_, _>>();
     let seeded_sentinel = by_name
-        .get("legacy-residue-seeded-state.private.json")
+        .get(UPGRADE_READY_EVIDENCE_LEAF)
         .and_then(|entry| entry.machine.unknown_helper_sentinel.as_ref())
         .ok_or_else(|| "lifecycle_sanitized_unknown_helper_sentinel_missing".to_string())?;
     for (index, leaf) in SUCCESS_PRIVATE_EVIDENCE_LEAVES.iter().enumerate() {
@@ -2600,6 +2607,15 @@ struct ServiceGeneration {
 fn validate_lifecycle_continuity(
     entries: &BTreeMap<&str, &SanitizedPrivateEvidence>,
 ) -> Result<(), String> {
+    let initial = required_entry(entries, "initial-state.private.json")?;
+    if initial.assertion == SanitizedEvidenceAssertion::InitialPublicRunning {
+        require_new_generation(
+            &running_generation(&initial.machine)?,
+            &running_generation(
+                &required_entry(entries, "final-repair-state.private.json")?.machine,
+            )?,
+        )?;
+    }
     let mut installed_boundary = None;
     let mut run_etw_identity = None;
     let mut pre_uninstall_install_id = None;
@@ -2706,9 +2722,8 @@ fn validate_lifecycle_continuity(
         &required_entry(entries, "baseline-rollback-recovery-state.private.json")?.machine,
     )?;
     require_new_generation(&baseline_recovered, &baseline_rollback)?;
-    let seeded = running_generation(
-        &required_entry(entries, "legacy-residue-seeded-state.private.json")?.machine,
-    )?;
+    let seeded =
+        running_generation(&required_entry(entries, UPGRADE_READY_EVIDENCE_LEAF)?.machine)?;
     if seeded != baseline_rollback {
         return Err("lifecycle_sanitized_generation_continuity_invalid".to_string());
     }
@@ -3499,7 +3514,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn assertion_for_leaf(value: &str) -> SanitizedEvidenceAssertion {
     match value {
-        "initial-state.private.json" => SanitizedEvidenceAssertion::InitialLegacyStopped,
+        "initial-state.private.json" => {
+            if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+                SanitizedEvidenceAssertion::InitialPublicRunning
+            } else {
+                SanitizedEvidenceAssertion::InitialLegacyStopped
+            }
+        }
         "final-repair-state.private.json" => SanitizedEvidenceAssertion::FinalInstalledRunning,
         "final-primary-desktop.private.json"
         | "baseline-primary-desktop.private.json"
@@ -3525,6 +3546,9 @@ fn assertion_for_leaf(value: &str) -> SanitizedEvidenceAssertion {
         }
         "legacy-residue-seeded-state.private.json" => {
             SanitizedEvidenceAssertion::LegacyResidueSeeded
+        }
+        "baseline-upgrade-ready-state.private.json" => {
+            SanitizedEvidenceAssertion::PublicBaselineUpgradeReady
         }
         "final-upgrade-state.private.json" => SanitizedEvidenceAssertion::FinalUpgradedRunning,
         "final-restart-stopped-state.private.json" | "final-stopped-service-state.private.json" => {
@@ -3566,7 +3590,18 @@ fn validate_stage_machine_assertion(
                     service_specific_exit_code: plan.allowlisted_start.service_specific_exit_code,
                 },
             )?;
-            require_legacy_cli(machine, Some(&plan.allowlisted_start.legacy_cli_sha256))
+            require_legacy_cli(machine, Some(plan.historical_cli_sha256()?))
+        }
+        SanitizedEvidenceAssertion::InitialPublicRunning => {
+            if !plan.is_public_pair() {
+                return Err("lifecycle_sanitized_public_profile_required".to_string());
+            }
+            validate_installed_machine(
+                machine,
+                baseline_artifacts(plan),
+                ServiceExpectation::Running,
+            )?;
+            require_legacy_cli(machine, None)
         }
         SanitizedEvidenceAssertion::FinalInstalledRunning
         | SanitizedEvidenceAssertion::FinalRecovered => {
@@ -3613,7 +3648,20 @@ fn validate_stage_machine_assertion(
                 baseline_artifacts(plan),
                 ServiceExpectation::Running,
             )?;
-            require_legacy_cli(machine, Some(&plan.allowlisted_start.legacy_cli_sha256))?;
+            require_legacy_cli(machine, Some(plan.historical_cli_sha256()?))?;
+            validate_known_helper_seed(machine)?;
+            validate_unknown_helper_sentinel(machine)
+        }
+        SanitizedEvidenceAssertion::PublicBaselineUpgradeReady => {
+            if !plan.is_public_pair() {
+                return Err("lifecycle_sanitized_public_profile_required".to_string());
+            }
+            validate_installed_machine(
+                machine,
+                baseline_artifacts(plan),
+                ServiceExpectation::Running,
+            )?;
+            require_legacy_cli(machine, None)?;
             validate_known_helper_seed(machine)?;
             validate_unknown_helper_sentinel(machine)
         }
@@ -3694,7 +3742,7 @@ fn allowlisted_artifacts(plan: &ProofPlan) -> InstalledArtifactExpectation<'_> {
         service_size: None,
         uninstaller_sha256: &plan.allowlisted_start.uninstaller_sha256,
         uninstaller_size: None,
-        shared_shortcuts_present: true,
+        shared_shortcuts_present: !plan.is_public_pair(),
     }
 }
 
@@ -3705,7 +3753,7 @@ fn baseline_artifacts(plan: &ProofPlan) -> InstalledArtifactExpectation<'_> {
         service_size: None,
         uninstaller_sha256: &plan.baseline.uninstaller_sha256,
         uninstaller_size: Some(plan.baseline.uninstaller_size),
-        shared_shortcuts_present: true,
+        shared_shortcuts_present: !plan.is_public_pair(),
     }
 }
 
@@ -4129,7 +4177,7 @@ fn validate_sanitized_desktop_phase(
     validate_sanitized_collector_runtime(observation.phase, &observation.collector_runtime, plan)?;
     validate_sanitized_desktop_process_roles(observation)?;
     validate_sanitized_second_instance(observation)?;
-    validate_desktop_visible(observation.phase, &observation.visible)
+    validate_desktop_visible(observation.phase, &observation.visible, plan)
 }
 
 fn validate_sanitized_desktop_process(
@@ -4580,7 +4628,7 @@ mod tests {
         let entry = export
             .private_evidence
             .iter()
-            .find(|entry| entry.receipt.name == "legacy-residue-seeded-state.private.json")
+            .find(|entry| entry.receipt.name == UPGRADE_READY_EVIDENCE_LEAF)
             .expect("seeded entry");
         let packet = packet_for_test(PrivateSuccessPayload::Machine(raw_machine(&entry.machine)));
         let json = serde_json::to_string(&packet).expect("private packet json");
@@ -5070,7 +5118,10 @@ mod tests {
 
     #[test]
     fn raw_machine_registration_projects_exact_v2_semantics_and_rejects_hostile_drift() {
-        let plan = parse_plan().expect("plan");
+        // Retain present-shortcut field coverage even when the selected public profile requires absence.
+        let plan: ProofPlan =
+            serde_json::from_str(include_str!("../windows_lifecycle_proof_plan.v1.json"))
+                .expect("historical v1");
         let receipts = success_receipts();
         let export = valid_export(&plan, &receipts);
         let machine = export
@@ -5350,21 +5401,28 @@ mod tests {
     #[test]
     fn restoration_authority_requires_exact_runtime_residue_and_registration_profiles() {
         let plan = parse_plan().expect("plan");
+        let baseline_expectation = if plan.is_public_pair() {
+            RestorationAuthorityExpectation::PublicBaselineRunning
+        } else {
+            RestorationAuthorityExpectation::BaselineRunning
+        };
+        let historical: ProofPlan =
+            serde_json::from_str(include_str!("../windows_lifecycle_proof_plan.v1.json"))
+                .expect("historical v1");
         let baseline = raw_machine(&installed_machine(
             baseline_artifacts(&plan),
             ServiceExpectation::Running,
             false,
         ));
-        assert!(validate_restoration_machine_authority(
-            &baseline,
-            RestorationAuthorityExpectation::BaselineRunning,
-        )
-        .is_ok());
-        assert!(validate_restoration_machine_authority(
-            &baseline,
-            RestorationAuthorityExpectation::FinalRunning,
-        )
-        .is_err());
+        assert!(validate_restoration_machine_authority(&baseline, baseline_expectation,).is_ok());
+        assert_eq!(
+            validate_restoration_machine_authority(
+                &baseline,
+                RestorationAuthorityExpectation::FinalRunning,
+            )
+            .is_ok(),
+            plan.is_public_pair()
+        );
 
         let final_running = raw_machine(&installed_machine(
             final_artifacts(&plan),
@@ -5378,10 +5436,10 @@ mod tests {
         .is_ok());
 
         let allowlisted_stopped = raw_machine(&installed_machine(
-            allowlisted_artifacts(&plan),
+            allowlisted_artifacts(&historical),
             ServiceExpectation::Stopped {
-                win32_exit_code: plan.allowlisted_start.win32_exit_code,
-                service_specific_exit_code: plan.allowlisted_start.service_specific_exit_code,
+                win32_exit_code: historical.allowlisted_start.win32_exit_code,
+                service_specific_exit_code: historical.allowlisted_start.service_specific_exit_code,
             },
             false,
         ));
@@ -5393,7 +5451,7 @@ mod tests {
 
         let mut allowlisted_with_stopping_lease = allowlisted_stopped.clone();
         let mut stopping_lease = healthy_etw(
-            &plan.allowlisted_start.service_sha256,
+            &historical.allowlisted_start.service_sha256,
             &test_service_instance_id(55, 7),
         )
         .lease;
@@ -5470,52 +5528,143 @@ mod tests {
 
         let mut released_lock = baseline.clone();
         released_lock.etw_owner_lock = RuntimeLockObservation::Released {};
-        assert!(validate_restoration_machine_authority(
-            &released_lock,
-            RestorationAuthorityExpectation::BaselineRunning,
-        )
-        .is_err());
+        assert!(
+            validate_restoration_machine_authority(&released_lock, baseline_expectation,).is_err()
+        );
 
         let mut etw_loss = baseline.clone();
         let Observation::Present(session) = &mut etw_loss.etw_session else {
             panic!("ETW session");
         };
         session.events_lost = 1;
-        assert!(validate_restoration_machine_authority(
-            &etw_loss,
-            RestorationAuthorityExpectation::BaselineRunning,
-        )
-        .is_err());
+        assert!(validate_restoration_machine_authority(&etw_loss, baseline_expectation,).is_err());
 
         let mut generation_drift = baseline.clone();
         let Observation::Present(lease) = &mut generation_drift.etw_lease else {
             panic!("ETW lease");
         };
         lease.service_generation[0] ^= 1;
-        assert!(validate_restoration_machine_authority(
-            &generation_drift,
-            RestorationAuthorityExpectation::BaselineRunning,
-        )
-        .is_err());
+        assert!(
+            validate_restoration_machine_authority(&generation_drift, baseline_expectation,)
+                .is_err()
+        );
 
         let mut invalid_boundaries = baseline.clone();
         let Observation::Present(boundaries) = &mut invalid_boundaries.installed_boundaries else {
             panic!("installed boundaries");
         };
         boundaries.service_aces.clear();
-        assert!(validate_restoration_machine_authority(
-            &invalid_boundaries,
-            RestorationAuthorityExpectation::BaselineRunning,
-        )
-        .is_err());
+        assert!(
+            validate_restoration_machine_authority(&invalid_boundaries, baseline_expectation,)
+                .is_err()
+        );
 
         let mut stale_registration = final_running;
         stale_registration
             .machine_registration
-            .public_desktop_shortcut = baseline.machine_registration.public_desktop_shortcut;
+            .public_desktop_shortcut = allowlisted_stopped
+            .machine_registration
+            .public_desktop_shortcut;
         assert!(validate_restoration_machine_authority(
             &stale_registration,
             RestorationAuthorityExpectation::FinalRunning,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn public_baseline_requires_running_authority_and_absent_legacy_components() {
+        let mut plan = parse_plan().expect("plan");
+        let historical: ProofPlan =
+            serde_json::from_str(include_str!("../windows_lifecycle_proof_plan.v1.json"))
+                .expect("historical v1");
+        plan.profile = crate::windows_lifecycle_proof_contract::PUBLIC_PAIR_PROFILE.to_string();
+        let baseline = installed_machine(
+            baseline_artifacts(&plan),
+            ServiceExpectation::Running,
+            false,
+        );
+        assert_eq!(
+            validate_stage_machine_assertion(
+                SanitizedEvidenceAssertion::InitialPublicRunning,
+                &baseline,
+                &plan
+            ),
+            Ok(())
+        );
+        let raw = raw_machine(&baseline);
+        assert_eq!(
+            validate_restoration_machine_authority(
+                &raw,
+                RestorationAuthorityExpectation::PublicBaselineRunning
+            ),
+            Ok(())
+        );
+        assert!(validate_restoration_machine_authority(
+            &raw,
+            RestorationAuthorityExpectation::BaselineRunning
+        )
+        .is_err());
+
+        let mut legacy_cli = baseline.clone();
+        legacy_cli.legacy_cli = Observation::Present(file(&"e".repeat(64)));
+        assert_eq!(
+            validate_stage_machine_assertion(
+                SanitizedEvidenceAssertion::InitialPublicRunning,
+                &legacy_cli,
+                &plan
+            ),
+            Err("lifecycle_sanitized_legacy_cli_identity_invalid".to_string())
+        );
+
+        let mut shared_shortcut = raw.clone();
+        shared_shortcut.machine_registration.public_desktop_shortcut =
+            raw_machine(&installed_machine(
+                allowlisted_artifacts(&historical),
+                ServiceExpectation::Running,
+                false,
+            ))
+            .machine_registration
+            .public_desktop_shortcut;
+        assert!(validate_restoration_machine_authority(
+            &shared_shortcut,
+            RestorationAuthorityExpectation::PublicBaselineRunning
+        )
+        .is_err());
+
+        let stopped = installed_machine(
+            baseline_artifacts(&plan),
+            ServiceExpectation::Stopped {
+                win32_exit_code: 0,
+                service_specific_exit_code: 0,
+            },
+            false,
+        );
+        assert!(validate_stage_machine_assertion(
+            SanitizedEvidenceAssertion::InitialPublicRunning,
+            &stopped,
+            &plan
+        )
+        .is_err());
+
+        let mut ready = baseline;
+        apply_parent_current_user_residue_fixture(
+            "baseline-upgrade-ready-state.private.json",
+            &mut ready,
+        );
+        assert_eq!(
+            validate_stage_machine_assertion(
+                SanitizedEvidenceAssertion::PublicBaselineUpgradeReady,
+                &ready,
+                &plan
+            ),
+            Ok(())
+        );
+        ready.legacy_cli = Observation::Present(file(&"e".repeat(64)));
+        assert!(validate_stage_machine_assertion(
+            SanitizedEvidenceAssertion::PublicBaselineUpgradeReady,
+            &ready,
+            &plan
         )
         .is_err());
     }
@@ -6337,9 +6486,10 @@ mod tests {
 
         assert_eq!(validate(&packet), Ok(()));
         for (index, entry) in packet.private_evidence.iter().enumerate() {
-            let historical_shortcuts_required = entry.receipt.name == "initial-state.private.json"
-                || entry.receipt.name.starts_with("baseline-")
-                || entry.receipt.name == "legacy-residue-seeded-state.private.json";
+            let historical_shortcuts_required = !plan.is_public_pair()
+                && (entry.receipt.name == "initial-state.private.json"
+                    || entry.receipt.name.starts_with("baseline-")
+                    || entry.receipt.name == UPGRADE_READY_EVIDENCE_LEAF);
             assert_eq!(
                 entry.machine.public_desktop_shortcut.is_some()
                     && entry.machine.common_start_menu_shortcut.is_some(),
@@ -6533,7 +6683,7 @@ mod tests {
             .find(|entry| entry.receipt.name == "final-missing-service-state.private.json")
             .expect("final missing service")
             .machine
-            .legacy_cli = Observation::Present(file(&plan.allowlisted_start.legacy_cli_sha256));
+            .legacy_cli = Observation::Present(file(&"f".repeat(64)));
         assert!(validate_sanitized_export_bytes(
             &serde_json::to_vec(&missing_service_cli_residue).expect("legacy cli residue"),
             &plan,
@@ -7272,7 +7422,7 @@ mod tests {
         let rollback = export
             .private_evidence
             .iter()
-            .find(|entry| entry.receipt.name == "legacy-residue-seeded-state.private.json")
+            .find(|entry| entry.receipt.name == UPGRADE_READY_EVIDENCE_LEAF)
             .expect("seeded entry");
         timeline
             .insert(
@@ -7545,6 +7695,7 @@ mod tests {
     }
 
     fn desktop_phase(phase: DesktopPhase, plan: &ProofPlan) -> SanitizedDesktopPhaseObservation {
+        let release_version = phase.expected_release_version(plan).expect("plan version");
         let state = phase.expected_collector_state();
         let active = state == DesktopCollectorState::Active;
         let incompatible = state == DesktopCollectorState::Incompatible;
@@ -7605,13 +7756,13 @@ mod tests {
                 protected_sample_current: active,
                 fallback_etw_disabled: !active,
                 service_version: active
-                    .then(|| env!("CARGO_PKG_VERSION").to_string())
+                    .then(|| release_version.to_string())
                     .or_else(|| incompatible.then(|| "0.2.0-rc.3".to_string())),
                 service_release_version: active
-                    .then(|| env!("CARGO_PKG_VERSION").to_string())
+                    .then(|| release_version.to_string())
                     .or_else(|| incompatible.then(|| "0.2.0-rc.3".to_string())),
                 negotiated_protocol_version: active.then_some(1),
-                minimum_desktop_version: active.then(|| env!("CARGO_PKG_VERSION").to_string()),
+                minimum_desktop_version: active.then(|| release_version.to_string()),
                 service_instance_id,
                 service_detail: if incompatible {
                     Some("collector_service_desktop_release_incompatible".to_string())
@@ -7866,8 +8017,11 @@ mod tests {
                         false,
                     );
                     machine.legacy_cli =
-                        Observation::Present(file(&plan.allowlisted_start.legacy_cli_sha256));
+                        Observation::Present(file(plan.historical_cli_sha256().expect("historical CLI")));
                     machine
+                }
+                SanitizedEvidenceAssertion::InitialPublicRunning => {
+                    installed_machine(baseline_artifacts(plan), ServiceExpectation::Running, false)
                 }
                 SanitizedEvidenceAssertion::FinalInstalledRunning => {
                     installed_machine(final_artifacts(plan), ServiceExpectation::Running, false)
@@ -7896,12 +8050,15 @@ mod tests {
                         true,
                     );
                     machine.legacy_cli =
-                        Observation::Present(file(&plan.allowlisted_start.legacy_cli_sha256));
+                        Observation::Present(file(plan.historical_cli_sha256().expect("historical CLI")));
                     machine.known_retired_helper_artifacts = KNOWN_RETIRED_HELPER_LEAVES
                         .iter()
                         .map(|leaf| known_helper_path_file(leaf))
                         .collect();
                     machine
+                }
+                SanitizedEvidenceAssertion::PublicBaselineUpgradeReady => {
+                    installed_machine(baseline_artifacts(plan), ServiceExpectation::Running, true)
                 }
                 SanitizedEvidenceAssertion::FinalUpgradedRunning => {
                     installed_machine(final_artifacts(plan), ServiceExpectation::Running, true)
@@ -7942,7 +8099,8 @@ mod tests {
         if matches!(
             receipt_name,
             "final-repair-state.private.json" | "final-primary-desktop.private.json"
-        ) {
+        ) || (receipt_name == "initial-state.private.json" && plan.is_public_pair())
+        {
             machine
                 .etw_session
                 .as_mut()
@@ -7961,6 +8119,7 @@ mod tests {
         let seeded_known = matches!(
             receipt_name,
             "legacy-residue-seeded-state.private.json"
+                | "baseline-upgrade-ready-state.private.json"
                 | "final-upgrade-state.private.json"
                 | "final-restart-stopped-state.private.json"
                 | "final-restart-state.private.json"
@@ -8003,6 +8162,11 @@ mod tests {
 
     fn test_generation_for_receipt(receipt_name: &str) -> Option<(u32, u64, u64)> {
         match receipt_name {
+            "initial-state.private.json"
+                if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") =>
+            {
+                Some((54, 5_400, 6))
+            }
             "final-repair-state.private.json" | "final-primary-desktop.private.json" => {
                 Some((55, 5_500, 7))
             }
@@ -8012,7 +8176,8 @@ mod tests {
             "baseline-restart-state.private.json" => Some((66, 6_600, 9)),
             "baseline-crash-recovery-state.private.json" => Some((67, 6_700, 10)),
             "baseline-rollback-recovery-state.private.json"
-            | "legacy-residue-seeded-state.private.json" => Some((68, 6_800, 11)),
+            | "legacy-residue-seeded-state.private.json"
+            | "baseline-upgrade-ready-state.private.json" => Some((68, 6_800, 11)),
             "final-upgrade-state.private.json" => Some((69, 6_900, 12)),
             "final-restart-state.private.json" => Some((70, 7_000, 13)),
             "final-crash-recovery-state.private.json" => Some((71, 7_100, 14)),

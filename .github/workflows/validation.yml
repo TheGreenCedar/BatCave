@@ -136,6 +136,30 @@ jobs:
           BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
         run: cargo build --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-proof
 
+      - name: Test the fixed public Windows lifecycle profile
+        env:
+          BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
+        run: cargo test --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --features private-windows-lifecycle-public-rc6-stable --lib windows_lifecycle_proof
+
+      - name: Verify the compiled public lifecycle identity
+        shell: pwsh
+        env:
+          BATCAVE_SOURCE_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          cargo clippy --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-public-rc6-stable -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-windows-lifecycle-proof --features private-windows-lifecycle-public-rc6-stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $identityJson = & ./src/BatCave.App/src-tauri/target/debug/batcave-windows-lifecycle-proof.exe identity
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $identity = $identityJson | ConvertFrom-Json
+          $planPath = 'src/BatCave.App/src-tauri/src/windows_lifecycle_proof_public_rc6_stable_plan.v1.json'
+          $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+          $planHash = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($identity.profile -cne $plan.profile -or $identity.plan_sha256 -cne $planHash -or $identity.controller_source_commit_sha -cne $env:BATCAVE_SOURCE_COMMIT_SHA) {
+            throw 'Compiled public lifecycle identity differs from the reviewed source and fixed plan.'
+          }
+
   linux:
     name: Linux validation
     runs-on: ubuntu-22.04

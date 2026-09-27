@@ -4451,7 +4451,7 @@ pub(crate) fn open_installed_service(candidate: &Candidate) -> Result<OwnedFile,
 
 pub(crate) fn open_allowlisted_legacy_cli(plan: &ProofPlan) -> Result<OwnedFile, String> {
     let legacy = OwnedFile::open_unchecked(Path::new(LEGACY_CLI_PATH), "allowlisted_legacy_cli")?;
-    if legacy.sha256_hex() != plan.allowlisted_start.legacy_cli_sha256 {
+    if legacy.sha256_hex() != plan.historical_cli_sha256()? {
         return Err("lifecycle_allowlisted_legacy_cli_identity_mismatch".to_string());
     }
     Ok(legacy)
@@ -4479,6 +4479,14 @@ pub(crate) fn require_allowlisted_parent_preflight(
     snapshot: &PreflightSnapshot,
     plan: &ProofPlan,
 ) -> Result<(), String> {
+    if plan.is_public_pair() {
+        require_installed_candidate(snapshot, &plan.baseline, true, "public_start")?;
+        let registry = require_present(&snapshot.uninstall_registry, "uninstall_registry")?;
+        return validate_allowlisted_product_version(
+            &registry.display_version,
+            &plan.allowlisted_start.product_version,
+        );
+    }
     let service = require_present(&snapshot.service, "service")?;
     if service.state != windows_sys::Win32::System::Services::SERVICE_STOPPED
         || service.process_id != 0
@@ -4505,7 +4513,7 @@ pub(crate) fn require_allowlisted_parent_preflight(
     )?;
     require_file_hash(
         &snapshot.legacy_cli,
-        &plan.allowlisted_start.legacy_cli_sha256,
+        plan.historical_cli_sha256()?,
         "start_legacy_cli",
     )?;
     let registry = require_present(&snapshot.uninstall_registry, "uninstall_registry")?;
@@ -4563,7 +4571,7 @@ pub(crate) fn require_installed_candidate(
         &candidate.uninstaller_sha256,
         &format!("{label}_uninstaller"),
     )?;
-    if expect_legacy_cli_absent {
+    if expect_legacy_cli_absent || cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
         require_absent(&snapshot.legacy_cli, &format!("{label}_legacy_cli"))?;
     }
     let registry = require_present(
@@ -4738,7 +4746,7 @@ fn require_elevated_stopped_candidate_inner(
         &candidate.uninstaller_sha256,
         &format!("{label}_uninstaller"),
     )?;
-    if expect_legacy_cli_absent {
+    if expect_legacy_cli_absent || cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
         require_absent(&snapshot.machine.legacy_cli, &format!("{label}_legacy_cli"))?;
     }
     let registry = require_present(
