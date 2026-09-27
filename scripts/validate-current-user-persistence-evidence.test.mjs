@@ -385,19 +385,23 @@ test("workflow coverage rejects commented-out or removed persistence test comman
     ["validation linux", validation, "linux"],
     ["validation macos", validation, "macos"],
   ]) {
-    const expected = new RegExp(
+    const captureError = new RegExp(
       `${label} must actively run scripts/capture-macos-dmg-current-user-persistence\\.test\\.mjs`,
       "u",
     );
-
-    for (const mutate of [
-      (source) => commentActiveTest(source, id, DMG_CAPTURE_TEST),
-      (source) => removeActiveTest(source, id, DMG_CAPTURE_TEST),
-    ]) {
+    const contractError = new RegExp(
+      `${label} must actively run scripts/validate-current-user-persistence-evidence\\.test\\.mjs`,
+      "u",
+    );
+    const assertMutationRejected = (mutate, expected) => {
       const mutated = mutate(workflow);
       const mutatedRelease = workflow === release ? mutated : release;
       const mutatedValidation = workflow === validation ? mutated : validation;
       assert.throws(() => assertWorkflowCoverage(mutatedRelease, mutatedValidation), expected);
-    }
+    };
+
+    assertMutationRejected((source) => commentActiveTest(source, id, DMG_CAPTURE_TEST), captureError);
+    assertMutationRejected((source) => removeActiveTest(source, id, DMG_CAPTURE_TEST), captureError);
+    assertMutationRejected((source) => removeActiveTest(source, id, WORKFLOW_TEST), contractError);
   }
 });
