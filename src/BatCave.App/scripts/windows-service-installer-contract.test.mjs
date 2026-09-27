@@ -270,7 +270,10 @@ test("installer owns one recorded Start projection and GUI startup creates none"
   const provisioner = await text("src/collector_service/windows_provisioner.rs");
   const ownership = await text("src/collector_service/windows_shortcut_retirement.rs");
   const app = await text("src/lib.rs");
-  assert.doesNotMatch(app, /windows_user_launch|ensure_current_user_start_entry|batcave-user-launch/u);
+  assert.doesNotMatch(
+    app,
+    /windows_user_launch|ensure_current_user_start_entry|batcave-user-launch/u,
+  );
   await assert.rejects(text("src/windows_user_launch.rs"), { code: "ENOENT" });
   for (const fixedName of ["BatCave.lnk", "BatCave-start-entry.tmp", "start-entry.v1.json"]) {
     assert.ok(ownership.includes(`"${fixedName}"`), `missing fixed ownership leaf ${fixedName}`);
@@ -280,17 +283,56 @@ test("installer owns one recorded Start projection and GUI startup creates none"
   assert.match(ownership, /FILE_LIST_DIRECTORY \| FILE_READ_ATTRIBUTES \| READ_CONTROL/u);
   const ensure = between(ownership, "fn ensure(&self)", "fn remove(&self)");
   const freshCreation = ensure.slice(ensure.indexOf("let mut leaf ="));
-  assertOrdered(freshCreation, "let mut leaf =", "let record_result =", "OWNED_START_RECEIPT, &json", "self.publish(&mut leaf)?");
+  assertOrdered(
+    freshCreation,
+    "let mut leaf =",
+    "let record_result =",
+    "OWNED_START_RECEIPT, &json",
+    "self.publish(&mut leaf)?",
+  );
   const deletion = between(ownership, "fn delete_recorded(", "fn publish(");
-  assertOrdered(deletion, "leaf.mark_for_deletion()?", "drop(leaf)", "self.require_leaf_absence()?", "receipt.mark_for_deletion()?", "drop(receipt)");
+  assertOrdered(
+    deletion,
+    "leaf.mark_for_deletion()?",
+    "drop(leaf)",
+    "self.require_leaf_absence()?",
+    "receipt.mark_for_deletion()?",
+    "drop(receipt)",
+  );
   assert.match(ownership, /installer_start_unrecorded_stage_preserved/u);
   assert.match(ownership, /installer_start_changed_object_preserved/u);
   const install = between(provisioner, "pub(super) fn install()", "fn prepare_upgrade_transaction");
-  assertOrdered(install, "preflight_owned_start_entry(monitor.path())?", "open_manager", "create_service", "ensure_owned_start_entry(monitor.path())", "rollback_new_install");
-  const uninstall = between(provisioner, "fn uninstall_with_controller(", "fn finish_uninstall_after_service_absent(");
-  assertOrdered(uninstall, "preflight_owned_start_entry(monitor.path())?", "open_manager", "wait_service_deleted(&manager)?", "remove_owned_start_entry(monitor.path())?", "remove_app_path_registration");
-  const absentCleanup = between(provisioner, "fn finish_uninstall_after_service_absent(", "fn retire_upgrade_transaction_for_uninstall(");
-  assertOrdered(absentCleanup, "remove_owned_start_entry(monitor.path())?", "remove_app_path_registration");
+  assertOrdered(
+    install,
+    "preflight_owned_start_entry(monitor.path())?",
+    "open_manager",
+    "create_service",
+    "ensure_owned_start_entry(monitor.path())",
+    "rollback_new_install",
+  );
+  const uninstall = between(
+    provisioner,
+    "fn uninstall_with_controller(",
+    "fn finish_uninstall_after_service_absent(",
+  );
+  assertOrdered(
+    uninstall,
+    "preflight_owned_start_entry(monitor.path())?",
+    "open_manager",
+    "wait_service_deleted(&manager)?",
+    "remove_owned_start_entry(monitor.path())?",
+    "remove_app_path_registration",
+  );
+  const absentCleanup = between(
+    provisioner,
+    "fn finish_uninstall_after_service_absent(",
+    "fn retire_upgrade_transaction_for_uninstall(",
+  );
+  assertOrdered(
+    absentCleanup,
+    "remove_owned_start_entry(monitor.path())?",
+    "remove_app_path_registration",
+  );
 });
 
 test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave deltas", async () => {

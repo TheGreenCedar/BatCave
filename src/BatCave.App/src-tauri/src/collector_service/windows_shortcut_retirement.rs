@@ -334,12 +334,14 @@ struct StartEntryRoots {
 
 enum StartEntryState {
     Absent,
-    Recorded {
-        record: StartEntryReceipt,
-        receipt: PinnedShortcut,
-        leaf: Option<PinnedShortcut>,
-        staged: bool,
-    },
+    Recorded(Box<RecordedStartEntry>),
+}
+
+struct RecordedStartEntry {
+    record: StartEntryReceipt,
+    receipt: PinnedShortcut,
+    leaf: Option<PinnedShortcut>,
+    staged: bool,
 }
 
 impl StartEntryRoots {
@@ -419,12 +421,12 @@ impl StartEntryRoots {
         }
         receipt.revalidate()?;
         self.revalidate()?;
-        Ok(StartEntryState::Recorded {
+        Ok(StartEntryState::Recorded(Box::new(RecordedStartEntry {
             record,
             receipt,
             leaf,
             staged,
-        })
+        })))
     }
 
     fn validate_owned(
@@ -519,24 +521,21 @@ impl StartEntryRoots {
 
     fn ensure(&self) -> Result<bool, String> {
         match self.inspect()? {
-            StartEntryState::Recorded {
-                record,
-                receipt,
-                leaf: Some(mut leaf),
-                staged,
-            } => {
-                if staged {
-                    self.publish(&mut leaf)?;
-                    self.validate_owned(&record, &leaf)?;
+            StartEntryState::Recorded(state) => {
+                let RecordedStartEntry {
+                    record,
+                    receipt,
+                    leaf,
+                    staged,
+                } = *state;
+                if let Some(mut leaf) = leaf {
+                    if staged {
+                        self.publish(&mut leaf)?;
+                        self.validate_owned(&record, &leaf)?;
+                    }
+                    receipt.revalidate()?;
+                    return Ok(false);
                 }
-                receipt.revalidate()?;
-                return Ok(false);
-            }
-            StartEntryState::Recorded {
-                receipt,
-                leaf: None,
-                ..
-            } => {
                 // A user may delete the projection. Retire its stale record
                 // only after confirming both fixed leaf paths are absent.
                 self.delete_recorded(receipt, None)?;
@@ -588,7 +587,7 @@ impl StartEntryRoots {
     fn remove(&self) -> Result<(), String> {
         match self.inspect()? {
             StartEntryState::Absent => Ok(()),
-            StartEntryState::Recorded { receipt, leaf, .. } => self.delete_recorded(receipt, leaf),
+            StartEntryState::Recorded(state) => self.delete_recorded(state.receipt, state.leaf),
         }
     }
 }
@@ -1779,11 +1778,14 @@ mod tests {
     fn owned_start_publication_never_replaces_a_collision_after_preflight() {
         let (_temporary, roots) = start_fixture();
         seed_prepared(&roots);
-        let StartEntryState::Recorded {
+        let StartEntryState::Recorded(state) = roots.inspect().unwrap() else {
+            panic!("exact prepared identity must be present");
+        };
+        let RecordedStartEntry {
             receipt,
             leaf: Some(mut leaf),
             ..
-        } = roots.inspect().unwrap()
+        } = *state
         else {
             panic!("exact prepared identity must be present");
         };

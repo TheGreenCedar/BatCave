@@ -205,9 +205,6 @@ pub(crate) fn open_protected_etw_lease_root() -> Result<ProtectedEtwLeaseRoot, S
     native::open_protected_etw_lease_root()
 }
 
-/// Read-only authority for a current-user GUI launch entry; pins the installed image
-/// and install directories for the duration of the callback.
-
 pub(crate) fn record_service_failure(category: &str) -> Result<(), String> {
     native::record_service_failure(category)
 }
