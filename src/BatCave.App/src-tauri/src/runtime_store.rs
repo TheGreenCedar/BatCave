@@ -4739,26 +4739,9 @@ fn byte_rate(current: u64, previous: u64, elapsed_seconds: f64) -> u64 {
 }
 
 #[cfg(test)]
-fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, Option<String>> {
-    if !path.exists() {
-        return Err(None);
-    }
-
-    let payload = fs::read_to_string(path).map_err(|error| {
-        Some(format!(
-            "persistence_load_failed path={} error={}: {}",
-            path.display(),
-            std::any::type_name::<T>(),
-            error
-        ))
-    })?;
-    serde_json::from_str(&payload).map_err(|error| {
-        Some(format!(
-            "persistence_parse_failed path={} error={}",
-            path.display(),
-            error
-        ))
-    })
+fn read_json<T: DeserializeOwned>(path: &PathBuf) -> Result<T, String> {
+    let payload = fs::read(path).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&payload).map_err(|error| error.to_string())
 }
 
 // Only the macOS data-directory test needs the real per-user location; runtime code
@@ -4807,6 +4790,7 @@ mod tests {
         first_started: Option<mpsc::Sender<()>>,
         first_release: Option<Arc<(Mutex<bool>, Condvar)>>,
         dropped: Option<mpsc::Sender<()>>,
+        drop_release: Option<Receiver<()>>,
     }
 
     impl FakeCollector {
@@ -4819,6 +4803,7 @@ mod tests {
                     first_started: None,
                     first_release: None,
                     dropped: None,
+                    drop_release: None,
                 },
                 collect_count,
             )
@@ -4868,6 +4853,9 @@ mod tests {
         fn drop(&mut self) {
             if let Some(dropped) = self.dropped.take() {
                 let _ = dropped.send(());
+            }
+            if let Some(release) = self.drop_release.take() {
+                let _ = release.recv();
             }
         }
     }
@@ -5594,30 +5582,50 @@ mod tests {
     fn concurrent_shutdown_callers_share_post_cleanup_completion() {
         let (mut collector, _) = FakeCollector::new([]);
         let (dropped_tx, dropped_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         collector.dropped = Some(dropped_tx);
+        collector.drop_release = Some(release_rx);
         let (state, base_dir) = state_with_collector("concurrent-shutdown", collector, false);
         let state = Arc::new(state);
-        let barrier = Arc::new(Barrier::new(5));
-        let callers = (0..4)
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let leader_state = Arc::clone(&state);
+        let leader_completed = completed_tx.clone();
+        let leader = std::thread::spawn(move || {
+            let result = leader_state.shutdown();
+            let _ = leader_completed.send(());
+            result
+        });
+        dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("leader starts collector cleanup before followers call shutdown");
+        let callers = (0..3)
             .map(|_| {
                 let state = Arc::clone(&state);
-                let barrier = Arc::clone(&barrier);
+                let completed = completed_tx.clone();
                 std::thread::spawn(move || {
-                    barrier.wait();
-                    state.shutdown()
+                    let result = state.shutdown();
+                    let _ = completed.send(());
+                    result
                 })
             })
             .collect::<Vec<_>>();
-        barrier.wait();
+        let early_completion = completed_rx.recv_timeout(Duration::from_millis(100));
+        release_tx.send(()).expect("collector cleanup releases");
+        leader
+            .join()
+            .expect("shutdown leader joins")
+            .expect("leader shutdown succeeds");
         for caller in callers {
             caller
                 .join()
                 .expect("shutdown caller joins")
                 .expect("shared shutdown succeeds");
         }
-        dropped_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("collector cleanup precedes completion");
+        assert!(
+            matches!(early_completion, Err(RecvTimeoutError::Timeout)),
+            "no shutdown caller may return before collector cleanup completes"
+        );
+        assert_eq!(completed_rx.try_iter().count(), 4);
         let _ = fs::remove_dir_all(base_dir);
     }
 
@@ -5644,13 +5652,14 @@ mod tests {
 
     #[test]
     fn attention_sort_uses_attention_score_not_cpu_only() {
-        let mut limited = sample("10", "Limited", 0.2);
-        limited.access_state = AccessState::Partial;
+        let mut network_busy = sample("10", "NetworkBusy", 0.2);
+        network_busy.network_received_bps = Some(20 * 1024 * 1024);
+        network_busy.memory_bytes = 2 * 1024 * 1024 * 1024;
         let rows = shape_rows(
             &[
                 sample("20", "Quiet", 0.1),
-                limited,
-                sample("30", "Busy", 44.4),
+                network_busy,
+                sample("30", "CpuBusy", 10.0),
             ],
             &RuntimeQuery {
                 sort_column: SortColumn::Attention,
@@ -5659,8 +5668,9 @@ mod tests {
             },
         );
 
-        assert_eq!(rows[0].name, "Busy");
-        assert_eq!(rows[1].name, "Limited");
+        assert_eq!(rows[0].name, "NetworkBusy");
+        assert_eq!(rows[1].name, "CpuBusy");
+        assert!(rows[0].cpu_percent < rows[1].cpu_percent);
     }
 
     #[test]
@@ -8035,10 +8045,14 @@ mod tests {
         assert_eq!(store.snapshot.system.network_received_bps, 0);
         assert_eq!(store.snapshot.system.network_transmitted_bps, 0);
 
-        store.apply_raw_sample(macos_sample(14_000, 7_000, 4_000, 2_000), 0.0, 11_000);
+        store.apply_raw_sample(macos_sample(25_000, 18_000, 4_000, 2_000), 0.0, 11_000);
         assert_eq!(store.snapshot.system.network_received_bps, 4_000);
         assert_eq!(store.snapshot.system.network_transmitted_bps, 2_000);
-        assert_eq!(store.snapshot.system.network_received_total_bytes, 14_000);
+        assert_eq!(store.snapshot.system.network_received_total_bytes, 25_000);
+
+        store.apply_raw_sample(macos_sample(30_000, 20_000, 0, 0), 0.0, 12_000);
+        assert_eq!(store.snapshot.system.network_received_bps, 0);
+        assert_eq!(store.snapshot.system.network_transmitted_bps, 0);
 
         let _ = fs::remove_dir_all(&base_dir);
     }
@@ -8964,22 +8978,6 @@ mod tests {
         let _ = fs::remove_dir_all(base_dir);
     }
 
-    #[test]
-    fn corrupt_json_returns_persistence_parse_warning() {
-        let path = std::env::temp_dir().join(format!(
-            "batcave-corrupt-settings-{}.json",
-            std::process::id()
-        ));
-        fs::write(&path, "{not-json").expect("corrupt fixture writes");
-
-        let error = read_json::<RuntimeSettings>(&path).expect_err("corrupt json fails");
-
-        fs::remove_file(&path).expect("corrupt fixture cleanup");
-        assert!(error
-            .expect("parse warning exists")
-            .contains("persistence_parse_failed"));
-    }
-
     fn runtime_test_dir(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("batcave-runtime-{name}-{}", std::process::id()));
@@ -9103,6 +9101,7 @@ mod tests {
             for child in 1..3u32 {
                 let mut process = sample(&(base_pid + child).to_string(), app, 1.0);
                 process.parent_pid = Some(base_pid.to_string());
+                process.start_time_ms = parent.start_time_ms + u64::from(child);
                 process.exe = parent.exe.clone();
                 process.quality = if child == 2 {
                     group_test_quality(MetricQuality::Held)
@@ -9121,10 +9120,17 @@ mod tests {
         processes.push(sample("302", "worker", 42.0));
 
         let mut store = RuntimeStore::new();
-        // One recorded sample per generation, so the cached views sort by the
-        // smoothed ranking values the references below reproduce.
-        store.update_ranking_history(&processes);
-        store.set_previous_processes(processes.clone());
+        feed_processes(&mut store, processes, 10_000);
+        let processes = store.previous_processes.clone();
+        let groups = store
+            .process_groups
+            .iter()
+            .filter(|group| group.processes.len() > 1)
+            .collect::<Vec<_>>();
+        assert_eq!(groups.len(), 2, "fixture forms both app groups");
+        for group in groups {
+            assert_eq!(group.processes.len(), 3);
+        }
 
         let focus_modes = [
             ProcessFocusMode::All,
@@ -9160,29 +9166,8 @@ mod tests {
                                 limit,
                             };
                             store.settings.query = query.clone();
-                            let snapshot = build_snapshot(
-                                1,
-                                now_ms(),
-                                1,
-                                Some(now_ms()),
-                                store.provenance.environment(),
-                                &store.settings,
-                                &store.admin_mode,
-                                false,
-                                RuntimeHealth::default(),
-                                None,
-                                empty_system(),
-                                &processes,
-                                &store.process_groups,
-                                &store.full_view_rows,
-                                emit_process_view(
-                                    &store.process_groups,
-                                    &query,
-                                    &store.attention_members,
-                                ),
-                                Vec::new(),
-                                Vec::new(),
-                            );
+                            store.publish_snapshot_only(None);
+                            let snapshot = &store.snapshot;
                             let context = format!("query {query:?}");
                             assert_eq!(
                                 serde_json::to_value(&snapshot.process_view_rows).unwrap(),
@@ -9208,6 +9193,25 @@ mod tests {
                 }
             }
         }
+
+        let initial =
+            store.set_query_with_intent(RuntimeQuery::default(), QueryWriteIntent::RuntimeOnly);
+        assert_eq!(initial.sample_seq, 1);
+        assert_eq!(store.process_groups.len(), 5);
+        assert_eq!(initial.process_view_rows.len(), 11);
+        feed_processes(&mut store, vec![sample("302", "worker", 5.0)], 11_000);
+        let replacement = &store.snapshot;
+        assert_eq!(replacement.sample_seq, 2);
+        assert!(replacement.publication_seq > initial.publication_seq);
+        assert_eq!(replacement.process_view_rows.len(), 1);
+        assert_eq!(replacement.overview_rows.len(), 1);
+        assert!(matches!(
+            &replacement.process_view_rows[0],
+            ProcessViewRow::Process { detail, .. } if detail.process.pid == "302"
+        ));
+        assert_eq!(store.process_groups.len(), 1);
+        assert_eq!(store.full_view_rows.len(), 1);
+        assert_eq!(initial.process_view_rows.len(), 11);
     }
 
     fn attention_score_of(process: &ProcessSample) -> f64 {

@@ -1726,6 +1726,7 @@ mod tests {
     struct FixtureSource {
         releases: RefCell<Vec<ReleaseReadback>>,
         release_calls: Cell<usize>,
+        download_calls: Cell<usize>,
         reread_failure: Option<Failure>,
         payloads: BTreeMap<String, Vec<u8>>,
         failure: Option<Failure>,
@@ -1757,6 +1758,7 @@ mod tests {
         }
 
         fn download(&self, url: &str, _limit: u64, output: &mut File) -> Result<u64, Failure> {
+            self.download_calls.set(self.download_calls.get() + 1);
             if let Some(failure) = &self.failure {
                 return Err(failure.clone());
             }
@@ -1848,6 +1850,7 @@ mod tests {
             FixtureSource {
                 releases: RefCell::new(vec![release]),
                 release_calls: Cell::new(0),
+                download_calls: Cell::new(0),
                 reread_failure: None,
                 payloads,
                 failure: None,
@@ -2411,15 +2414,29 @@ mod tests {
     #[test]
     fn owned_root_rejects_preexisting_link_asset() {
         use std::os::unix::fs::symlink;
+        let (source, _) = fixture();
+        let release = source.releases.borrow()[0].clone();
+        let valid_root = tempfile::tempdir().unwrap();
+        download_inventory(&source, &release, valid_root.path())
+            .expect("valid inventory downloads");
+        assert_eq!(source.download_calls.get(), release.assets.len());
+        source.download_calls.set(0);
+
         let root = tempfile::tempdir().unwrap();
-        let outside = root.path().join("outside");
+        let outside_root = tempfile::tempdir().unwrap();
+        let outside = outside_root.path().join("outside");
         fs::write(&outside, b"outside").unwrap();
-        let link = root.path().join("asset");
+        let link = root.path().join(&release.assets[0].name);
         symlink(&outside, &link).unwrap();
-        assert!(OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(link)
-            .is_err());
+        assert_eq!(
+            download_inventory(&source, &release, root.path()),
+            Err(Failure::DownloadRejected)
+        );
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(source.download_calls.get(), 0);
     }
 }
