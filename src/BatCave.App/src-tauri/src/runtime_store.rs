@@ -9476,7 +9476,7 @@ mod tests {
     #[test]
     fn current_user_persistence_keeps_collector_warning_health_protocol_valid() {
         let base_dir = runtime_test_dir("health-warning");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let mut store = runtime_store_for_standard_user(base_dir.clone());
         store.warnings.clear();
         let (mut collector, _) = FakeCollector::new([FakeOutcome::Sample]);
         let sample = collector
@@ -9510,7 +9510,7 @@ mod tests {
     #[test]
     fn collector_warnings_replace_by_key_and_clear_on_recovery() {
         let base_dir = runtime_test_dir("warning-reconcile");
-        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let mut store = runtime_store_for_standard_user(base_dir.clone());
         store.warnings.clear();
 
         store
