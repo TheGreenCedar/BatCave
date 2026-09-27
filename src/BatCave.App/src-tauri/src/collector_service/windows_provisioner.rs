@@ -7841,16 +7841,16 @@ mod native {
                 .observe(owner.authority())
                 .expect("existing lease observed");
             assert_eq!(
-                prior.observation,
-                EtwLeaseObservation::Trusted(lease.clone())
+                prior.observation(),
+                &EtwLeaseObservation::Trusted(lease.clone())
             );
             lease.phase = EtwLeasePhase::Active;
             store
                 .replace(owner.authority(), &prior, &lease)
                 .expect("verified mutable lease replaces atomically");
             assert_eq!(
-                store.observe(owner.authority()).unwrap().observation,
-                EtwLeaseObservation::Trusted(lease)
+                store.observe(owner.authority()).unwrap().observation(),
+                &EtwLeaseObservation::Trusted(lease)
             );
             drop(owner);
             let moved_owner = service.join("replaced-owner.lock");
