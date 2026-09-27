@@ -4160,3 +4160,37 @@ button:disabled {
     display: none;
   }
 }
+
+@media (max-width: 620px) {
+  .app-header {
+    grid-template-columns: minmax(0, 1fr);
+    padding-block: 10px;
+  }
+
+  .header-status-actions {
+    grid-column: 1;
+    grid-row: 3;
+    min-width: 0;
+    justify-self: stretch;
+  }
+
+  .header-status-actions .health-chip {
+    flex: 1;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .health-chip span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .health-chip svg,
+  .settings-action {
+    flex-shrink: 0;
+  }
+
+  .view-navigation {
+    flex-wrap: wrap;
+  }
+}

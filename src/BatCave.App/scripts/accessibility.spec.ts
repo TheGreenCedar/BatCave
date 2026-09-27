@@ -977,6 +977,7 @@ test("resource detail remains contained and dismissible at minimum width with 20
 for (const viewport of [
   { width: 1440, textScale: 100 },
   { width: 720, textScale: 200 },
+  { width: 360, textScale: 100 },
   { width: 360, textScale: 200 },
 ]) {
   test(`Overview status remains readable without moving metrics at ${viewport.width}px and ${viewport.textScale}% text`, async ({
@@ -1012,6 +1013,32 @@ for (const viewport of [
           requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
         ),
     );
+    const header = page.locator(".app-header");
+    const headerControls = [
+      page.getByRole("heading", { name: "BatCave", exact: true }),
+      header.locator(".view-navigation"),
+      header.locator(".header-status-actions"),
+    ];
+    const headerBoxes = await Promise.all(headerControls.map((control) => control.boundingBox()));
+    for (const box of headerBoxes) {
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    for (let index = 0; index < headerBoxes.length; index += 1) {
+      for (let other = index + 1; other < headerBoxes.length; other += 1) {
+        const left = headerBoxes[index]!;
+        const right = headerBoxes[other]!;
+        const disjoint =
+          left.x + left.width <= right.x ||
+          right.x + right.width <= left.x ||
+          left.y + left.height <= right.y ||
+          right.y + right.height <= left.y;
+        expect(disjoint, "Header title, navigation and status controls must not overlap").toBe(
+          true,
+        );
+      }
+    }
     const resources = page.locator(".overview-resources");
     const workloads = page.locator(".overview-workloads");
     const beforeResources = await resources.boundingBox();
