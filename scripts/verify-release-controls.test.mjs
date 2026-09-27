@@ -148,7 +148,7 @@ test("runs the deb smoke on a fresh pinned Ubuntu host after public release publ
   );
   assert.match(
     job,
-    /name: Retain sanitized Linux deb post-public observation[\s\S]*name: batcave-linux-deb-post-public-\$\{\{ inputs\.tag \}\}[\s\S]*path: \|\n {12}post-public-output\/linux-deb-observation\.json\n {12}post-public-output\/linux-deb-release-evidence\.json\n {10}if-no-files-found: warn/u,
+    /name: Retain sanitized Linux deb post-public observation[\s\S]*name: batcave-linux-deb-post-public-\$\{\{ inputs\.tag \}\}[\s\S]*path: \|\n {12}post-public-output\/linux-deb-observation\.json\n {12}post-public-output\/linux-deb-release-evidence\.json\n {12}post-public-output\/linux-deb-gui\.png\n {12}post-public-output\/linux-deb-gui-observation\.json\n {10}if-no-files-found: warn/u,
   );
   assert.doesNotMatch(job, /(?:--deb|--output-dir|RUNNER_TEMP|github\.event|workflow_dispatch)/u);
 });

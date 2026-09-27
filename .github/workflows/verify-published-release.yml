@@ -94,6 +94,8 @@ jobs:
           path: |
             post-public-output/linux-deb-observation.json
             post-public-output/linux-deb-release-evidence.json
+            post-public-output/linux-deb-gui.png
+            post-public-output/linux-deb-gui-observation.json
           if-no-files-found: warn
           retention-days: 30
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,6 +26,156 @@ const {
   runBoundedProcess,
   writeCorruptSettings,
 } = linuxPersistenceCaptureInternals;
+
+test("GUI validation rejects wrong public bytes, identity, mapping and blank or substituted frames", () => {
+  // Mapping-only data cannot grant the process-local native brand.
+  const screenshot = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(screenshot);
+  screenshot.write("IHDR", 12, "ascii");
+  screenshot.writeUInt32BE(1320, 16);
+  screenshot.writeUInt32BE(860, 20);
+  const observation = {
+    schema_version: 1,
+    proof_scope: "packaged_linux_gui_window",
+    artifact_sha256: `sha256:${"a".repeat(64)}`,
+    gui_sha256: `sha256:${"b".repeat(64)}`,
+    uid: 1001,
+    gid: 1001,
+    unit: "batcave-deb-gui-0123456789abcdef01234567.service",
+    pid: 42,
+    start_time_ticks: "123456",
+    window_id: 123,
+    title: "BatCave Monitor",
+    mapped: true,
+    rendered_frame: true,
+    width: 1320,
+    height: 860,
+    color_count: 300,
+    standard_deviation: 0.2,
+    screenshot_sha256: `sha256:${crypto.createHash("sha256").update(screenshot).digest("hex")}`,
+  };
+  const expected = {
+    artifactDigest: observation.artifact_sha256,
+    guiDigest: observation.gui_sha256,
+    uid: 1001,
+    gid: 1001,
+    unit: observation.unit,
+  };
+  assert.equal(
+    linuxPersistenceCaptureInternals.validateGuiObservation(observation, expected, screenshot),
+    observation,
+  );
+  for (const mutate of [
+    (value) => (value.artifact_sha256 = `sha256:${"c".repeat(64)}`),
+    (value) => (value.gui_sha256 = `sha256:${"c".repeat(64)}`),
+    (value) => (value.uid = 0),
+    (value) => (value.unit = "unowned.service"),
+    (value) => (value.start_time_ticks = "0"),
+    (value) => (value.mapped = false),
+    (value) => (value.rendered_frame = false),
+    (value) => (value.color_count = 1),
+    (value) => (value.standard_deviation = 0),
+    (value) => (value.width = 1441),
+    (value) => (value.screenshot_sha256 = `sha256:${"c".repeat(64)}`),
+  ]) {
+    const invalid = structuredClone(observation);
+    mutate(invalid);
+    assert.throws(
+      () => linuxPersistenceCaptureInternals.validateGuiObservation(invalid, expected, screenshot),
+      /exact bytes, owned identity and rendered window/u,
+    );
+  }
+  const substituted = Buffer.from(screenshot);
+  substituted.writeUInt32BE(860, 16);
+  assert.throws(
+    () =>
+      linuxPersistenceCaptureInternals.validateGuiObservation(observation, expected, substituted),
+    /rendered window/u,
+  );
+  assert.throws(
+    () =>
+      linuxPersistenceCaptureInternals.requireVerifiedGuiObservation({
+        observation,
+        screenshot,
+        settlement: { operation: "gui", process_tree_settled: true },
+      }),
+    /in-process settled production capture/u,
+  );
+});
+
+test("GUI unit properties select only a nonzero current-user identity", () => {
+  const properties = linuxPersistenceCaptureInternals.guiUnitUserProperties;
+  assert.deepEqual(properties(1001, 1002), ["--property=User=1001", "--property=Group=1002"]);
+  for (const [uid, gid] of [[0, 1001], [1001, 0], [-1, 1001], [undefined, 1001], [1001, "1001"]]) {
+    assert.throws(() => properties(uid, gid), /nonzero current UID and GID/u);
+  }
+});
+
+test(
+  "packaged GUI observer binds a real Linux process generation, executable and cgroup",
+  { skip: process.platform !== "linux" },
+  () => {
+    const helper = path.join(ROOT, "scripts", "capture-linux-packaged-gui.py");
+    const code = `
+import importlib.util, io, os, pathlib, sys, tarfile
+spec = importlib.util.spec_from_file_location("capture_gui", ${JSON.stringify(helper)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.GUI = pathlib.Path(os.readlink("/proc/self/exe"))
+unit = pathlib.Path("/proc/self/cgroup").read_text().splitlines()[0].split(":",2)[-1].split("/")[-1]
+digest = module.digest_file(module.GUI)
+generation = module.process_identity(os.getpid(), unit, digest)
+assert generation.isdecimal() and int(generation)>0
+def rejected(call, reason):
+    try: call()
+    except RuntimeError as error: assert reason in str(error), str(error)
+    else: raise AssertionError("identity guard accepted invalid process")
+rejected(lambda: module.process_identity(os.getpid(), "unowned.service", digest), "escaped owned unit")
+rejected(lambda: module.process_identity(os.getpid(), unit, "sha256:"+"0"*64), "bytes differ")
+original = module.process_generation
+count = iter([generation, str(int(generation)+1)])
+module.process_generation = lambda text: next(count)
+rejected(lambda: module.process_identity(os.getpid(), unit, digest), "generation changed")
+module.process_generation = original
+stat = "42 (comm with ) spaces) " + " ".join(["S"]+ ["0"]*18+["123"])
+assert module.process_generation(stat) == "123"
+rejected(lambda: module.process_generation("42 invalid"), "invalid process stat")
+def archive(members):
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as stream:
+        for name, content in members:
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            stream.addfile(member, io.BytesIO(content))
+    return output.getvalue()
+class TarProcess:
+    def __init__(self, content): self.stdout = io.BytesIO(content)
+    def poll(self): return 0
+    def wait(self, timeout): return 0
+content = b"exact-public-gui-member"
+payload = archive([("./usr/bin/batcave-monitor", content)])
+original_spawn = module.subprocess.Popen
+def tar_process(args, stdout):
+    assert args == ["/usr/bin/dpkg-deb", "--fsys-tarfile", str(pathlib.Path("/owned/candidate.deb"))]
+    return TarProcess(payload)
+module.subprocess.Popen = tar_process
+assert module.deb_gui_digest(pathlib.Path("/owned/candidate.deb")) == "sha256:"+module.hash_stream(io.BytesIO(content))
+payload = archive([("./usr/bin/batcave-monitor", content), ("./usr/bin/batcave-monitor", b"replacement")])
+rejected(lambda: module.deb_gui_digest(pathlib.Path("/owned/candidate.deb")), "invalid deb GUI member")
+payload = archive([("./usr/bin/unrelated-executable", content)])
+rejected(lambda: module.deb_gui_digest(pathlib.Path("/owned/candidate.deb")), "deb GUI member unavailable")
+module.subprocess.Popen = original_spawn
+print("real proc identity guards PASS")
+`;
+    const result = spawnSync("/usr/bin/python3.10", ["-I", "-B", "-c", code], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /real proc identity guards PASS/u);
+  },
+);
 
 function temporaryDirectory(label) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `batcave-linux-capture-${label}-`));
