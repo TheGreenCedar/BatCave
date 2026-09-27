@@ -1357,24 +1357,32 @@ mod tests {
 
     #[test]
     fn group_detail_rejects_representative_process_fields() {
-        let mut group_row = sample_group_view_row_json();
+        let row: ProcessViewRow = serde_json::from_value(sample_group_view_row_json())
+            .expect("valid group row deserializes");
+        let serialized = serde_json::to_value(row).expect("group row serializes");
+        let mut group_row = serialized.clone();
         group_row["representative"] = sample_process_json();
         assert!(serde_json::from_value::<ProcessViewRow>(group_row).is_err());
 
-        let serialized = sample_group_view_row_json();
         let detail = &serialized["detail"];
-        for forbidden in [
-            "pid",
-            "parent_pid",
-            "exe",
-            "access_state",
-            "process",
-            "representative",
+        for (forbidden, value) in [
+            ("pid", json!("1234")),
+            ("parent_pid", json!("1000")),
+            ("exe", json!("BatCave.App.exe")),
+            ("access_state", json!("full")),
+            ("process", sample_process_json()),
+            ("representative", sample_process_json()),
         ] {
             assert!(
                 detail.get(forbidden).is_none(),
                 "group detail exposed {forbidden}"
             );
+            let mut hostile = serialized.clone();
+            hostile["detail"][forbidden] = value;
+            let error = serde_json::from_value::<ProcessViewRow>(hostile)
+                .expect_err("group detail rejects process fields")
+                .to_string();
+            assert!(error.contains("unknown field") && error.contains(forbidden));
         }
     }
 
