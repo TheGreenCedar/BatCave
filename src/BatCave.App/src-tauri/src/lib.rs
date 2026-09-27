@@ -54,6 +54,7 @@ mod windows_process;
 mod windows_system;
 #[cfg(any(windows, test))]
 mod windows_user_launch;
+mod wire_clock;
 mod workload_history;
 mod workload_identity;
 
