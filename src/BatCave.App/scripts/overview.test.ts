@@ -193,7 +193,16 @@ test("metric presentation fails closed and preserves real zero plus freshness", 
 test("Overview ranks its own complete rows by the selected resource without grouped children", () => {
   const rows = makeFixtureSnapshot(1, undefined, "macos").process_view_rows;
   const leading = leadingOverviewRows(rows, "memory", 5);
-  assert.ok(leading.length <= 5);
+  assert.deepEqual(
+    leading.map((row) => row.detail.workload_id),
+    [
+      "process:2180:1699999819000",
+      "process:2179:1699999820000",
+      "process:2178:1699999821000",
+      "process:2177:1699999822000",
+      "process:2176:1699999823000",
+    ],
+  );
   assert.equal(
     leading.some((row) => row.kind === "process" && row.is_grouped),
     false,

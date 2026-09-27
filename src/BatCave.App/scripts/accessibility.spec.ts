@@ -398,7 +398,7 @@ test("desktop system detail restores its resource control after collapsing to co
   await expect(page.locator('[data-view="explore"]')).toBeFocused();
 });
 
-test("Overview resource selection and leading rows survive an Explore filter", async ({ page }) => {
+test("Overview selection and leading rows survive Explore query controls", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "overview");
   const memory = page.locator('.overview-resource-card[data-resource-mode="memory"]');
@@ -408,6 +408,7 @@ test("Overview resource selection and leading rows survive an Explore filter", a
   const leadingIds = await page
     .locator(".overview-workload-list [data-workload-id]")
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-workload-id")));
+  expect(leadingIds.length).toBeGreaterThan(0);
   await page.locator('[data-view="explore"]').click();
   await page
     .getByRole("textbox", { name: "Search apps and processes" })
@@ -422,6 +423,88 @@ test("Overview resource selection and leading rows survive an Explore filter", a
         .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-workload-id"))),
     )
     .toEqual(leadingIds);
+});
+
+for (const width of [1440, 760]) {
+  test(`group inspection actions expose exact selection state at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openFixture(page, "group");
+    await page.setViewportSize({ width, height: 900 });
+    const surface = page.locator(width === 1440 ? ".attention-table" : ".mobile-process-list");
+    const group = surface.locator('[data-workload-id="group:batcave.app.exe"]');
+    await expect(group).toHaveAttribute("aria-pressed", "true");
+    await surface.locator('[data-workload-group-key="batcave.app.exe"]').click();
+    const child = surface.locator('[data-workload-id="process:1234:1699999999000"]');
+    await child.click();
+    if (width === 760) await page.getByRole("button", { name: "Close resource detail" }).click();
+    await expect(child).toHaveAttribute("aria-pressed", "true");
+    await expect(group).toHaveAttribute("aria-pressed", "false");
+    await group.click();
+    if (width === 760) await page.getByRole("button", { name: "Close resource detail" }).click();
+    await expect(group).toHaveAttribute("aria-pressed", "true");
+    await expect(child).toHaveAttribute("aria-pressed", "false");
+    if (width === 760) {
+      await expect(group.locator(".card-metrics")).toContainText("Resident memory");
+      await expect(group.locator(".card-metrics")).not.toContainText("Working set");
+    }
+  });
+}
+
+test("compact workload controls change the active sort direction", async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 900 });
+  await openFixture(page, "overview");
+  await page.locator('[data-view="explore"]').click();
+  const descending = page.getByRole("button", {
+    name: "Sort direction: descending. Change to ascending.",
+    exact: true,
+  });
+  await expect(descending).toHaveText("Desc");
+  await descending.click();
+  const ascending = page.getByRole("button", {
+    name: "Sort direction: ascending. Change to descending.",
+    exact: true,
+  });
+  await expect(ascending).toHaveText("Asc");
+  await ascending.click();
+  await expect(descending).toHaveText("Desc");
+});
+
+test("desktop workload table renders unavailable network attribution", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "group");
+  const table = page.locator(".attention-table");
+  await expect(table.getByRole("columnheader", { name: /Network/ })).toBeVisible();
+  const row = table.locator("tr").filter({
+    has: page.locator('[data-workload-id="group:batcave.app.exe"]'),
+  });
+  const networkColumn = await table
+    .getByRole("columnheader", { name: /Network/ })
+    .evaluate((header) => Array.from(header.parentElement!.children).indexOf(header));
+  await expect(row.locator("td").nth(networkColumn)).toHaveAttribute("aria-label", "Unavailable");
+  await expect(row.locator("td").nth(networkColumn)).toHaveText("—");
+});
+
+test("updater checks start only from the explicit Settings action and retry", async ({ page }) => {
+  let checks = 0;
+  await page.exposeFunction("batcaveUpdaterCheck", () => {
+    checks += 1;
+  });
+  await page.route("**/@tauri-apps_plugin-updater.js*", (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: 'export async function check() { await window.batcaveUpdaterCheck(); throw new Error("fixture updater unavailable"); }',
+    }),
+  );
+  await openFixture(page, "settings");
+  expect(checks).toBe(0);
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await dialog.getByRole("button", { name: "Check now", exact: true }).click();
+  await expect.poll(() => checks).toBe(1);
+  await expect(dialog).toContainText(
+    "Unable to check for updates. Monitoring remains available offline.",
+  );
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect.poll(() => checks).toBe(2);
 });
 
 for (const viewport of [
