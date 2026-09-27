@@ -51,6 +51,14 @@ Filtering by an app label, member PID, executable or name selects the establishe
 
 The backend supplies the same membership to Explore, Overview workload rows and the inspection archive. Displayed ranking values use the existing smoothing rules, while history retains instantaneous observations from accepted samples. Compare displayed totals with displayed member contributions, and historical totals with historical member observations. An unchanged reply appends no duplicate metric/history point.
 
+## Overview contributor
+
+For CPU, resident memory and network, the Overview hero selects the same leading workload from the unfiltered Overview rows. It uses the existing ranking, quality and coverage gates: grouped children and duplicate scopes do not compete with their aggregate, and held, unavailable or zero-coverage measurements cannot lead. Explore queries do not replace this scope.
+
+A group hero shows its aggregate contribution, component count and reported coverage. Selecting it opens that exact opaque workload ID in the group inspector, where each component remains inspectable. A changed or removed scope is resolved from the current rows rather than retaining the previous group's identity.
+
+The process contributor contract and process narrative facts remain process-scoped. A group hero does not borrow a representative process's explanation. Physical-disk throughput has no compatible process attribution; its hero says so even when the workload list can rank process read/write I/O. Process I/O does not become physical-disk contribution.
+
 ## Review and native verification
 
 The bounded implementation is in `workload_identity.rs`, `windows_process.rs`, `collector_service/client.rs` and `runtime_store.rs`. It uses existing workload/group contracts. Focused checks include:
@@ -62,6 +70,8 @@ cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --lib windows_pr
 cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --lib runtime_store::tests::approved_batcave_totals_filters_and_member_details_share_one_scope -- --exact
 cargo test --manifest-path src/BatCave.App/src-tauri/Cargo.toml --lib runtime_store::tests::batcave_context_latches_only_with_fresh_samples_and_keeps_existing_history_scope -- --exact
 ```
+
+From `src/BatCave.App`, `npm run verify` checks the frontend contracts and build. `npm run test:accessibility -- --grep "Overview hero"` exercises aggregate selection, group inspection, partial coverage and the disk boundary in browser fixture mode. These interaction checks establish layout behavior only.
 
 For an installed Windows candidate, record its release/executable identity, process generations, service peer evidence and grouping inputs. Capture native collapsed and expanded views, check member totals and inspectable identities, then exercise absent and restarted service behavior. A renamed development executable using standard fallback, source fixtures or browser layout screenshots cannot establish installed service membership.
 
