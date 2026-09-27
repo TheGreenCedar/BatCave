@@ -6,7 +6,37 @@ The installed `c54363d344e8b65459e9515b5a0c77ff931814bd` candidate exposed a com
 
 View changes now reset the document scroll after the destination mounts and focus its main landmark. The `/` shortcut focuses search; workload and resource drill-down retain the inspector's initial-focus and close-focus behavior. Competing navigation invalidates stale deferred focus work. Query and workload selection are preserved.
 
-The automated regression starts from a scrolled narrow Overview, activates the action by keyboard, checks the visible destination and scroll position, and exercises navigation, retained search text and inspector dismissal. Browser fixture comparisons are layout diagnostics only. Fresh packaged native verification remains required: reproduce the 720-pixel enlarged-text path, confirm that Explore is immediately visible and keyboard reachable, and recheck inspector dismissal and search focus. The historical captures below do not verify this correction.
+The automated regression starts from a scrolled narrow Overview, activates the action by keyboard, checks the visible destination and scroll position, and exercises navigation, retained search text and inspector dismissal. Browser fixture comparisons are layout diagnostics only. The installed successor below verifies the corrected path separately from the historical source-built captures.
+
+## Installed Windows successor, September 27, 2026
+
+The raw native captures below show a local candidate installed in a disposable Windows 11 Enterprise build 26100 guest. This candidate is not a published release. Its source is `1b00f5c6b89b0e35c57b05955e0b2e84cac9df23`; later integration changes are limited to test fixtures and this evidence record. Production and build inputs are identical.
+
+| Installed artifact | SHA-256 |
+| --- | --- |
+| NSIS installer | `83eafabd32e2881b1cf6ba2cd5ec780d7e9298d661fad454bc8ee1b0c21d6ced` |
+| Embedded and installed monitor | `f4947bd8abc4d940a6389fb5308bf6a5c9a3c1076d03ba2185ac575d92166031` |
+| Installed collector | `b6830d1b08af553fe4f6e18b589e4741a97e68597518915bc5b4ab997b220ff3` |
+
+The installer created the shared Start entry and its protected ownership receipt. Invoking that entry launched monitor PID 7140, generation 1790514573543, with a standard-user Medium token. No elevation prompt appeared on ordinary launch. The LocalSystem collector PID 8696 supplied current protected samples to that desktop; Diagnostics reported the installed collector, active collection and no fallback. These observations do not measure installer consent on a UAC-enabled host.
+
+At the 720-pixel outer frame, five Ctrl+= increments from Ctrl+0 visibly enlarged text to the nominal 200% setting; no direct zoom-factor API receipt was collected. Tab reached the scrolled Overview action; Return immediately displayed Explore at document top and focused its main landmark. The next Tab reached Back to Overview. No Ctrl+Home or reload was needed. Search retained the query through navigation, slash selected it, and inspector Close/Tab/Escape preserved the selected workload and visible focus.
+
+![Installed Windows Explore is visible and focused immediately after enlarged-text navigation](docs/images/batcave-windows-installed-navigation-200.jpg)
+
+The expanded workload contains eight distinct observed process identities: the monitor, authenticated collector and six verified WebView descendants. Each component remains individually inspectable. Existing source tests establish exactly-once aggregate/filter scope; the rounded screenshot values are not an instantaneous arithmetic reconciliation.
+
+![Installed Windows BatCave workload contains its monitor, collector and six WebView components](docs/images/batcave-windows-installed-group.jpg)
+
+One bounded HTTPS read discarded 6,088,964 bytes in 60 seconds and produced observed rates of 94, 129 and 255 KB/s for requester PID 3224, generation 1790516710124. The screenshot binds the displayed rate to that requester's PID, parent and executable path. The requester ran elevated; the monitor remained the independently verified standard-user process receiving installed-service samples. This proves visible per-process traffic through that desktop/service path, not every network quality state. The earlier 10-second request completed successfully but its post-transfer screenshot missed nonzero traffic and is not counted as that proof.
+
+![The standard-user installed monitor displays live network traffic for the identified requester](docs/images/batcave-windows-installed-network.jpg)
+
+Stopping the collector removed its process and ETW lease. Diagnostics reported no privileged source, unavailable protected collection and current standard fallback; the group contained seven members. Restart created collector PID 8948, generation 1790516893849. The unchanged standard-user monitor reconnected without UAC and the group returned to eight distinct members. Current protected collection and no fallback were restored. Quiet network evidence after restart was Pending, not an invented zero; no second nonzero transfer after restart is claimed.
+
+Quiet network evidence also appeared as unavailable/Partial rather than an invented rate, then showed zero after callbacks resumed. The guest occasionally reported sampling delay with collector p95 1587.7ms while the service stayed connected; this is separate from the validation host's 165.8ms smoke result. The motion observer found animations already disabled and confirmed restoration to that same value. Its parent could not read the child exit code, so the helper failure is retained; no enabled-to-disabled transition is claimed.
+
+The exact installed uninstaller exited successfully after the owned app closed. Product processes, service, install root, ETW lease, App Paths, shared Start entry, staging leaf and ownership receipt were absent afterward. No per-user BatCave entry was left in the observed standard-user profile. The guest was retired; retained host checks found the same installed executable hashes, preferences hash and running service PID/state. Privileged host process-image identity was unavailable and is not inferred from its PID. These results qualify the observed local candidate behavior; public release, oldest-supported-host and broader installer fault-path proof remain separate.
 
 ## Windows inspector and enlarged text, September 26, 2026
 
