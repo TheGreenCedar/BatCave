@@ -5587,32 +5587,40 @@ mod tests {
         collector.drop_release = Some(release_rx);
         let (state, base_dir) = state_with_collector("concurrent-shutdown", collector, false);
         let state = Arc::new(state);
-        let barrier = Arc::new(Barrier::new(5));
         let (completed_tx, completed_rx) = mpsc::channel();
-        let callers = (0..4)
+        let leader_state = Arc::clone(&state);
+        let leader_completed = completed_tx.clone();
+        let leader = std::thread::spawn(move || {
+            let result = leader_state.shutdown();
+            let _ = leader_completed.send(());
+            result
+        });
+        dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("leader starts collector cleanup before followers call shutdown");
+        let callers = (0..3)
             .map(|_| {
                 let state = Arc::clone(&state);
-                let barrier = Arc::clone(&barrier);
                 let completed = completed_tx.clone();
                 std::thread::spawn(move || {
-                    barrier.wait();
                     let result = state.shutdown();
                     let _ = completed.send(());
                     result
                 })
             })
             .collect::<Vec<_>>();
-        barrier.wait();
-        let cleanup_started = dropped_rx.recv_timeout(Duration::from_secs(1));
         let early_completion = completed_rx.recv_timeout(Duration::from_millis(100));
         release_tx.send(()).expect("collector cleanup releases");
+        leader
+            .join()
+            .expect("shutdown leader joins")
+            .expect("leader shutdown succeeds");
         for caller in callers {
             caller
                 .join()
                 .expect("shutdown caller joins")
                 .expect("shared shutdown succeeds");
         }
-        cleanup_started.expect("collector cleanup starts");
         assert!(
             matches!(early_completion, Err(RecvTimeoutError::Timeout)),
             "no shutdown caller may return before collector cleanup completes"
