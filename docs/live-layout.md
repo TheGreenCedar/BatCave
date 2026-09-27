@@ -6,6 +6,8 @@ Closing the drawer stops workload inspection requests without clearing the selec
 
 Overview keeps monitoring status separate from metric cards. Status and contributor copy have bounded, keyboard-focusable scroll regions; long text remains available at 200% text size. Resource cards reserve their quality-label line so a quality change does not add a row. Read/write and download/upload readings retain complete values and units. Unavailable workload readings use a dash and expose the reported quality reason to assistive technology; measured zero retains its numeric value.
 
+The native main window enables Tauri's standard page zoom shortcuts: Ctrl + plus/equal or minus on Windows and Linux, and Command + plus/equal or minus on macOS. Ctrl + 0 (Command + 0 on macOS) resets zoom. Windows uses WebView2's zoom controls; macOS and Linux use Tauri's zoom polyfill. The existing `main` capability grants only the additional `core:webview:allow-set-webview-zoom` command needed by that polyfill. Native zoom, reset, and readable drawer/status behavior still require acceptance in the built app.
+
 From `src/BatCave.App`, run:
 
 ```powershell
