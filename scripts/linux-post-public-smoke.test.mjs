@@ -9,6 +9,7 @@ import { linuxPersistenceCaptureInternals } from "./capture-linux-current-user-p
 import { linuxAppImagePostPublicSmokeInternals } from "./linux-appimage-post-public-smoke.mjs";
 import { linuxDebPostPublicSmokeInternals } from "./linux-deb-post-public-smoke.mjs";
 import { expectedReleaseAssetRoles } from "./release-asset-contract.mjs";
+import { validateReleaseEvidencePacket } from "./validate-release-evidence-packet.mjs";
 import {
   CHECKSUM_MANIFEST,
   RELEASE_REPOSITORY,
@@ -248,3 +249,190 @@ test("keeps both native profiles, public selection, cleanup, and evidence fixed 
   assert.match(shared, /flag: "wx"[\s\S]*mode: 0o600/u);
   assert.match(shared, /console\.log\(JSON\.stringify\(evidence\)\)/u);
 });
+
+function originalRun(readback = {}) {
+  const run = {
+    id: 123,
+    run_attempt: 2,
+    path: ".github/workflows/release.yml",
+    event: "workflow_dispatch",
+    head_branch: "main",
+    head_sha: sourceSha,
+    repository: { full_name: RELEASE_REPOSITORY },
+    head_repository: { full_name: RELEASE_REPOSITORY },
+    ...readback,
+  };
+  return (endpoint) => {
+    if (endpoint.endsWith("/actions/runs/123")) return run;
+    if (endpoint.includes("/jobs?"))
+      return {
+        total_count: 1,
+        jobs: [
+          {
+            name: "Checksums, provenance, and release",
+            run_id: 123,
+            run_attempt: 2,
+            head_sha: sourceSha,
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      };
+    if (endpoint.includes("/artifacts?"))
+      return {
+        total_count: 1,
+        artifacts: [
+          {
+            name: "batcave-release-candidate-v0.3.0",
+            expired: false,
+            workflow_run: { id: 123, head_sha: sourceSha },
+          },
+        ],
+      };
+    if (endpoint.endsWith("/releases/tags/v0.3.0"))
+      return {
+        tag_name: "v0.3.0",
+        target_commitish: sourceSha,
+        draft: false,
+        immutable: true,
+        published_at: "2026-09-27T00:00:00Z",
+      };
+    assert.fail(`unexpected origin endpoint ${endpoint}`);
+  };
+}
+
+// Mapping fixtures stay in memory. They are not branded native captures or retained release proof.
+function observedState(receipt, kind) {
+  const role = expectedReleaseAssetRoles(receipt.tag).roles.find(
+    ({ role }) =>
+      role ===
+      (kind === "deb" ? "Linux deb package" : "Linux AppImage package and updater payload"),
+  );
+  const asset = receipt.assets.find(({ name }) => name === role.name);
+  const config = JSON.parse(
+    fs.readFileSync(new URL("../src/BatCave.App/src-tauri/tauri.conf.json", import.meta.url)),
+  );
+  return {
+    asset,
+    packet: {
+      result: "passed",
+      observed_at_utc: "2026-09-27T00:00:00Z",
+      source: { source_sha: sourceSha, app_version: receipt.app_version },
+      host: { platform: "linux", architecture: "x86_64", os_version: "Ubuntu 22.04.5 LTS" },
+      artifact: { sha256: asset.sha256 },
+      checks: { application_removed: true, restart_settings_preserved: true },
+      receipts: { degraded: { health_degraded: true } },
+    },
+    telemetry: { samples_advanced: true },
+    rootSettlements: Array.from({ length: 5 }, () => ({ process_tree_settled: true })),
+    updaterKeyFingerprint: digest(Buffer.from(config.plugins.updater.pubkey, "base64")),
+  };
+}
+
+test("packet selectors bind the original publication run without replacing legacy observations", () => {
+  for (const { internals } of profiles) {
+    assert.deepEqual(internals.parseSelectors(["v0.3.0", sourceSha, "123"]), {
+      tag: "v0.3.0",
+      sourceSha,
+      runId: "123",
+    });
+    for (const runId of ["0", "01", "main", "1.5", "9007199254740992"]) {
+      assert.throws(() => internals.parseSelectors(["v0.3.0", sourceSha, runId]), /run ID/u);
+    }
+    const selectors = { tag: "v0.3.0", sourceSha, runId: "123" };
+    assert.throws(
+      () => internals.verifyOrigin(selectors, originalRun({ head_sha: "b".repeat(40) })),
+      /original release run/u,
+    );
+    assert.throws(
+      () => internals.verifyOrigin(selectors, originalRun({ run_attempt: 3 })),
+      /publication job/u,
+    );
+    assert.deepEqual(internals.verifyOrigin(selectors, originalRun()), {
+      tag: "v0.3.0",
+      sourceSha,
+      runId: 123,
+      runAttempt: 2,
+    });
+  }
+});
+
+test("packet production boundary rejects cloned origin or native capture authority", async () => {
+  const receipt = await genuinePublicReceipt();
+  for (const { internals } of profiles) {
+    const origin = internals.verifyOrigin(
+      { tag: "v0.3.0", sourceSha, runId: "123" },
+      originalRun(),
+    );
+    assert.throws(
+      () => internals.buildReleasePacket(receipt, {}, structuredClone(origin)),
+      /matching in-process original release/u,
+    );
+    assert.throws(
+      () => internals.buildReleasePacket(receipt, {}, origin),
+      /matching in-process verified native result/u,
+    );
+    assert.throws(
+      () => internals.buildReleasePacket(structuredClone(receipt), {}, origin),
+      /in-process verifyPublicRelease/u,
+    );
+  }
+});
+
+for (const { name, internals } of profiles) {
+  test(`${name} maps exact public bytes and native CLI receipts into an explicitly blocked launch packet`, async () => {
+    const receipt = await genuinePublicReceipt();
+    const kind = name === "deb" ? "deb" : "appimage";
+    const state = observedState(receipt, kind);
+    const origin = { runId: 123, runAttempt: 2 };
+    const packet = internals.packetFromObservedState(receipt, state, origin, "2.35");
+    assert.equal(validateReleaseEvidencePacket(packet), packet);
+    assert.equal(packet.checks.runtime.launch.status, "blocked");
+    assert.match(packet.checks.runtime.launch.outcome, /desktop window.*unobserved/u);
+    assert.equal(packet.limitations.desktop_window_not_observed.disposition, "blocked");
+    assert.equal(packet.limitations.qualification_review_pending.disposition, "blocked");
+    assert.equal(packet.platform.os_version, "ubuntu-22.04");
+    assert.equal(packet.platform.proof.native, "observed");
+    assert.equal(packet.release.workflow_run.run_id, 123);
+    assert.equal(packet.release.workflow_run.run_attempt, 2);
+    assert.equal(packet.assets[0].api_digest, state.asset.sha256);
+    assert.equal(
+      packet.checks.install.package_install.status,
+      kind === "deb" ? "passed" : "not_applicable",
+    );
+    if (kind === "deb") {
+      assert.deepEqual(packet.assets[0].signatures, {});
+      assert.ok(packet.limitations.deb_checksum_attestation_only);
+    } else {
+      assert.equal(packet.assets[0].signatures.tauri_updater.identity, state.updaterKeyFingerprint);
+      assert.ok(packet.limitations.appimage_extract_and_run);
+      assert.equal(packet.limitations.updater_a_to_b_not_exercised.disposition, "blocked");
+    }
+    for (const mutate of [
+      (value) => (value.packet.source.source_sha = "b".repeat(40)),
+      (value) => (value.packet.artifact.sha256 = `sha256:${"b".repeat(64)}`),
+      (value) => (value.packet.checks.application_removed = false),
+      (value) => (value.telemetry.samples_advanced = false),
+      (value) => (value.packet.receipts.degraded.health_degraded = false),
+    ]) {
+      const invalid = structuredClone(state);
+      mutate(invalid);
+      assert.throws(
+        () => internals.packetFromObservedState(receipt, invalid, origin, "2.35"),
+        /matching passed public-package native observations/u,
+      );
+    }
+    for (const version of ["Debian GNU/Linux 12", "Ubuntu 24.04 LTS"]) {
+      const invalid = structuredClone(state);
+      invalid.packet.host.os_version = version;
+      assert.throws(
+        () => internals.packetFromObservedState(receipt, invalid, origin, "2.35"),
+        /observed Ubuntu 22.04/u,
+      );
+    }
+    assert.throws(
+      () => internals.packetFromObservedState(receipt, state, origin, undefined),
+      /glibc 2.35/u,
+    );
+  });
+}

@@ -2,14 +2,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { linuxPersistenceCaptureInternals } from "./capture-linux-current-user-persistence.mjs";
-import { validateSanitizedReleaseEvidenceValue } from "./validate-release-evidence-packet.mjs";
-import { RELEASE_REPOSITORY, verifyPublicRelease } from "./verify-public-release.mjs";
+import {
+  validateReleaseEvidencePacket,
+  validateSanitizedReleaseEvidenceValue,
+} from "./validate-release-evidence-packet.mjs";
+import {
+  RELEASE_REPOSITORY,
+  RELEASE_SOURCE_REF,
+  RELEASE_SIGNER_WORKFLOW,
+  requireVerifiedPublicReleaseReceipt,
+  verifyPublicRelease,
+} from "./verify-public-release.mjs";
+import { verifyLivePublishedReleaseOrigin } from "./verify-published-release-origin.mjs";
 import { parseReleaseTag } from "./verify-release-version.mjs";
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/u;
+const RUN_ID = /^[1-9][0-9]*$/u;
+const verifiedOrigins = new WeakSet();
 const MAX_RELEASE_READBACK_BYTES = 1024 * 1024;
 const RELEASE_API_ROOT = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/tags/`;
 const CANDIDATE_FILE = path.resolve(
@@ -23,6 +36,258 @@ const OUTPUT_DIRECTORY = path.resolve(
 
 function fail(message) {
   throw new Error(message);
+}
+
+function readOrigin(endpoint) {
+  const result = spawnSync("gh", ["api", endpoint], {
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) fail("could not read original release identity");
+  return JSON.parse(result.stdout);
+}
+
+function verifyOrigin(selectors, read = readOrigin) {
+  let run;
+  verifyLivePublishedReleaseOrigin(
+    selectors.tag,
+    selectors.sourceSha,
+    selectors.runId,
+    (endpoint) => {
+      const value = read(endpoint);
+      if (endpoint === `repos/${RELEASE_REPOSITORY}/actions/runs/${selectors.runId}`) run = value;
+      return value;
+    },
+  );
+  if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt <= 0) {
+    fail("original release attempt must be a positive safe integer");
+  }
+  const origin = Object.freeze({
+    tag: selectors.tag,
+    sourceSha: selectors.sourceSha,
+    runId: run.id,
+    runAttempt: run.run_attempt,
+  });
+  verifiedOrigins.add(origin);
+  return origin;
+}
+
+function requireOrigin(origin, receipt) {
+  if (
+    !verifiedOrigins.has(origin) ||
+    origin.tag !== receipt.tag ||
+    origin.sourceSha !== receipt.source_sha
+  ) {
+    fail("packet requires the matching in-process original release verification");
+  }
+}
+
+function ubuntuHost(host, glibcVersion) {
+  const version = /^Ubuntu (22\.04)(?:\.\d+)? LTS$/u.exec(host.os_version);
+  if (
+    host.platform !== "linux" ||
+    host.architecture !== "x86_64" ||
+    !version ||
+    !/^2\.35(?:\.\d+)?$/u.test(glibcVersion ?? "")
+  ) {
+    fail("packet requires observed Ubuntu 22.04 x86_64 with glibc 2.35");
+  }
+  return `ubuntu-${version[1]}`;
+}
+
+function packetFromObservedState(kind, receipt, state, origin, glibcVersion) {
+  const { asset, packet } = state;
+  if (
+    packet.result !== "passed" ||
+    packet.source.source_sha !== receipt.source_sha ||
+    packet.source.app_version !== receipt.app_version ||
+    packet.artifact.sha256 !== asset.sha256 ||
+    !receipt.assets.some(
+      (verified) =>
+        verified.name === asset.name &&
+        verified.sha256 === asset.sha256 &&
+        verified.size_bytes === asset.size_bytes &&
+        verified.public_url === asset.public_url,
+    ) ||
+    !Object.values(packet.checks).every((passed) => passed === true) ||
+    !state.telemetry?.samples_advanced ||
+    packet.receipts.degraded.health_degraded !== true ||
+    (kind === "deb" &&
+      (state.rootSettlements?.length !== 5 ||
+        !state.rootSettlements.every((settled) => settled.process_tree_settled === true)))
+  ) {
+    fail("packet requires matching passed public-package native observations");
+  }
+  const osVersion = ubuntuHost(packet.host, glibcVersion);
+  const check = (status, outcome) => ({ status, outcome });
+  const limitations = {
+    desktop_window_not_observed: {
+      disposition: "blocked",
+      summary:
+        "Packaged CLI phases ran; no mapped production desktop window or rendered UI was observed.",
+    },
+    github_hosted_ubuntu_22_04: {
+      disposition: "not_applicable",
+      summary:
+        "Observed Ubuntu 22.04 x86_64 glibc host; this packet does not qualify other support profiles.",
+    },
+    qualification_review_pending: {
+      disposition: "blocked",
+      summary:
+        "Blocked launch and independent native qualification review remain; support-contract status is unchanged.",
+    },
+  };
+  if (kind === "deb") {
+    limitations.deb_checksum_attestation_only = {
+      disposition: "not_applicable",
+      summary:
+        "Debian package trust uses matching public checksums and source-bound GitHub attestations.",
+    };
+  } else {
+    limitations.appimage_extract_and_run = {
+      disposition: "not_applicable",
+      summary:
+        "Fixed extract-and-run staging was observed; no conventional package installation was performed.",
+    };
+    limitations.network_isolation_not_enforced = {
+      disposition: "blocked",
+      summary: "This run did not enforce network isolation.",
+    };
+    limitations.updater_a_to_b_not_exercised = {
+      disposition: "blocked",
+      summary: "The updater payload signature was verified; no A-to-B update was performed.",
+    };
+  }
+  const evidence = {
+    schema_version: 1,
+    packet_kind: "release_evidence",
+    packet_id: `ubuntu-22-04-${kind}-${receipt.source_sha.slice(0, 12)}-${origin.runId}-${origin.runAttempt}`,
+    observed_at_utc: packet.observed_at_utc,
+    release: {
+      repository: RELEASE_REPOSITORY,
+      tag: receipt.tag,
+      channel: parseReleaseTag(receipt.tag).prerelease ? "prerelease" : "stable",
+      source_sha: receipt.source_sha,
+      main_sha: receipt.source_sha,
+      release_target_sha: receipt.source_sha,
+      release_url: `https://github.com/${RELEASE_REPOSITORY}/releases/tag/${receipt.tag}`,
+      workflow_run: {
+        workflow_file: ".github/workflows/release.yml",
+        run_id: origin.runId,
+        run_attempt: origin.runAttempt,
+        url: `https://github.com/${RELEASE_REPOSITORY}/actions/runs/${origin.runId}/attempts/${origin.runAttempt}`,
+      },
+    },
+    platform: {
+      support_contract_version: 1,
+      profile_id: "ubuntu-22.04-x86_64-glibc",
+      proof: { declaration: "declared", source: "source_enforced", native: "observed" },
+      os: "linux",
+      os_version: osVersion,
+      architecture: "x86_64",
+      runtime: { libc_family: "glibc" },
+      package: { kind, architecture: "x86_64", asset_name: asset.name },
+    },
+    assets: [
+      {
+        name: asset.name,
+        size_bytes: asset.size_bytes,
+        sha256: asset.sha256,
+        api_digest: asset.sha256,
+        public_url: asset.public_url,
+        attestation: {
+          verified: true,
+          repository: RELEASE_REPOSITORY,
+          source_sha: receipt.source_sha,
+          source_ref: RELEASE_SOURCE_REF,
+          signer_workflow: RELEASE_SIGNER_WORKFLOW,
+        },
+        signatures:
+          kind === "appimage"
+            ? {
+                tauri_updater: { identity: state.updaterKeyFingerprint, verified: true },
+              }
+            : {},
+      },
+    ],
+    checks: {
+      install: {
+        anonymous_download: check(
+          "passed",
+          "Anonymous public bytes matched the independently retained candidate inventory.",
+        ),
+        checksum: check(
+          "passed",
+          "Selected bytes matched the GitHub API digest and the complete public checksum manifest.",
+        ),
+        package_install:
+          kind === "deb"
+            ? check(
+                "passed",
+                "Exact public deb installed through an owned transient unit; package-owned GUI and CLI files were verified.",
+              )
+            : check(
+                "not_applicable",
+                "AppImage used fixed extract-and-run staging; no conventional package installation was observed.",
+              ),
+      },
+      runtime: {
+        degradation: check(
+          "passed",
+          "Packaged CLI reported degraded persistence and retained corrupt settings bytes.",
+        ),
+        launch: check(
+          "blocked",
+          "Packaged CLI phases completed; a mapped production desktop window and rendered UI remain unobserved.",
+        ),
+        release_identity: check(
+          "passed",
+          "Packaged CLI phases reported the exact public source, version and package install kind.",
+        ),
+        settings: check(
+          "passed",
+          "Packaged CLI restart preserved initialized settings in an isolated current-user root.",
+        ),
+        telemetry: check(
+          "passed",
+          "Two strict packaged CLI core-runtime samples advanced; this does not prove UI updates.",
+        ),
+      },
+      cleanup: {
+        application_removed: check(
+          "passed",
+          kind === "deb"
+            ? "Package purge removed the GUI, CLI and observed package-owned files."
+            : "The verified private AppImage and its staged workspace were removed.",
+        ),
+        owned_runtime_cleanup: check(
+          "passed",
+          kind === "deb"
+            ? "Owned invocation process groups and all five root units settled before workspace cleanup."
+            : "Owned invocation process groups settled before private workspace cleanup.",
+        ),
+        user_state_policy: check(
+          "passed",
+          "Package removal preserved isolated user state and the outside sentinel before workspace cleanup.",
+        ),
+      },
+    },
+    limitations: Object.fromEntries(
+      Object.entries(limitations).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  };
+  return validateReleaseEvidencePacket(evidence);
+}
+
+function buildReleasePacket(profile, receipt, captureResult, origin) {
+  requireVerifiedPublicReleaseReceipt(receipt);
+  requireOrigin(origin, receipt);
+  // Retain the existing complete observation gates and both process-local capture brands.
+  profile.buildEvidence(receipt, captureResult);
+  const state = profile.requireCapture(captureResult, receipt);
+  const glibcVersion = process.report.getReport().header.glibcVersionRuntime;
+  return packetFromObservedState(profile.kind, receipt, state, origin, glibcVersion);
 }
 
 function buildDebEvidence(receipt, captureResult) {
@@ -150,6 +415,9 @@ function buildAppImageEvidence(receipt, captureResult) {
 
 const PROFILES = Object.freeze({
   appimage: Object.freeze({
+    kind: "appimage",
+    packetOutputName: "linux-appimage-release-evidence.json",
+    requireCapture: linuxPersistenceCaptureInternals.requireVerifiedPublicAppImageCaptureResult,
     buildEvidence: buildAppImageEvidence,
     displayName: "AppImage",
     outputName: "linux-appimage-observation.json",
@@ -158,6 +426,9 @@ const PROFILES = Object.freeze({
     capture: (receipt) => linuxPersistenceCaptureInternals.captureVerifiedPublicAppImage(receipt),
   }),
   deb: Object.freeze({
+    kind: "deb",
+    packetOutputName: "linux-deb-release-evidence.json",
+    requireCapture: linuxPersistenceCaptureInternals.requireVerifiedPublicDebCaptureResult,
     buildEvidence: buildDebEvidence,
     displayName: "deb",
     outputName: "linux-deb-observation.json",
@@ -168,15 +439,20 @@ const PROFILES = Object.freeze({
 });
 
 function parseSelectors(profile, argv) {
-  if (argv.length !== 2) {
-    fail(`usage: node scripts/${profile.scriptName} <tag> <source-sha>`);
+  if (argv.length !== 2 && argv.length !== 3) {
+    fail(
+      `usage: node scripts/${profile.scriptName} <tag> <source-sha> [<original-release-run-id>]`,
+    );
   }
-  const [tag, sourceSha] = argv;
+  const [tag, sourceSha, runId] = argv;
   parseReleaseTag(tag);
   if (!COMMIT_SHA.test(sourceSha)) {
     fail("source SHA must be an exact lowercase 40-character commit SHA");
   }
-  return { sourceSha, tag };
+  if (runId !== undefined && (!RUN_ID.test(runId) || !Number.isSafeInteger(Number(runId)))) {
+    fail("original release run ID must be a positive safe integer");
+  }
+  return { sourceSha, tag, ...(runId === undefined ? {} : { runId }) };
 }
 
 function validateCandidateSelectors(candidate, tag, sourceSha) {
@@ -255,20 +531,24 @@ async function run(profile, selectors) {
   fs.chmodSync(workspace, 0o700);
   try {
     const candidate = readCandidateInventory(selectors.tag, selectors.sourceSha);
+    const origin = selectors.runId === undefined ? null : verifyOrigin(selectors);
     const release = await readAnonymousPublicRelease(selectors.tag);
     const downloads = path.join(workspace, "public-downloads");
     const verification = await verifyPublicRelease(candidate, release, downloads);
     const result = await profile.capture(verification.receipt);
     const evidence = profile.buildEvidence(verification.receipt, result);
     validateSanitizedReleaseEvidenceValue(evidence);
-    return evidence;
+    const packet = origin
+      ? buildReleasePacket(profile, verification.receipt, result, origin)
+      : null;
+    return { evidence, packet };
   } finally {
     fs.rmSync(workspace, { force: true, recursive: true });
   }
 }
 
 async function main(profile, argv) {
-  const evidence = await run(profile, parseSelectors(profile, argv));
+  const { evidence, packet } = await run(profile, parseSelectors(profile, argv));
   try {
     fs.lstatSync(OUTPUT_DIRECTORY);
     fail("fixed post-public output directory must not already exist");
@@ -285,6 +565,16 @@ async function main(profile, argv) {
         mode: 0o600,
       },
     );
+    if (packet) {
+      fs.writeFileSync(
+        path.join(OUTPUT_DIRECTORY, profile.packetOutputName),
+        `${JSON.stringify(packet, null, 2)}\n`,
+        {
+          flag: "wx",
+          mode: 0o600,
+        },
+      );
+    }
   } catch (error) {
     fs.rmSync(OUTPUT_DIRECTORY, { force: true, recursive: true });
     throw error;
@@ -303,6 +593,12 @@ function profileInternals(profile) {
   return Object.freeze({
     parseSelectors: (argv) => parseSelectors(profile, argv),
     validateCandidateSelectors,
+    verifyOrigin,
+    requireOrigin,
+    packetFromObservedState: (receipt, state, origin, glibcVersion) =>
+      packetFromObservedState(profile.kind, receipt, state, origin, glibcVersion),
+    buildReleasePacket: (receipt, captureResult, origin) =>
+      buildReleasePacket(profile, receipt, captureResult, origin),
   });
 }
 

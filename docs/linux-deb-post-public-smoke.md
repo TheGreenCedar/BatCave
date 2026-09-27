@@ -4,7 +4,7 @@ Published releases get separate fresh, protected `ubuntu-22.04` deb and AppImage
 
 ## Identity and byte boundary
 
-The finalize job retains its exact pre-publication candidate JSON as a one-day workflow artifact. The post-public job downloads that fixed artifact name and invokes `scripts/linux-deb-post-public-smoke.mjs` with only the workflow-owned release tag and source SHA. Its shared driver reads the candidate from one fixed repository-relative location. Neither entrypoint accepts a caller-selected profile, artifact path, command, environment, status, callback, or evidence payload.
+The finalize job retains its exact pre-publication candidate JSON as a workflow artifact. The post-public job downloads that fixed artifact name and invokes `scripts/linux-deb-post-public-smoke.mjs` with the workflow-owned release tag, source SHA, and original release run ID. Its shared driver reads the candidate from one fixed repository-relative location. Neither entrypoint accepts a caller-selected profile, artifact path, command, environment, status, callback, or evidence payload.
 
 Before installation, the job:
 
@@ -39,4 +39,21 @@ The installed package must own executable regular GUI and CLI files. The job rec
 
 Purge is unconditional after any install attempt. Inventory acquisition errors cannot skip it. Cleanup distinguishes a truly absent dpkg record from a failed query, treats dangling links as residue, requires the GUI, CLI, and observed package-owned files to be gone, preserves the documented current-user state root, and checks an outside sentinel.
 
-The script writes and prints sanitized JSON only after public verification, native checks, root-unit settlement, purge, residue checks, and workspace cleanup complete. The workflow retains that one fixed JSON file for 30 days. The result is `linux_deb_post_public_observation`, not `release_evidence`: `release_evidence_eligible` remains false and the current-user `native_candidate` packet is never promoted.
+The script writes and prints sanitized JSON only after public verification, native checks, root-unit settlement, purge, residue checks, and workspace cleanup complete. The existing `linux_deb_post_public_observation` retains `release_evidence_eligible: false`; the current-user `native_candidate` packet is never relabeled or promoted.
+
+## Incomplete public-release packet
+
+When the original release run ID is supplied, the driver also writes `post-public-output/linux-deb-release-evidence.json`. It rechecks the original publication job, source commit, run attempt, immutable release, and retained candidate through the existing origin verifier. Only matching in-process public-verification and native-capture receipts can produce this additional packet. It records the exact observed Ubuntu 22.04 x86_64/glibc 2.35 host, public package bytes, checksum-and-attestation trust, packaged CLI checks, and cleanup. The existing release-evidence validator runs before either output is written. Both fixed sanitized files are retained for 30 days.
+
+`runtime.launch` is **blocked**: the capture runs packaged CLI phases and has not observed a mapped production desktop window or rendered UI. Its `platform.proof.native: observed` describes those actual native CLI phases, not completed GUI or oldest-host qualification. The packet keeps `desktop_window_not_observed` and `qualification_review_pending` blocked, preserves `deb_checksum_attestation_only`, and leaves every support-contract `native_oldest_supported` field pending. Schema validation does not resolve those blocks or approve the release.
+
+The shared AppImage lane writes `linux-appimage-release-evidence.json` with the same launch block. It records the verified updater-key identity and keeps extract-and-run, missing network isolation, and unexercised A-to-B updating explicit. `package_install` is `not_applicable`; extraction is not conventional installation.
+
+The existing manual **Verify published release** workflow can replay the immutable public `v0.2.0` while its candidate artifact is retained, using source `2355d82b08a097259a67ccd789da032945768027` and original release run `36210769065`. No new publication or build of those package bytes is needed. The two-argument script invocation remains observation-only for existing callers. A packet requires the third original-run selector:
+
+```sh
+node scripts/linux-deb-post-public-smoke.mjs v0.2.0 2355d82b08a097259a67ccd789da032945768027 36210769065
+node scripts/validate-release-evidence-packet.mjs post-public-output/linux-deb-release-evidence.json
+```
+
+These commands perform native install/purge on the dedicated Ubuntu host; they are not a local source-test command. Completing the launch check requires a separately owned production GUI/session observation, with mapped-window/render proof and settled descendants. The current script does not create that display/session or weaken the WebKit sandbox.
