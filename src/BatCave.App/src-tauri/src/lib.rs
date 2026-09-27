@@ -39,7 +39,6 @@ mod runtime_ui_preferences;
 mod telemetry;
 #[cfg(test)]
 mod updater_hostile_fixtures;
-mod wire_clock;
 #[cfg(all(windows, feature = "private-windows-lifecycle-proof"))]
 mod windows_lifecycle_proof;
 #[cfg(any(test, feature = "private-windows-lifecycle-proof"))]
@@ -55,6 +54,7 @@ mod windows_process;
 mod windows_system;
 #[cfg(any(windows, test))]
 mod windows_user_launch;
+mod wire_clock;
 mod workload_history;
 mod workload_identity;
 
