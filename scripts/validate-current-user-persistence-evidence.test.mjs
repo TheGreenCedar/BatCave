@@ -14,6 +14,7 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_SHA = "a".repeat(40);
 const WORKFLOW_TEST = "scripts/validate-current-user-persistence-evidence.test.mjs";
+const DMG_CAPTURE_TEST = "scripts/capture-macos-dmg-current-user-persistence.test.mjs";
 
 function workflowJob(source, id) {
   const lines = source.split("\n");
@@ -24,8 +25,8 @@ function workflowJob(source, id) {
   return lines.slice(start, end).join("\n");
 }
 
-function activeTestPattern({ capture = false } = {}) {
-  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(WORKFLOW_TEST)}[^#\\n]*`;
+function activeTestPattern(testScript = WORKFLOW_TEST, { capture = false } = {}) {
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(testScript)}[^#\\n]*`;
   return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
 }
 
@@ -37,13 +38,27 @@ function assertWorkflowCoverage(release, validation) {
   ]) {
     assert.match(job, activeTestPattern(), `${label} must actively run ${WORKFLOW_TEST}`);
   }
+  assert.match(
+    workflowJob(validation, "linux"),
+    activeTestPattern(DMG_CAPTURE_TEST),
+    `validation linux must actively run ${DMG_CAPTURE_TEST}`,
+  );
 }
 
-function commentActiveTest(source, id) {
+function commentActiveTest(source, id, testScript = WORKFLOW_TEST) {
   const job = workflowJob(source, id);
-  const commented = job.replace(activeTestPattern({ capture: true }), "$1# $2");
-  assert.notEqual(commented, job, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  const commented = job.replace(activeTestPattern(testScript, { capture: true }), "$1# $2");
+  assert.notEqual(commented, job, `${id} must contain an active ${testScript} command`);
   return source.replace(job, commented);
+}
+
+function removeActiveTest(source, id, testScript) {
+  const job = workflowJob(source, id);
+  const removed = job.replace(activeTestPattern(testScript, { capture: true }), (command) =>
+    command.replace(testScript, ""),
+  );
+  assert.notEqual(removed, job, `${id} must contain an active ${testScript} command`);
+  return source.replace(job, removed);
 }
 
 function receipt(phase, { degraded = false } = {}) {
@@ -383,5 +398,23 @@ test("workflow coverage rejects commented-out contract test commands", () => {
     () =>
       assertWorkflowCoverage(release, commentActiveTest(validation, "macos")),
     /validation macos must actively run/u,
+  );
+  assert.throws(
+    () =>
+      assert.match(
+        workflowJob(commentActiveTest(validation, "linux", DMG_CAPTURE_TEST), "linux"),
+        activeTestPattern(DMG_CAPTURE_TEST),
+        `validation linux must actively run ${DMG_CAPTURE_TEST}`,
+      ),
+    /validation linux must actively run scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u,
+  );
+  assert.throws(
+    () =>
+      assert.match(
+        workflowJob(removeActiveTest(validation, "linux", DMG_CAPTURE_TEST), "linux"),
+        activeTestPattern(DMG_CAPTURE_TEST),
+        `validation linux must actively run ${DMG_CAPTURE_TEST}`,
+      ),
+    /validation linux must actively run scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u,
   );
 });
