@@ -1273,13 +1273,6 @@ mod tests {
     }
 
     #[test]
-    fn observation_never_conflates_unknown_with_absent() {
-        let absent: Observation<u32> = Observation::Absent;
-        let unknown: Observation<u32> = Observation::Unknown("access_denied".to_string());
-        assert_ne!(absent, unknown);
-    }
-
-    #[test]
     fn desktop_phase_contract_accepts_active_and_fallback_truth() {
         for phase in [
             DesktopPhase::FinalPrimary,

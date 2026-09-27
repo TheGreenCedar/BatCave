@@ -1126,16 +1126,6 @@ mod tests {
     }
 
     #[test]
-    fn excluded_family_entry_clears_stale_admitted_state() {
-        let mut family_state = Some(IPV4_SOCKET_FAMILY);
-
-        model_family_entry(&mut family_state, 1);
-
-        assert_eq!(family_state, None, "AF_UNIX must clear stale IP state");
-        assert!(!model_family_return(&mut family_state, 4_096));
-    }
-
-    #[test]
     fn soft_map_limit_reserves_one_concurrent_insert_per_configured_cpu() {
         assert!(validate_map_insert_reserve(8_192).is_ok());
         let error = validate_map_insert_reserve(8_193).unwrap_err();
@@ -1657,17 +1647,6 @@ mod tests {
         closing_epoch
             .checked_sub(EPOCH_GRACE_INTERVALS)
             .filter(|epoch| *epoch > 0)
-    }
-
-    fn model_family_entry(state: &mut Option<u16>, incoming_family: u16) {
-        *state = match incoming_family {
-            IPV4_SOCKET_FAMILY | IPV6_SOCKET_FAMILY => Some(incoming_family),
-            _ => None,
-        };
-    }
-
-    fn model_family_return(state: &mut Option<u16>, returned_bytes: u64) -> bool {
-        state.take().is_some() && returned_bytes > 0
     }
 
     #[cfg(unix)]

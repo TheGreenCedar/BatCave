@@ -26,15 +26,34 @@ impl LinuxSystemCollector {
         let cpu_times = read_cpu_times()?;
         let memory = read_meminfo()?;
         let sampled_at = Instant::now();
-        let (disk, disk_read_bps, disk_write_bps, disk_quality) = resolve_io_sample(
+        self.sample_from(
+            cpu_times,
+            memory,
             read_block_device_totals(),
+            read_network_totals(),
+            sampled_at,
+            count_process_dirs(),
+        )
+    }
+
+    fn sample_from(
+        &mut self,
+        cpu_times: BTreeMap<String, CpuTimes>,
+        memory: MemoryTotals,
+        disk: Result<BTreeMap<String, IoTotals>, String>,
+        network: Result<BTreeMap<String, IoTotals>, String>,
+        sampled_at: Instant,
+        process_count: usize,
+    ) -> Result<SystemMetricsSnapshot, String> {
+        let (disk, disk_read_bps, disk_write_bps, disk_quality) = resolve_io_sample(
+            disk,
             &mut self.previous_disk,
             sampled_at,
             "Linux disk counters need a second /sys/block sample.",
         );
         let (network, network_received_bps, network_transmitted_bps, network_quality) =
             resolve_io_sample(
-                read_network_totals(),
+                network,
                 &mut self.previous_network,
                 sampled_at,
                 "Linux network counters need a second /proc/net/dev sample.",
@@ -132,7 +151,7 @@ impl LinuxSystemCollector {
             memory_available_bytes: Some(memory.available_bytes),
             swap_used_bytes: Some(memory.swap_used_bytes),
             swap_total_bytes: Some(memory.swap_total_bytes),
-            process_count: count_process_dirs(),
+            process_count,
             disk_read_total_bytes: disk.read_total_bytes,
             disk_write_total_bytes: disk.write_total_bytes,
             disk_read_bps,
@@ -672,6 +691,10 @@ mod tests {
 
         assert_eq!(counters["eth0"].read_total_bytes, 100);
         assert_eq!(counters["eth0"].write_total_bytes, 200);
+        assert_eq!(
+            counters.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["eth0"]
+        );
     }
 
     #[test]
@@ -750,19 +773,40 @@ mod tests {
     #[test]
     fn logical_cpu_deltas_follow_labels_across_reordering() {
         let previous = parse_cpu_times(
-            "cpu 20 0 0 180 0 0 0 0\ncpu0 10 0 0 90 0 0 0 0\ncpu1 10 0 0 90 0 0 0 0\n",
+            "cpu 310 0 0 390 0 0 0 0\ncpu0 10 0 0 90 0 0 0 0\ncpu1 100 0 0 100 0 0 0 0\ncpu2 200 0 0 200 0 0 0 0\n",
         )
         .unwrap();
         let current = parse_cpu_times(
-            "cpu 60 0 0 340 0 0 0 0\ncpu1 40 0 0 160 0 0 0 0\ncpu0 20 0 0 180 0 0 0 0\n",
+            "cpu 380 0 0 520 0 0 0 0\ncpu10 1000 0 0 1000 0 0 0 0\ncpu2 260 0 0 240 0 0 0 0\ncpu0 20 0 0 180 0 0 0 0\n",
         )
         .unwrap();
 
-        let cpu0 = cpu_load(previous["cpu0"], current["cpu0"]).unwrap().0;
-        let cpu1 = cpu_load(previous["cpu1"], current["cpu1"]).unwrap().0;
-
-        assert_eq!(cpu0, 10.0);
-        assert_eq!(cpu1, 30.0);
+        assert_eq!(cpu_load(previous["cpu0"], current["cpu0"]).unwrap().0, 10.0);
+        assert_eq!(cpu_load(previous["cpu2"], current["cpu2"]).unwrap().0, 60.0);
+        let mut collector = LinuxSystemCollector::new();
+        let started = Instant::now();
+        let mut sample = |cpus, sampled_at| {
+            collector
+                .sample_from(
+                    cpus,
+                    MemoryTotals::default(),
+                    Ok(BTreeMap::new()),
+                    Ok(BTreeMap::new()),
+                    sampled_at,
+                    0,
+                )
+                .unwrap()
+        };
+        let first = sample(previous, started);
+        assert_eq!(first.logical_cpu_percent, vec![0.0, 0.0, 0.0]);
+        let next = sample(current, started + std::time::Duration::from_secs(1));
+        assert_eq!(next.logical_cpu_percent, vec![10.0, 60.0, 0.0]);
+        let quality = next.quality.unwrap().logical_cpu.unwrap();
+        assert_eq!(quality.quality, MetricQuality::Partial);
+        assert_eq!(
+            quality.limitation_code,
+            Some(MetricLimitationCode::PendingBaseline)
+        );
     }
 
     #[test]
