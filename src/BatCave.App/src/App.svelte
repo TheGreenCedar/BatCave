@@ -255,6 +255,7 @@
   let detailOpener: HTMLElement | null = null;
   let detailFocusFrame: number | undefined;
   let viewNavigationRevision = 0;
+  let viewNavigationPending = false;
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
   let forceRankingRefresh = false;
@@ -612,6 +613,7 @@
 
     return () => {
       viewNavigationRevision += 1;
+      viewNavigationPending = false;
       systemThemeQuery.removeEventListener("change", handleSystemThemeChange);
       stopPolling?.();
       inspectionGate.clear();
@@ -1710,11 +1712,13 @@
   }
 
   function activateView(view: AppView, destination: "view" | "search" = "view"): void {
-    if (activeView === view && destination === "view") return;
+    if (activeView === view && destination === "view" && !viewNavigationPending) return;
     const revision = ++viewNavigationRevision;
     activeView = view;
+    viewNavigationPending = true;
     void tick().then(() => {
       if (revision !== viewNavigationRevision || activeView !== view) return;
+      viewNavigationPending = false;
       // Compact views share the document scroller. A removed Overview can leave
       // Explore below its retained offset, with only the shell background visible.
       window.scrollTo(0, 0);

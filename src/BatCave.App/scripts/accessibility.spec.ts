@@ -476,6 +476,17 @@ test("view navigation restores visible destinations and preserves search and ins
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await page.locator('[data-view="overview"]').click();
   await expect(page.locator(".overview-view")).toBeFocused();
+  await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    for (const key of ["/", "2"]) {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    }
+  });
+  await expect(search, "latest Explore request supersedes pending search focus").not.toBeFocused();
+  await expect(explore).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.locator('[data-view="overview"]').click();
+  await expect(page.locator(".overview-view")).toBeFocused();
   const workload = page.locator(".overview-workload-list [data-workload-id]").first();
   const workloadId = await workload.getAttribute("data-workload-id");
   await workload.scrollIntoViewIfNeeded();
@@ -487,6 +498,21 @@ test("view navigation restores visible destinations and preserves search and ins
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
+  const selectedWorkload = page
+    .locator(`[data-workload-id="${workloadId}"]`)
+    .filter({ visible: true })
+    .first();
+  await selectedWorkload.scrollIntoViewIfNeeded();
+  await selectedWorkload.focus();
+  const sameViewScroll = await page.evaluate(() => window.scrollY);
+  expect(sameViewScroll).toBeGreaterThan(0);
+  await selectedWorkload.press("Enter");
+  await expect(dialog.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(sameViewScroll);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(selectedWorkload).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(sameViewScroll);
 });
 
 test("Overview selection and leading rows survive Explore query controls", async ({ page }) => {
