@@ -350,29 +350,41 @@ export function buildReleaseInventory(
   sourceSha,
   prerelease,
   directory,
+  windowsSigningMode = "unsigned",
   windowsSigning,
   windowsStorePreflight,
 ) {
   parseReleaseTag(tag);
   requireCommitSha("source SHA", sourceSha);
+  if (!["unsigned", "azure"].includes(windowsSigningMode)) {
+    throw new Error(`unknown Windows signing mode: ${windowsSigningMode}`);
+  }
+  if (windowsSigningMode === "azure" && windowsSigning === undefined) {
+    throw new Error("Azure Windows signing requires a final production signing inventory");
+  }
+  if (
+    windowsSigningMode === "unsigned" &&
+    (windowsSigning !== undefined || windowsStorePreflight !== undefined)
+  ) {
+    throw new Error("unsigned Windows mode cannot include signing or Store evidence");
+  }
   const assets = verifyReleaseDirectory(tag, prerelease, directory);
   const inventory = { tag, source_sha: sourceSha, prerelease, assets };
-  if (windowsSigning !== undefined || windowsStorePreflight !== undefined) {
-    if (windowsSigning === undefined || windowsStorePreflight === undefined) {
-      throw new Error("Windows signing and Store preflight receipts must be supplied together");
-    }
+  if (windowsSigning !== undefined) {
     inventory.windows_signing = validateWindowsSigningInventory(
       windowsSigning,
       tag,
       sourceSha,
       assets,
     );
-    inventory.windows_store_preflight = validateWindowsStorePreflightReceipt(
-      windowsStorePreflight,
-      tag,
-      sourceSha,
-      assets,
-    );
+    if (windowsStorePreflight !== undefined) {
+      inventory.windows_store_preflight = validateWindowsStorePreflightReceipt(
+        windowsStorePreflight,
+        tag,
+        sourceSha,
+        assets,
+      );
+    }
   }
   return inventory;
 }
@@ -466,7 +478,7 @@ function usage() {
     "  node scripts/verify-release-candidate.mjs identity <tag> <channel> <source-sha> <main-sha> <approved-source-sha>",
     "  node scripts/verify-release-candidate.mjs stage <input-directory> <output-directory>",
     "  node scripts/verify-release-candidate.mjs verify-inventory <tag> <prerelease> <phase> <directory>",
-    "  node scripts/verify-release-candidate.mjs inventory <tag> <source-sha> <prerelease> <directory> <output-json> [<windows-signing-json> <windows-store-preflight-json>]",
+    "  node scripts/verify-release-candidate.mjs inventory <tag> <source-sha> <prerelease> <directory> <output-json> [<unsigned|azure> [<windows-signing-json> [<windows-store-preflight-json>]]]",
     "  node scripts/verify-release-candidate.mjs verify-readback <expected-json> <actual-json> <draft>",
     "  node scripts/verify-release-candidate.mjs verify-latest <expected-json> <latest-json>",
   ].join("\n");
@@ -501,14 +513,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         phase,
       );
       console.log(`verified ${phase} release inventory for ${assets.length} assets`);
-    } else if (command === "inventory" && [5, 7].includes(args.length)) {
-      const [tag, sourceSha, prerelease, directory, output, signingFile, storeFile] = args;
+    } else if (command === "inventory" && [5, 6, 7, 8].includes(args.length)) {
+      const [tag, sourceSha, prerelease, directory, output, mode, signingFile, storeFile] = args;
       verifyWorkspaceReleaseVersion(tag);
       const inventory = buildReleaseInventory(
         tag,
         sourceSha,
         booleanArgument(prerelease, "prerelease"),
         directory,
+        mode,
         signingFile ? JSON.parse(fs.readFileSync(signingFile, "utf8")) : undefined,
         storeFile ? JSON.parse(fs.readFileSync(storeFile, "utf8")) : undefined,
       );

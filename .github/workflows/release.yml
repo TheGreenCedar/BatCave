@@ -25,6 +25,14 @@ on:
           - notarized
           - adhoc
         default: notarized
+      windows_signing:
+        description: Windows publisher signing (Azure requires the approved release environment)
+        required: true
+        type: choice
+        options:
+          - unsigned
+          - azure
+        default: unsigned
       publish:
         description: Create the GitHub Release after successful builds
         required: true
@@ -49,6 +57,7 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
       publish: ${{ steps.release.outputs.publish }}
       source_sha: ${{ steps.release.outputs.source_sha }}
+      windows_signing: ${{ steps.release.outputs.windows_signing }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +78,8 @@ jobs:
           INPUT_CHANNEL: ${{ inputs.channel }}
           INPUT_PUBLISH: ${{ inputs.publish }}
           MACOS_SIGNING: ${{ inputs.macos_signing }}
+          WINDOWS_SIGNING: ${{ inputs.windows_signing }}
+          AZURE_SIGNING_READY: ${{ vars.BATCAVE_ARTIFACT_SIGNING_READY }}
         run: |
           set -euo pipefail
           [[ "${GITHUB_REF}" == "refs/heads/main" ]] || {
@@ -81,6 +92,14 @@ jobs:
           esac
           if [[ "${MACOS_SIGNING}" == "adhoc" && "${INPUT_CHANNEL}" != "prerelease" ]]; then
             echo "Ad-hoc macOS packages are restricted to prereleases." >&2
+            exit 1
+          fi
+          case "${WINDOWS_SIGNING}" in
+            unsigned|azure) ;;
+            *) echo "Unknown Windows signing mode." >&2; exit 1 ;;
+          esac
+          if [[ "${WINDOWS_SIGNING}" == "azure" && "${AZURE_SIGNING_READY}" != "true" ]]; then
+            echo "Azure signing authority and the existing release environment must be approved before dispatch." >&2
             exit 1
           fi
           tag="${INPUT_TAG}"
@@ -119,6 +138,7 @@ jobs:
             echo "prerelease=${prerelease}"
             echo "publish=${publish}"
             echo "source_sha=${source_sha}"
+            echo "windows_signing=${WINDOWS_SIGNING}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Test release contracts
@@ -127,6 +147,7 @@ jobs:
   windows:
     name: Build Windows release
     needs: prepare
+    if: needs.prepare.outputs.windows_signing == 'unsigned'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -194,6 +215,127 @@ jobs:
         with:
           name: batcave-release-windows-${{ needs.prepare.outputs.tag }}
           path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 30
+
+  windows_signed:
+    name: Build Azure-signed Windows release
+    needs: prepare
+    if: needs.prepare.outputs.windows_signing == 'azure' && vars.BATCAVE_ARTIFACT_SIGNING_READY == 'true'
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BATCAVE_ARTIFACT_SIGNING_READY: ${{ vars.BATCAVE_ARTIFACT_SIGNING_READY }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      BATCAVE_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.BATCAVE_ARTIFACT_SIGNING_ENDPOINT }}
+      BATCAVE_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.BATCAVE_ARTIFACT_SIGNING_ACCOUNT }}
+      BATCAVE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.BATCAVE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+      BATCAVE_WINDOWS_SIGNING_PROFILE: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/BatCave.App/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: batcave-bundle-release-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          cache-workspace-crates: false
+          save-if: false
+
+      - run: npm ci
+        working-directory: src/BatCave.App
+
+      - run: node scripts/verify-release-version.mjs "${{ needs.prepare.outputs.tag }}"
+
+      - name: Validate protected Azure signing inputs
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ($env:BATCAVE_ARTIFACT_SIGNING_READY -cne 'true') {
+            throw "Azure signing authority and release environment approval must be explicitly confirmed before signing."
+          }
+          foreach ($name in @('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID', 'BATCAVE_ARTIFACT_SIGNING_ENDPOINT', 'BATCAVE_ARTIFACT_SIGNING_ACCOUNT', 'BATCAVE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE', 'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required protected Azure release input $name is missing."
+            }
+          }
+
+      - uses: Azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare pinned Artifact Signing tools
+        shell: pwsh
+        run: ./scripts/install-artifact-signing-tools.ps1 -Destination "${{ runner.temp }}/artifact-signing-tools"
+
+      - name: Prepare Azure CLI signing metadata
+        shell: pwsh
+        run: ./scripts/prepare-artifact-signing-metadata.ps1 -OutputPath "${{ runner.temp }}/artifact-signing-metadata.json" -Endpoint $env:BATCAVE_ARTIFACT_SIGNING_ENDPOINT -AccountName $env:BATCAVE_ARTIFACT_SIGNING_ACCOUNT -CertificateProfileName $env:BATCAVE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE -CorrelationId "${{ github.run_id }}-${{ github.run_attempt }}"
+
+      - name: Build and verify Authenticode before updater signing
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: ./scripts/build-signed-windows-release.ps1 -EvidenceDirectory "${{ runner.temp }}/windows-signing-evidence"
+
+      - name: Verify generated release NSIS shortcut contract
+        working-directory: src/BatCave.App
+        run: npm run verify:windows-installer-generated -- "src-tauri/target/release/nsis/x64/installer.nsi"
+
+      - name: Verify finalized Windows updater signature
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem -LiteralPath src/BatCave.App/src-tauri/target/release/bundle/nsis -Filter *.exe)
+          if ($installer.Count -ne 1) { throw "Expected exactly one NSIS installer." }
+          cargo run --quiet --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-verify-updater-signature -- $installer[0].FullName "$($installer[0].FullName).sig" src/BatCave.App/src-tauri/tauri.conf.json "${{ runner.temp }}/verified-installer.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect Windows distributables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/windows | Out-Null
+          Copy-Item -LiteralPath src/BatCave.App/src-tauri/target/release/batcave-monitor.exe -Destination dist/windows/
+          Copy-Item -LiteralPath src/BatCave.App/src-tauri/target/release/batcave-monitor-cli.exe -Destination dist/windows/
+          Copy-Item -Path 'src/BatCave.App/src-tauri/target/release/bundle/nsis/*.exe' -Destination dist/windows/
+          Copy-Item -Path 'src/BatCave.App/src-tauri/target/release/bundle/nsis/*.sig' -Destination dist/windows/
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: batcave-release-windows-${{ needs.prepare.outputs.tag }}
+          path: dist/windows/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Retain Windows signing evidence separately from public assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-signing-evidence-${{ needs.prepare.outputs.tag }}
+          path: ${{ runner.temp }}/windows-signing-evidence/*
           if-no-files-found: error
           retention-days: 30
 
@@ -432,8 +574,15 @@ jobs:
 
   finalize:
     name: Checksums, provenance, and release
-    needs: [prepare, windows, linux, macos]
+    needs: [prepare, windows, windows_signed, linux, macos]
+    if: >-
+      always() && !cancelled() &&
+      needs.prepare.result == 'success' && needs.linux.result == 'success' && needs.macos.result == 'success' &&
+      ((needs.prepare.outputs.windows_signing == 'unsigned' && needs.windows.result == 'success' && needs.windows_signed.result == 'skipped') ||
+       (needs.prepare.outputs.windows_signing == 'azure' && needs.windows_signed.result == 'success' && needs.windows.result == 'skipped'))
     runs-on: ubuntu-latest
+    env:
+      WINDOWS_SIGNING: ${{ needs.prepare.outputs.windows_signing }}
     permissions:
       contents: write
       actions: read
@@ -455,6 +604,27 @@ jobs:
           pattern: batcave-release-*-${{ needs.prepare.outputs.tag }}
           path: release-input
           merge-multiple: false
+
+      - name: Download selected Azure signing evidence
+        if: needs.prepare.outputs.windows_signing == 'azure'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-signing-evidence-${{ needs.prepare.outputs.tag }}
+          path: ${{ runner.temp }}/windows-signing-evidence
+
+      - name: Bind selected Windows signing evidence to inventory calls
+        run: |
+          set -euo pipefail
+          signing_file=""
+          case "${WINDOWS_SIGNING}" in
+            unsigned) ;;
+            azure)
+              signing_file="${RUNNER_TEMP}/windows-signing-evidence/windows-signatures-final.json"
+              [[ -s "${signing_file}" ]] || { echo "Azure signing inventory is missing." >&2; exit 1; }
+              ;;
+            *) echo "Unknown Windows signing mode." >&2; exit 1 ;;
+          esac
+          echo "WINDOWS_SIGNING_INVENTORY=${signing_file}" >> "${GITHUB_ENV}"
 
       - name: Stage release assets without silent collisions
         run: node scripts/verify-release-candidate.mjs stage release-input dist
@@ -483,7 +653,7 @@ jobs:
         run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/BatCave-${{ needs.prepare.outputs.tag }}-provenance.json"
 
       - name: Verify complete release inventory
-        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json"
+        run: node scripts/verify-release-candidate.mjs inventory "${{ needs.prepare.outputs.tag }}" "${{ needs.prepare.outputs.source_sha }}" "${{ needs.prepare.outputs.prerelease }}" dist "${RUNNER_TEMP}/release-candidate.json" "${WINDOWS_SIGNING}" "${WINDOWS_SIGNING_INVENTORY}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -526,7 +696,7 @@ jobs:
             printf '%s' "${tag_sha}"
           }
 
-          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
+          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}" "${WINDOWS_SIGNING}" "${WINDOWS_SIGNING_INVENTORY}"
           tag_sha="$(remote_tag_source)"
           [[ -z "${tag_sha}" ]] || { echo "Release tag ${RELEASE_TAG} appeared during the build." >&2; exit 1; }
 
@@ -536,7 +706,11 @@ jobs:
           else
             gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f "tag_name=${RELEASE_TAG}" -f "target_commitish=${RELEASE_SOURCE_SHA}" --jq .body > "${notes}"
           fi
-          printf '\nWindows downloads are not Authenticode-signed. Tauri updater signatures authenticate the updater packages.\n' >> "${notes}"
+          if [[ "${WINDOWS_SIGNING}" == "azure" ]]; then
+            printf '\nWindows downloads are Authenticode-signed by Albert Najjar with verified RFC3161 timestamps. Tauri updater signatures authenticate the updater packages.\n' >> "${notes}"
+          else
+            printf '\nWindows downloads are not Authenticode-signed. Tauri updater signatures authenticate the updater packages.\n' >> "${notes}"
+          fi
           if [[ "${MACOS_SIGNING}" == "adhoc" ]]; then
             printf '\nThe macOS preview is ad-hoc signed and is not notarized. Gatekeeper may block its first launch.\n' >> "${notes}"
           else
@@ -570,7 +744,7 @@ jobs:
           readback="${RUNNER_TEMP}/release-published-readback.json"
           latest_readback="${RUNNER_TEMP}/release-latest-readback.json"
           latest_error="${RUNNER_TEMP}/release-latest-error.txt"
-          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}"
+          node scripts/verify-release-candidate.mjs inventory "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${PRERELEASE}" dist "${candidate}" "${WINDOWS_SIGNING}" "${WINDOWS_SIGNING_INVENTORY}"
 
           remote_tag_sha="$(git ls-remote origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
           if [[ -z "${remote_tag_sha}" ]]; then
