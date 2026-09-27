@@ -11,6 +11,7 @@
     type NarrativeCapability,
   } from "../../narratives";
   import { platformPresentation, type PlatformPresentation } from "../../platformPresentation";
+  import type { StableUpdateState } from "../../stableUpdate";
   import type {
     ThemeFamily,
     ThemeFamilyOption,
@@ -37,13 +38,7 @@
     "Protected fields require the installed collector service or an elevated current process.";
   export let dataDirectory: string | null = null;
   export let presentation: PlatformPresentation = platformPresentation({ platform: "fixture" });
-  export let updateStatus:
-    | "idle"
-    | "checking"
-    | "available"
-    | "current"
-    | "installing"
-    | "error" = "idle";
+  export let updateStatus: StableUpdateState["status"] = "idle";
   export let updateMessage = "Checks only when you ask.";
   export let enhancedNarratives = false;
   export let narrativeCapability: NarrativeCapability = defaultNarrativeCapability;
@@ -338,18 +333,22 @@
           </div>
           <button
             type="button"
-            disabled={updateStatus === "checking" || updateStatus === "installing"}
+            disabled={updateStatus === "checking" ||
+              updateStatus === "installing" ||
+              updateStatus === "restart_required"}
             onclick={updateStatus === "available" ? onInstallUpdate : onCheckForUpdates}
           >
             {updateStatus === "checking"
               ? "Checking…"
               : updateStatus === "installing"
                 ? "Installing…"
-                : updateStatus === "available"
-                  ? "Download and install"
-                  : updateStatus === "error"
-                    ? "Retry"
-                    : "Check now"}
+                : updateStatus === "restart_required"
+                  ? "Restart required"
+                  : updateStatus === "available"
+                    ? "Download and install"
+                    : updateStatus === "error"
+                      ? "Retry"
+                      : "Check now"}
           </button>
         </div>
         <p class="setting-note">

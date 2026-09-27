@@ -11,6 +11,7 @@ export type StableUpdateStatus =
   | "available"
   | "current"
   | "installing"
+  | "restart_required"
   | "error";
 
 export interface StableUpdateState {
@@ -41,6 +42,7 @@ export class StableUpdateController<T extends VersionedInstallableUpdateResource
   }
 
   async check(installKind: string, onChange: StateListener): Promise<void> {
+    if (this.current.status === "restart_required") return;
     if (installKind === "deb") {
       this.publish(
         "current",
@@ -72,15 +74,15 @@ export class StableUpdateController<T extends VersionedInstallableUpdateResource
     const update = this.pending;
     if (!update) return;
 
-    this.publish("installing", "Downloading and verifying the signed update…", onChange);
+    this.publish("installing", "Downloading, verifying, and installing the update…", onChange);
     try {
-      this.publish(
-        "installing",
-        "Installing the verified update. BatCave will close when installation begins.",
-        onChange,
-      );
       await downloadInstallAndClose(update);
       this.pending = null;
+      this.publish(
+        "restart_required",
+        `Version ${update.version} is installed. Close and reopen BatCave to use it.`,
+        onChange,
+      );
     } catch (error) {
       let message: string;
       if (error instanceof UpdateResourceCleanupError) {

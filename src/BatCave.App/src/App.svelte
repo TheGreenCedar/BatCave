@@ -261,7 +261,7 @@
   let runtimeCadenceRequestSeq = 0;
   let pendingCadenceRequestSeq = 0;
   let searchDebounceId: number | undefined;
-  let updateStatus: "idle" | "checking" | "available" | "current" | "installing" | "error" = "idle";
+  let updateStatus: StableUpdateState["status"] = "idle";
   let updateMessage = "Checks only when you ask.";
   let enhancedNarratives = false;
   let narrativeCapability = defaultNarrativeCapability;
