@@ -142,7 +142,8 @@ test("NSIS disables and retires both shared Tauri shortcut surfaces", async () =
   const provisioner = await text("src/collector_service/windows_provisioner.rs");
   const retirement = await text("src/collector_service/windows_shortcut_retirement.rs");
 
-  assert.equal(packageJson.devDependencies["@tauri-apps/cli"], "2.11.4");
+  // CLI 2.11.5 retains the audited 2.9.4 bundler template fingerprint checked below.
+  assert.equal(packageJson.devDependencies["@tauri-apps/cli"], "2.11.5");
   for (const name of ["CreateOrUpdateStartMenuShortcut", "CreateOrUpdateDesktopShortcut"]) {
     const body = between(installerTemplate, `Function ${name}`, "FunctionEnd");
     assertOrdered(body, "${If} $NoShortcutMode = 1", "Return", "${EndIf}", "IsShortcutTarget");
