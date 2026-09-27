@@ -69,6 +69,8 @@ The runtime provides:
 - ETW per-process network attribution over the Windows kernel TCP/IP provider.
 - The running Windows process token determines `environment.process_elevation`. NSIS, portable, and development provenance does not imply elevation. The app starts with the invoking user's token and remains `asInvoker`. `admin_mode.source` reports `collector_service` only after authenticated service negotiation and never rewrites the parent process token. Missing or rejected service access keeps standard monitoring running. An unreadable token is labeled `unknown` and never presented as confirmed standard or elevated access.
 
+ETW event/buffer callback age is delivery freshness, not proof that `ProcessTrace` is stuck: [timed flushes contain non-empty buffers](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties), and [buffer callbacks follow delivered buffers](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nc-evntrace-pevent_trace_buffer_callbackw). Before the first supported decoded network event, attribution stays pending. After a decoded baseline, callback evidence older than five seconds holds process-network rates absent until fresh delivery. Consumer/session errors, decoder failures and detected loss retain their failure or partial quality; a prior loss interval requires a fresh decoded clean interval before native rates return. Quiet callback expiry does not publish native zero or claim a consumer stall.
+
 ### Linux
 
 - Aggregate CPU, kernel CPU, logical CPU deltas, memory, swap, block-device I/O totals/rates, and interface network totals/rates.
