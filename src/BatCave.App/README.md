@@ -152,7 +152,7 @@ See [Current-user state ownership and retention](../../docs/current-user-state.m
 
 ## Triage UI contract
 
-The workload queue groups processes only when executable or bundle identity and verified ancestry support the relationship. Matching names alone do not merge independent jobs. Group identity changes when membership changes.
+The workload queue generally groups processes when executable or bundle identity and verified ancestry support the relationship. The bounded [Windows BatCave app scope](../../docs/windows-app-grouping.md) also uses exact sample-time native ownership approval for the desktop, owned helpers and authenticated sibling service. Matching names alone do not merge independent jobs. Group identity changes when membership changes.
 
 Values update in place while ranking stays fixed when the pointer or keyboard focus is inside the Explore queue. The pending order applies when both leave the queue. Use `Ranking updated` to apply it while the order is held.
 
