@@ -1,0 +1,44 @@
+name: Temporary macOS detach settlement controls
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src/BatCave.App/src-tauri/tests/macos_dmg_destination_gate_spike.rs
+      - scripts/macos-detach-settlement-controls.py
+      - .github/workflows/macos-detach-settlement-controls.yml
+
+permissions:
+  contents: read
+
+jobs:
+  controls:
+    name: Isolated macOS detach settlement controls
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: batcave-validation-${{ runner.os }}-${{ runner.arch }}
+          workspaces: src/BatCave.App/src-tauri -> target
+          save-if: false
+      - name: Execute isolated baseline, controls and restoration
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: >-
+          python3 scripts/macos-detach-settlement-controls.py
+          --repo "$GITHUB_WORKSPACE"
+          --expected-head "$EXPECTED_HEAD"
+          --output "$GITHUB_WORKSPACE/artifacts/macos-detach-settlement-controls"
+      - name: Retain decisive diagnostics and immutable-source receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-detach-settlement-controls
+          path: artifacts/macos-detach-settlement-controls
+          if-no-files-found: error
+          retention-days: 30
