@@ -34,14 +34,9 @@
   export let resources: ResourceSummaryOption[] = [];
   export let leadingRows: ProcessViewRow[] = [];
   export let processIcons: ResolvedProcessIconCatalog = {};
-  export let leadingName: string | null = null;
+  export let leadingRow: ProcessViewRow | null = null;
   export let leadingValue: string | null = null;
   export let leadingNarrativeGenerated = false;
-  export let leadingIconKind: ProcessIconKind = "process";
-  export let leadingIconSrc: string | undefined = undefined;
-  export let leadingIconMatched = false;
-  export let leadingIconSystemTool = false;
-  export let leadingSelection: string | null = null;
   export let onInspectResource: () => void;
   export let onOpenDiagnostics: () => void;
   export let onSelectResource: (mode: DetailMode) => void;
@@ -80,7 +75,7 @@
       disk: "disk",
       network: "network",
     };
-    return `Top ${names[mode]} process`;
+    return `Top ${names[mode]} workload`;
   }
 
   function resourceIcon(mode: DetailMode) {
@@ -139,20 +134,21 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable contributor text must be keyboard reachable.) -->
     <div class="overview-contributor" role="region" aria-label={leadingProcessLabel(status.primaryResource)} tabindex="0">
       <span class="overview-contributor-label">{leadingProcessLabel(status.primaryResource)}</span>
-      {#if leadingName}
+      {#if leadingRow}
+        {@const leadingIcon = rowIcon(leadingRow)}
         <button
           type="button"
-          onclick={() =>
-            leadingSelection ? onSelectWorkload(leadingSelection) : onOpenExplore()}
+          data-overview-contributor-id={leadingRow.detail.workload_id}
+          onclick={() => onSelectWorkload(leadingRow.detail.workload_id)}
         >
           <ProcessIcon
-            kind={leadingIconKind}
-            src={leadingIconSrc}
-            matched={leadingIconMatched}
-            systemTool={leadingIconSystemTool}
+            kind={iconKind(leadingRow)}
+            src={leadingIcon.src}
+            matched={leadingIcon.origin === "name_match"}
+            systemTool={leadingIcon.systemTool ?? false}
           />
           <span>
-            <strong title={leadingName}>{leadingName}</strong>
+            <strong title={rowLabel(leadingRow)}>{rowLabel(leadingRow)}</strong>
             <small>{leadingValue ?? "Current contribution available in Explore"}</small>
             {#if leadingNarrativeGenerated}
               <small class="narrative-origin">Locally generated explanation</small>

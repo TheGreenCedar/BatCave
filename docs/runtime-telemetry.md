@@ -107,7 +107,7 @@ Shutdown reaps the child and joins the reader. A killed child, pipe EOF or error
 - The shared `sysinfo` system fallback marks physical-disk throughput unavailable because it has no device-level rate source; its zero placeholders are never presented as measured disk activity.
 - Missing or delayed metrics use quality metadata instead of fabricated values.
 - If native Windows process memory is blocked but `sysinfo` has a value for the same PID, BatCave reports that fallback as estimated memory instead of a native zero.
-- Grouping requires executable or bundle identity and verified ancestry. Missing metadata leaves independent processes separate; a matching name alone cannot establish a group.
+- General grouping requires executable or bundle identity and verified ancestry. A bounded [Windows BatCave app scope](windows-app-grouping.md) additionally joins exact sample-time generations approved by native ownership evidence, including the authenticated sibling collector service. Missing evidence remains explicit; a matching name alone cannot establish membership.
 
 ## Memory accounting
 

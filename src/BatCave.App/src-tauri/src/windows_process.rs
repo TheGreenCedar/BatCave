@@ -4,6 +4,389 @@ use crate::contracts::{
     AccessState, MetricLimitationCode, MetricQuality, MetricQualityInfo, MetricSource,
     ProcessMetricQuality, ProcessSample,
 };
+use crate::{
+    network_attribution::ProcessGeneration,
+    workload_identity::{verified_parent_indices, BatCaveWorkloadContext},
+};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkloadProcessIdentity {
+    generation: ProcessGeneration,
+    sample_exe: String,
+    image_path: String,
+    file_identity: (u32, u64),
+    principal_identity: [u8; 32],
+    session_id: u32,
+}
+
+fn unique_generation_index(
+    processes: &[ProcessSample],
+    generation: ProcessGeneration,
+) -> Option<usize> {
+    if generation.pid == 0 || generation.start_time_ms == 0 {
+        return None;
+    }
+    let mut matches = processes
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.pid.parse::<u32>().ok() == Some(generation.pid));
+    let (index, row) = matches.next()?;
+    (matches.next().is_none()
+        && ProcessGeneration::from_process(row) == Some(generation)
+        && !row.exe.is_empty())
+    .then_some(index)
+}
+
+fn canonical_windows_path_key(path: &str) -> String {
+    path.strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+}
+
+fn approved_webview_image(path: &str, roots: &[String]) -> bool {
+    roots.iter().any(|root| {
+        let Some(relative) = path.strip_prefix(&format!("{root}\\")) else {
+            return false;
+        };
+        let Some((version, leaf)) = relative.split_once('\\') else {
+            return false;
+        };
+        leaf == "msedgewebview2.exe"
+            && version.split('.').count() == 4
+            && version
+                .split('.')
+                .all(|part| !part.is_empty() && part.parse::<u32>().is_ok())
+    })
+}
+
+fn context_from_workload_identities(
+    processes: &[ProcessSample],
+    desktop: ProcessGeneration,
+    service: Option<ProcessGeneration>,
+    identities: &HashMap<usize, WorkloadProcessIdentity>,
+    webview_roots: &[String],
+) -> Option<BatCaveWorkloadContext> {
+    let desktop_index = unique_generation_index(processes, desktop)?;
+    let mut pid_counts = HashMap::<u32, usize>::new();
+    for row in processes {
+        if let Ok(pid) = row.pid.parse::<u32>() {
+            *pid_counts.entry(pid).or_default() += 1;
+        }
+    }
+    let belongs_to_row = |index: usize, identity: &WorkloadProcessIdentity| {
+        identity.generation.pid > 0
+            && pid_counts.get(&identity.generation.pid) == Some(&1)
+            && ProcessGeneration::from_process(&processes[index]) == Some(identity.generation)
+            && identity.sample_exe == processes[index].exe
+            && !identity.image_path.is_empty()
+            && identity.file_identity.1 != 0
+            && identity.principal_identity != [0; 32]
+    };
+    let desktop_identity = identities.get(&desktop_index)?;
+    if !belongs_to_row(desktop_index, desktop_identity) {
+        return None;
+    }
+    let parents = verified_parent_indices(processes);
+    let mut approved = HashSet::from([desktop_index]);
+    let mut children = vec![Vec::new(); processes.len()];
+    for (index, parent) in parents.iter().enumerate() {
+        if let Some(parent) = parent {
+            children[*parent].push(index);
+        }
+    }
+    let mut pending = vec![desktop_index];
+    while let Some(parent) = pending.pop() {
+        for &index in &children[parent] {
+            let Some(identity) = identities.get(&index) else {
+                continue;
+            };
+            if belongs_to_row(index, identity)
+                && identity.principal_identity == desktop_identity.principal_identity
+                && identity.session_id == desktop_identity.session_id
+                && ((identity.image_path == desktop_identity.image_path
+                    && identity.file_identity == desktop_identity.file_identity)
+                    || approved_webview_image(&identity.image_path, webview_roots))
+            {
+                approved.insert(index);
+                pending.push(index);
+            }
+        }
+    }
+    if let Some(index) =
+        service.and_then(|generation| unique_generation_index(processes, generation))
+    {
+        if identities
+            .get(&index)
+            .is_some_and(|identity| belongs_to_row(index, identity))
+        {
+            approved.insert(index);
+        }
+    }
+    let members = processes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| approved.contains(index))
+        .map(|(index, _)| identities[&index].generation)
+        .collect();
+    Some(BatCaveWorkloadContext { desktop, members })
+}
+
+/// Only fresh sample rows and the current transport-authenticated service generation enter here.
+#[cfg(windows)]
+pub(crate) fn batcave_workload_context(
+    processes: &[ProcessSample],
+    verified_service: Option<ProcessGeneration>,
+) -> Option<BatCaveWorkloadContext> {
+    workload_probe::observe(processes, verified_service)
+}
+
+#[cfg(windows)]
+mod workload_probe {
+    use super::*;
+    use crate::collector_service::windows_transport::token_evidence;
+    use std::{
+        os::windows::ffi::{OsStrExt, OsStringExt},
+        path::{Path, PathBuf},
+        ptr,
+    };
+    use windows_sys::{
+        core::GUID,
+        Win32::{
+            Foundation::{FILETIME, STILL_ACTIVE},
+            Security::TOKEN_QUERY,
+            Storage::FileSystem::{
+                CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+                FILE_SHARE_READ, OPEN_EXISTING,
+            },
+            System::{
+                Com::CoTaskMemFree,
+                Threading::{GetExitCodeProcess, OpenProcessToken},
+            },
+            UI::Shell::{
+                FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86,
+                SHGetKnownFolderPath,
+            },
+        },
+    };
+
+    struct WorkloadHandle(HANDLE);
+    impl WorkloadHandle {
+        fn new(raw: HANDLE) -> Option<Self> {
+            (!raw.is_null() && raw != INVALID_HANDLE_VALUE).then_some(Self(raw))
+        }
+    }
+    impl Drop for WorkloadHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    struct NativeWorkloadProcess {
+        identity: WorkloadProcessIdentity,
+        process: ProcessHandle,
+        image: WorkloadHandle,
+    }
+
+    fn canonical_image(process: HANDLE) -> Option<PathBuf> {
+        PathBuf::from(query_process_image(process)?)
+            .canonicalize()
+            .ok()
+    }
+    fn path_key(path: &Path) -> String {
+        canonical_windows_path_key(&path.to_string_lossy())
+    }
+    fn open_image(path: &Path) -> Option<WorkloadHandle> {
+        let mut path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        path.push(0);
+        WorkloadHandle::new(unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        })
+    }
+    fn file_identity(image: HANDLE) -> Option<(u32, u64)> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(image, &mut info) } == 0
+            || info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                != 0
+        {
+            return None;
+        }
+        Some((
+            info.dwVolumeSerialNumber,
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        ))
+    }
+    fn principal(process: HANDLE) -> Option<([u8; 32], u32)> {
+        let mut token = ptr::null_mut();
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return None;
+        }
+        let token = WorkloadHandle::new(token)?;
+        let evidence = token_evidence(token.0).ok()?;
+        Some((evidence.principal_identity, evidence.session_id))
+    }
+    fn active(process: HANDLE) -> bool {
+        let mut code = 0;
+        // Also require zero exit time: an exited process can itself return STILL_ACTIVE.
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe {
+            GetExitCodeProcess(process, &mut code) != 0
+                && code == STILL_ACTIVE as u32
+                && GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) != 0
+                && exited.dwHighDateTime == 0
+                && exited.dwLowDateTime == 0
+        }
+    }
+    fn probe(row: &ProcessSample) -> Option<NativeWorkloadProcess> {
+        let generation = ProcessGeneration::from_process(row)?;
+        if generation.pid == 0 || row.exe.is_empty() {
+            return None;
+        }
+        let process = ProcessHandle::open(generation.pid)?;
+        if query_process_start_time_ms(process.raw()) != Some(generation.start_time_ms)
+            || !active(process.raw())
+        {
+            return None;
+        }
+        let path = canonical_image(process.raw())?;
+        if Path::new(&row.exe).canonicalize().ok().as_ref() != Some(&path) {
+            return None;
+        }
+        let image = open_image(&path)?;
+        let file_identity = file_identity(image.0)?;
+        let (principal_identity, session_id) = principal(process.raw())?;
+        Some(NativeWorkloadProcess {
+            identity: WorkloadProcessIdentity {
+                generation,
+                sample_exe: row.exe.clone(),
+                image_path: path_key(&path),
+                file_identity,
+                principal_identity,
+                session_id,
+            },
+            process,
+            image,
+        })
+    }
+    impl NativeWorkloadProcess {
+        fn stable(&self) -> bool {
+            let identity = &self.identity;
+            if !active(self.process.raw())
+                || query_process_start_time_ms(self.process.raw())
+                    != Some(identity.generation.start_time_ms)
+                || principal(self.process.raw())
+                    != Some((identity.principal_identity, identity.session_id))
+                || file_identity(self.image.0) != Some(identity.file_identity)
+            {
+                return false;
+            }
+            let Some(path) = canonical_image(self.process.raw()) else {
+                return false;
+            };
+            path_key(&path) == identity.image_path
+                && open_image(&path).and_then(|image| file_identity(image.0))
+                    == Some(identity.file_identity)
+        }
+    }
+    fn known_folder(folder: &GUID) -> Option<PathBuf> {
+        let mut path = ptr::null_mut();
+        if unsafe { SHGetKnownFolderPath(folder, 0, ptr::null_mut(), &mut path) } < 0 {
+            if !path.is_null() {
+                unsafe {
+                    CoTaskMemFree(path.cast());
+                }
+            }
+            return None;
+        }
+        if path.is_null() {
+            return None;
+        }
+        let mut length = 0;
+        while length < 32_768 && unsafe { *path.add(length) } != 0 {
+            length += 1;
+        }
+        let result = (length < 32_768).then(|| {
+            PathBuf::from(std::ffi::OsString::from_wide(unsafe {
+                std::slice::from_raw_parts(path, length)
+            }))
+        });
+        unsafe {
+            CoTaskMemFree(path.cast());
+        }
+        result?.canonicalize().ok()
+    }
+    pub(super) fn observe(
+        processes: &[ProcessSample],
+        service: Option<ProcessGeneration>,
+    ) -> Option<BatCaveWorkloadContext> {
+        let row = processes
+            .iter()
+            .find(|row| row.pid.parse::<u32>().ok() == Some(std::process::id()))?;
+        let desktop = ProcessGeneration::from_process(row)?;
+        let desktop_index = unique_generation_index(processes, desktop)?;
+        let desktop_path = std::env::current_exe().ok()?.canonicalize().ok()?;
+        let parents = verified_parent_indices(processes);
+        let mut children = vec![Vec::new(); processes.len()];
+        for (index, parent) in parents.iter().enumerate() {
+            if let Some(parent) = parent {
+                children[*parent].push(index);
+            }
+        }
+        let mut candidates = HashSet::from([desktop_index]);
+        let mut pending = vec![desktop_index];
+        while let Some(parent) = pending.pop() {
+            for &child in &children[parent] {
+                if candidates.insert(child) {
+                    pending.push(child);
+                }
+            }
+        }
+        if let Some(index) =
+            service.and_then(|generation| unique_generation_index(processes, generation))
+        {
+            candidates.insert(index);
+        }
+        // Handles survive all probes and rechecks, then only stable identities reach assembly.
+        let pins = candidates
+            .into_iter()
+            .filter_map(|index| probe(&processes[index]).map(|pin| (index, pin)))
+            .collect::<Vec<_>>();
+        let identities = pins
+            .iter()
+            .filter(|(_, pin)| pin.stable())
+            .map(|(index, pin)| (*index, pin.identity.clone()))
+            .collect::<HashMap<_, _>>();
+        if identities.get(&desktop_index)?.image_path != path_key(&desktop_path) {
+            return None;
+        }
+        let roots = [
+            &FOLDERID_ProgramFilesX86,
+            &FOLDERID_ProgramFiles,
+            &FOLDERID_LocalAppData,
+        ]
+        .into_iter()
+        .filter_map(known_folder)
+        .map(|folder| path_key(&folder.join("Microsoft\\EdgeWebView\\Application")))
+        .collect::<Vec<_>>();
+        context_from_workload_identities(processes, desktop, service, &identities, &roots)
+    }
+}
 
 const FILETIME_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
 const FILETIME_100NS_PER_MS: u64 = 10_000;
@@ -396,7 +779,7 @@ fn filetime_to_unix_ms(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
     filetime_100ns_to_unix_ms(raw)
 }
 
-fn filetime_100ns_to_unix_ms(value: u64) -> u64 {
+pub(crate) fn filetime_100ns_to_unix_ms(value: u64) -> u64 {
     value.saturating_sub(FILETIME_UNIX_EPOCH_100NS) / FILETIME_100NS_PER_MS
 }
 
@@ -418,6 +801,253 @@ fn usize_to_u64_saturating(value: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn workload_row(pid: u32, parent: Option<u32>, start: u64, exe: &str) -> ProcessSample {
+        serde_json::from_value(serde_json::json!({
+            "pid": pid.to_string(), "parent_pid": parent.map(|pid| pid.to_string()),
+            "start_time_ms": start, "name": "BatCave", "exe": exe,
+            "status": "running", "cpu_percent": 0.0, "memory_bytes": 0,
+            "private_bytes": 0, "io_read_total_bytes": 0, "io_write_total_bytes": 0,
+            "io_read_bps": 0, "io_write_bps": 0, "threads": 1, "handles": 0,
+            "access_state": "full"
+        }))
+        .unwrap()
+    }
+
+    fn workload_identity(row: &ProcessSample, file_index: u64) -> WorkloadProcessIdentity {
+        WorkloadProcessIdentity {
+            generation: ProcessGeneration::from_process(row).unwrap(),
+            sample_exe: row.exe.clone(),
+            image_path: canonical_windows_path_key(&row.exe),
+            file_identity: (1, file_index),
+            principal_identity: [1; 32],
+            session_id: 1,
+        }
+    }
+
+    fn workload_fixture() -> (
+        Vec<ProcessSample>,
+        HashMap<usize, WorkloadProcessIdentity>,
+        Vec<String>,
+    ) {
+        let runtime = r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application";
+        let helper = format!(r"{runtime}\140.0.3485.81\msedgewebview2.exe");
+        let rows = vec![
+            workload_row(10, None, 10, r"C:\BatCave\batcave-monitor.exe"),
+            workload_row(20, Some(10), 20, &helper),
+            workload_row(30, Some(20), 30, &helper),
+            workload_row(40, None, 5, r"C:\BatCave\batcave-collector-service.exe"),
+            workload_row(50, None, 50, &helper),
+            workload_row(60, Some(10), 60, r"C:\Elsewhere\msedgewebview2.exe"),
+        ];
+        let mut identities = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                (
+                    index,
+                    workload_identity(row, if index == 0 { 1 } else { 2 }),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        identities.get_mut(&3).unwrap().principal_identity = [8; 32];
+        identities.get_mut(&3).unwrap().session_id = 0;
+        (rows, identities, vec![canonical_windows_path_key(runtime)])
+    }
+
+    #[test]
+    fn workload_probe_assembly_keeps_only_owned_helpers_and_authenticated_service() {
+        let (rows, identities, roots) = workload_fixture();
+        let desktop = identities[&0].generation;
+        let service = identities[&3].generation;
+        let context =
+            context_from_workload_identities(&rows, desktop, Some(service), &identities, &roots)
+                .unwrap();
+        assert_eq!(
+            context
+                .members
+                .iter()
+                .map(|member| member.pid)
+                .collect::<Vec<_>>(),
+            [10, 20, 30, 40]
+        );
+        let without_service =
+            context_from_workload_identities(&rows, desktop, None, &identities, &roots).unwrap();
+        assert_eq!(
+            without_service
+                .members
+                .iter()
+                .map(|member| member.pid)
+                .collect::<Vec<_>>(),
+            [10, 20, 30]
+        );
+    }
+
+    #[test]
+    fn workload_probe_assembly_rejects_user_session_image_and_generation_gaps() {
+        let (rows, identities, roots) = workload_fixture();
+        for fault in 0..7 {
+            let mut identities = identities.clone();
+            match fault {
+                0 => identities.get_mut(&1).unwrap().principal_identity = [9; 32],
+                1 => identities.get_mut(&1).unwrap().session_id = 2,
+                2 => identities.get_mut(&1).unwrap().generation.start_time_ms += 1,
+                3 => identities
+                    .get_mut(&1)
+                    .unwrap()
+                    .sample_exe
+                    .push_str(".changed"),
+                4 => identities.get_mut(&1).unwrap().file_identity.1 = 0,
+                5 => {
+                    identities.get_mut(&1).unwrap().image_path =
+                        r"c:\other\msedgewebview2.exe".into()
+                }
+                _ => {
+                    identities.remove(&1);
+                }
+            }
+            let context = context_from_workload_identities(
+                &rows,
+                identities[&0].generation,
+                None,
+                &identities,
+                &roots,
+            )
+            .unwrap();
+            assert_eq!(
+                context.members,
+                vec![identities[&0].generation],
+                "fault {fault}"
+            );
+        }
+    }
+
+    #[test]
+    fn workload_probe_assembly_rejects_duplicates_reused_parents_and_stale_service() {
+        let (mut rows, identities, roots) = workload_fixture();
+        let desktop = identities[&0].generation;
+        let stale_service = ProcessGeneration {
+            start_time_ms: 4,
+            ..identities[&3].generation
+        };
+        assert!(!context_from_workload_identities(
+            &rows,
+            desktop,
+            Some(stale_service),
+            &identities,
+            &roots
+        )
+        .unwrap()
+        .members
+        .contains(&identities[&3].generation));
+        let mut duplicated_service = rows.clone();
+        duplicated_service.push(rows[3].clone());
+        assert!(!context_from_workload_identities(
+            &duplicated_service,
+            desktop,
+            Some(identities[&3].generation),
+            &identities,
+            &roots,
+        )
+        .unwrap()
+        .members
+        .contains(&identities[&3].generation));
+        let mut duplicated_helper = rows.clone();
+        duplicated_helper.push(rows[1].clone());
+        assert_eq!(
+            context_from_workload_identities(
+                &duplicated_helper,
+                desktop,
+                None,
+                &identities,
+                &roots,
+            )
+            .unwrap()
+            .members,
+            vec![desktop]
+        );
+        rows[1].start_time_ms = 9;
+        let context =
+            context_from_workload_identities(&rows, desktop, None, &identities, &roots).unwrap();
+        assert_eq!(context.members, vec![desktop]);
+        rows.push(rows[0].clone());
+        assert!(
+            context_from_workload_identities(&rows, desktop, None, &identities, &roots).is_none()
+        );
+    }
+
+    #[test]
+    fn workload_probe_same_image_descendant_requires_the_same_native_file() {
+        let rows = vec![
+            workload_row(10, None, 10, r"C:\Portable\batcave.exe"),
+            workload_row(20, Some(10), 20, r"C:\Portable\batcave.exe"),
+        ];
+        let mut identities = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (index, workload_identity(row, 1)))
+            .collect::<HashMap<_, _>>();
+        let desktop = identities[&0].generation;
+        assert_eq!(
+            context_from_workload_identities(&rows, desktop, None, &identities, &[])
+                .unwrap()
+                .members
+                .len(),
+            2
+        );
+        identities.get_mut(&1).unwrap().file_identity.1 = 2;
+        assert_eq!(
+            context_from_workload_identities(&rows, desktop, None, &identities, &[])
+                .unwrap()
+                .members,
+            vec![desktop]
+        );
+    }
+
+    #[test]
+    fn workload_probe_helper_paths_require_the_exact_runtime_layout() {
+        let roots = vec![r"c:\runtime\application".into()];
+        assert!(approved_webview_image(
+            r"c:\runtime\application\140.0.1.2\msedgewebview2.exe",
+            &roots
+        ));
+        for path in [
+            r"c:\runtime\application-other\140.0.1.2\msedgewebview2.exe",
+            r"c:\runtime\application\unknown\msedgewebview2.exe",
+            r"c:\runtime\application\140.0.1.2\child\msedgewebview2.exe",
+            r"c:\other\140.0.1.2\msedgewebview2.exe",
+        ] {
+            assert!(!approved_webview_image(path, &roots), "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workload_probe_binds_the_live_self_row_and_rejects_changed_inputs() {
+        let rows = collect_processes(0).expect("native process sample");
+        let index = rows
+            .iter()
+            .position(|row| row.pid.parse::<u32>().ok() == Some(std::process::id()))
+            .expect("self row is present");
+        let context = batcave_workload_context(&rows, None).expect("native self ownership");
+        assert_eq!(
+            context.desktop,
+            ProcessGeneration::from_process(&rows[index]).unwrap()
+        );
+        assert!(context.members.contains(&context.desktop));
+        for change in 0..3 {
+            let mut changed = rows.clone();
+            match change {
+                0 => changed[index].start_time_ms += 1,
+                1 => changed[index].exe.clear(),
+                _ => changed.push(rows[index].clone()),
+            }
+            assert!(
+                batcave_workload_context(&changed, None).is_none(),
+                "change {change}"
+            );
+        }
+    }
 
     #[test]
     fn filetime_epoch_converts_to_unix_zero_ms() {

@@ -1108,6 +1108,7 @@ struct RuntimeStore {
     warnings: VecDeque<RuntimeWarning>,
     previous_totals: Option<TelemetryTotals>,
     previous_processes: Vec<ProcessSample>,
+    batcave_workload: Option<crate::workload_identity::BatCaveWorkloadContext>,
     // Cached query-independent groupings and the unfiltered view; rebuilt only when
     // previous_processes changes (see set_previous_processes / rebuild_process_views).
     process_groups: Vec<ProcessAppGroup>,
@@ -1397,6 +1398,7 @@ impl RuntimeStore {
             warnings,
             previous_totals: None,
             previous_processes: warm_cache.rows,
+            batcave_workload: None,
             process_groups,
             full_view_rows,
             live_exes: Arc::new(HashSet::new()),
@@ -1599,7 +1601,7 @@ impl RuntimeStore {
         };
         add_process_memory_accounting(&mut system, &processes);
         self.update_ranking_history(&processes);
-        self.set_previous_processes(processes);
+        self.set_previous_processes_with_context(processes, sample.batcave_workload);
         self.live_process_snapshot = process_rows_fresh;
         self.previous_totals = Some(TelemetryTotals::from_system(&system, source_sample_ts_ms));
         self.publication_seq = self.publication_seq.saturating_add(1);
@@ -1689,7 +1691,11 @@ impl RuntimeStore {
     }
 
     fn rebuild_process_views(&mut self) {
-        self.process_groups = build_process_groups(&self.previous_processes, &self.ranking_history);
+        self.process_groups = build_process_groups_with_context(
+            &self.previous_processes,
+            &self.ranking_history,
+            self.batcave_workload.as_ref(),
+        );
         self.full_view_rows = emit_process_view(
             &self.process_groups,
             &full_view_query(),
@@ -1763,6 +1769,14 @@ impl RuntimeStore {
     }
 
     fn set_previous_processes(&mut self, processes: Vec<ProcessSample>) {
+        self.set_previous_processes_with_context(processes, None);
+    }
+
+    fn set_previous_processes_with_context(
+        &mut self,
+        processes: Vec<ProcessSample>,
+        context: Option<crate::workload_identity::BatCaveWorkloadContext>,
+    ) {
         self.live_exes = Arc::new(
             processes
                 .iter()
@@ -1771,6 +1785,7 @@ impl RuntimeStore {
                 .collect(),
         );
         self.previous_processes = processes;
+        self.batcave_workload = context;
         self.rebuild_process_views();
     }
 
@@ -3290,7 +3305,20 @@ fn build_process_groups(
     processes: &[ProcessSample],
     history: &RankingHistory,
 ) -> Vec<ProcessAppGroup> {
-    let memberships = crate::workload_identity::workload_memberships(processes);
+    build_process_groups_with_context(processes, history, None)
+}
+
+fn build_process_groups_with_context(
+    processes: &[ProcessSample],
+    history: &RankingHistory,
+    context: Option<&crate::workload_identity::BatCaveWorkloadContext>,
+) -> Vec<ProcessAppGroup> {
+    let memberships = match context {
+        Some(context) => {
+            crate::workload_identity::workload_memberships_with_context(processes, Some(context))
+        }
+        None => crate::workload_identity::workload_memberships(processes),
+    };
     let mut groups = Vec::<ProcessAppGroup>::new();
     let mut group_indexes = HashMap::<String, usize>::new();
 
@@ -3306,9 +3334,23 @@ fn build_process_groups(
             group_indexes.insert(key.clone(), index);
             groups.push(ProcessAppGroup {
                 key,
-                label: process_app_label(representative),
-                category: identity.category.to_string(),
-                icon_kind: identity.icon_kind.to_string(),
+                label: if membership.batcave {
+                    "BatCave".to_string()
+                } else {
+                    process_app_label(representative)
+                },
+                category: if membership.batcave {
+                    "BatCave"
+                } else {
+                    identity.category
+                }
+                .to_string(),
+                icon_kind: if membership.batcave {
+                    "batcave"
+                } else {
+                    identity.icon_kind
+                }
+                .to_string(),
                 presentation_process: representative.clone(),
                 processes: Vec::new(),
                 cpu_percent: 0.0,
@@ -3391,6 +3433,7 @@ fn emit_process_view(
         .filter(|index| {
             groups[*index].processes.iter().any(|process| {
                 (needle.is_empty()
+                    || groups[*index].label.to_lowercase().contains(&needle)
                     || process.name.to_lowercase().contains(&needle)
                     || process.pid.contains(&needle)
                     || process.exe.to_lowercase().contains(&needle))
@@ -4838,6 +4881,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: false,
                 }),
                 FakeOutcome::Unavailable(error) => {
@@ -4943,6 +4987,7 @@ mod tests {
                 source_sample_seq,
                 sampled_at_ms,
             }),
+            batcave_workload: None,
             standard_fallback_process_etw_disabled: false,
         };
 
@@ -5064,6 +5109,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: false,
                 })),
                 collection_latency_ms: 0.0,
@@ -5953,6 +5999,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             },
             0.0,
@@ -6556,6 +6603,253 @@ mod tests {
             panic!("group");
         };
         assert_ne!(full.workload_id, changed.workload_id);
+    }
+
+    fn approved_batcave_fixture() -> (
+        Vec<ProcessSample>,
+        crate::workload_identity::BatCaveWorkloadContext,
+    ) {
+        let mut rows = [
+            ("10", "desktop", "C:/BatCave/batcave-monitor.exe", None),
+            (
+                "20",
+                "collector",
+                "C:/BatCave/batcave-collector-service.exe",
+                None,
+            ),
+            ("30", "browser", "C:/WebView/msedgewebview2.exe", Some("10")),
+            (
+                "40",
+                "renderer",
+                "C:/WebView/msedgewebview2.exe",
+                Some("30"),
+            ),
+            ("50", "other app", "C:/WebView/msedgewebview2.exe", None),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (pid, name, exe, parent))| {
+            let mut row = sample(pid, name, index as f64 + 1.0);
+            row.exe = exe.to_string();
+            row.parent_pid = parent.map(str::to_string);
+            row.start_time_ms = 1_000 + index as u64;
+            row.memory_bytes = 10 + 30 * index as u64;
+            row.io_read_bps = 20 + 30 * index as u64;
+            row.network_received_bps = Some(30 + 30 * index as u64);
+            row.network_transmitted_bps = Some(0);
+            row.quality = group_test_quality(MetricQuality::Native);
+            row
+        })
+        .collect::<Vec<_>>();
+        rows[4].cpu_percent = 1_000.0;
+        let context = crate::workload_identity::BatCaveWorkloadContext {
+            desktop: crate::network_attribution::ProcessGeneration::from_process(&rows[0]).unwrap(),
+            members: rows[..4]
+                .iter()
+                .map(|row| {
+                    crate::network_attribution::ProcessGeneration::from_process(row).unwrap()
+                })
+                .collect(),
+        };
+        (rows, context)
+    }
+
+    #[test]
+    fn approved_batcave_totals_filters_and_member_details_share_one_scope() {
+        let (processes, context) = approved_batcave_fixture();
+        let groups =
+            build_process_groups_with_context(&processes, &RankingHistory::new(), Some(&context));
+        assert_eq!(groups.len(), 2);
+        let group = groups
+            .iter()
+            .find(|group| group.label == "BatCave")
+            .unwrap();
+        let detail = group_detail(group);
+        assert_eq!(detail.process_count, 4);
+        assert_eq!(detail.cpu_percent, 10.0);
+        assert_eq!(detail.memory_bytes, 220);
+        assert_eq!(detail.io_bps, 260);
+        assert_eq!(detail.network_bps, 300);
+        assert_eq!(detail.threads, 4);
+        assert_eq!(
+            detail.coverage.cpu,
+            MetricCoverage {
+                available: 4,
+                total: 4
+            }
+        );
+        let mut expected_members = processes[..4]
+            .iter()
+            .map(|row| row.pid.clone())
+            .collect::<Vec<_>>();
+        expected_members.sort();
+        for filter in ["BatCave", "20", "renderer", "batcave-collector-service.exe"] {
+            for sort_column in [
+                SortColumn::CpuPct,
+                SortColumn::MemoryBytes,
+                SortColumn::IoBps,
+                SortColumn::NetworkBps,
+            ] {
+                let rows = emit_process_view(
+                    &groups,
+                    &RuntimeQuery {
+                        filter_text: filter.to_string(),
+                        sort_column,
+                        limit: 1,
+                        ..RuntimeQuery::default()
+                    },
+                    &HashSet::new(),
+                );
+                assert_eq!(
+                    rows.len(),
+                    5,
+                    "one app header plus all four distinct members"
+                );
+                let ProcessViewRow::Group {
+                    detail: selected, ..
+                } = &rows[0]
+                else {
+                    panic!("app group")
+                };
+                assert_eq!(selected.workload_id, detail.workload_id);
+                assert_eq!(selected.cpu_percent, detail.cpu_percent);
+                let mut actual_members = rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        ProcessViewRow::Process { detail, .. } => Some(detail.process.pid.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                actual_members.sort();
+                assert_eq!(actual_members, expected_members);
+            }
+        }
+        let mut unavailable = processes.clone();
+        unavailable[1].quality = group_test_quality(MetricQuality::Unavailable);
+        unavailable[1].cpu_percent = 10_000.0;
+        unavailable[1].memory_bytes = u64::MAX;
+        let partial =
+            build_process_groups_with_context(&unavailable, &RankingHistory::new(), Some(&context));
+        let detail = group_detail(
+            partial
+                .iter()
+                .find(|group| group.label == "BatCave")
+                .unwrap(),
+        );
+        assert_eq!(detail.cpu_percent, 8.0);
+        assert_eq!(detail.memory_bytes, 180);
+        assert_eq!(detail.io_bps, 210);
+        assert_eq!(detail.network_bps, 240);
+        assert_eq!(detail.threads, 3);
+        assert_eq!(
+            detail.coverage.cpu,
+            MetricCoverage {
+                available: 3,
+                total: 4
+            }
+        );
+        assert_eq!(detail.quality.cpu.quality, MetricQuality::Partial);
+    }
+
+    #[test]
+    fn batcave_context_latches_only_with_fresh_samples_and_keeps_existing_history_scope() {
+        let base_dir = runtime_test_dir("batcave-context-latching");
+        let mut store = RuntimeStore::from_base_dir(base_dir.clone());
+        let (processes, context) = approved_batcave_fixture();
+        let observation = |source_seq, context| crate::telemetry::TelemetrySample {
+            latency_ms: 0,
+            collector_state: RuntimeCollectorState::Healthy,
+            system: empty_system(),
+            processes: processes.clone(),
+            warnings: Vec::new(),
+            collector_service: None,
+            source_provenance: Some(TelemetrySampleProvenance {
+                source_instance_id: "verified-service".to_string(),
+                source_sample_seq: source_seq,
+                sampled_at_ms: source_seq * 1_000,
+            }),
+            batcave_workload: context,
+            standard_fallback_process_etw_disabled: false,
+        };
+        store.apply_raw_sample(observation(7, Some(context.clone())), 0.0, 10_000);
+        let envelope = crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();
+        let crate::protocol::types::ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            panic!("runtime snapshot");
+        };
+        assert_eq!(payload.total_process_count, 5);
+        assert_eq!(payload.visible_process_count, 5);
+        let group = payload
+            .workloads
+            .iter()
+            .find_map(|workload| match workload {
+                crate::protocol::types::WorkloadDetailV4::Group(group)
+                    if group.label == "BatCave" =>
+                {
+                    Some(group)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(group.member_ids.len(), 4);
+        assert_eq!(group.member_ids.iter().collect::<HashSet<_>>().len(), 4);
+        let group_id = store
+            .full_view_rows
+            .iter()
+            .find_map(|row| match row {
+                ProcessViewRow::Group { detail, .. } if detail.label == "BatCave" => {
+                    Some(detail.workload_id.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let mut archive = crate::workload_history::WorkloadArchive::default();
+        archive
+            .observe(&store.snapshot, &store.full_view_rows, true)
+            .unwrap();
+        assert_eq!(archive.inspect(&group_id, 30).unwrap().history.len(), 1);
+        store.apply_raw_sample(observation(7, None), 0.0, 10_500);
+        assert_eq!(store.sample_seq, 1);
+        assert_eq!(store.batcave_workload, Some(context.clone()));
+        archive
+            .observe(&store.snapshot, &store.full_view_rows, true)
+            .unwrap();
+        assert_eq!(archive.inspect(&group_id, 30).unwrap().history.len(), 1);
+        store.publish_collector_unavailable("no live observation".to_string());
+        assert_eq!(store.sample_seq, 1);
+        assert_eq!(store.batcave_workload, Some(context));
+        let held = store
+            .full_view_rows
+            .iter()
+            .find_map(|row| match row {
+                ProcessViewRow::Group { detail, .. } if detail.workload_id == group_id => {
+                    Some(detail)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(held.quality.cpu.quality, MetricQuality::Held);
+        assert!(!store.live_process_snapshot);
+        store.apply_raw_sample(observation(8, None), 0.0, 11_000);
+        assert_eq!(store.sample_seq, 2);
+        assert!(store.batcave_workload.is_none());
+        assert!(store.full_view_rows.iter().all(|row| !matches!(row, ProcessViewRow::Group { detail, .. } if detail.workload_id == group_id)));
+        archive
+            .observe(&store.snapshot, &store.full_view_rows, true)
+            .unwrap();
+        assert_eq!(
+            archive.inspect(&group_id, 30).unwrap().status,
+            crate::workload_history::InspectionStatus::Exited
+        );
+        let desktop_id = process_workload_id(&processes[0]);
+        let desktop = archive.inspect(&desktop_id, 30).unwrap();
+        assert_eq!(
+            desktop.status,
+            crate::workload_history::InspectionStatus::Current
+        );
+        assert_eq!(desktop.history.len(), 2);
+        store.shutdown_owned_resources().unwrap();
+        drop(store);
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
@@ -7945,6 +8239,7 @@ mod tests {
                     source_sample_seq,
                     sampled_at_ms,
                 }),
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             }
         };
@@ -8037,6 +8332,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             }
         };
@@ -8280,6 +8576,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: true,
             },
             1.0,
@@ -8330,6 +8627,7 @@ mod tests {
                 ],
                 collector_service: Some(status),
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: true,
             },
             1.0,
@@ -8466,6 +8764,7 @@ mod tests {
                     )],
                     collector_service: Some(status),
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: true,
                 },
                 1.0,
@@ -9030,6 +9329,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             },
             0.0,
@@ -9245,6 +9545,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             },
             0.0,

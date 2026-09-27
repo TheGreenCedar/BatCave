@@ -15,6 +15,37 @@ type RateFixture = {
   };
 };
 
+type GroupedHeroFixture = RateFixture & {
+  event: {
+    payload: {
+      limitations: { code: string; message: string }[];
+      workloads: (
+        | {
+            kind: "group";
+            detail: {
+              stable_id: string;
+              group_key: string;
+              label: string;
+              metrics: RateFixture["event"]["payload"]["system"]["metrics"];
+              coverage: {
+                descriptor_index: number;
+                available_contributors: number;
+                limitation_index: number | null;
+              }[];
+            };
+          }
+        | {
+            kind: "process";
+            detail: {
+              presentation: { group_id: string | null; group_key: string; group_label: string };
+              metrics: RateFixture["event"]["payload"]["system"]["metrics"];
+            };
+          }
+      )[];
+    };
+  };
+};
+
 type FixtureState =
   | "overview"
   | "process"
@@ -431,6 +462,132 @@ test("Overview selection and leading rows survive Explore query controls", async
         .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-workload-id"))),
     )
     .toEqual(leadingIds);
+});
+
+async function openGroupedHeroFixture(page: Page): Promise<string> {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL("../src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json", import.meta.url),
+      "utf8",
+    ),
+  ) as GroupedHeroFixture;
+  if (fixture.event.kind !== "runtime_snapshot")
+    throw new Error("Expected runtime snapshot fixture");
+  const payload = fixture.event.payload;
+  const group = payload.workloads.find((row) => row.kind === "group");
+  if (!group || group.kind !== "group") throw new Error("Expected workload group");
+  const oldId = group.detail.stable_id;
+  const key = `scope:${"a".repeat(64)}`;
+  const id = `group:${key}`;
+  group.detail.stable_id = id;
+  group.detail.group_key = key;
+  group.detail.label = "BatCave";
+  const partialLimitation =
+    payload.limitations.push({
+      code: "group_partial_coverage",
+      message: "1 of 2 processes contribute to this aggregate.",
+    }) - 1;
+  const groupMemory = group.detail.metrics.find(
+    (metric) => payload.descriptors[metric[0]].semantic === "resident_memory",
+  )!;
+  groupMemory[1] = 2 * 1024 ** 3;
+  groupMemory[2] = payload.quality_codes.indexOf("partial");
+  groupMemory[4] = partialLimitation;
+  const memoryCoverage = group.detail.coverage.find(
+    (coverage) => coverage.descriptor_index === groupMemory[0],
+  )!;
+  memoryCoverage.available_contributors = 1;
+  memoryCoverage.limitation_index = partialLimitation;
+  let memberIndex = 0;
+  for (const row of payload.workloads) {
+    if (row.kind !== "process" || row.detail.presentation.group_id !== oldId) continue;
+    row.detail.presentation.group_id = id;
+    row.detail.presentation.group_key = key;
+    row.detail.presentation.group_label = "BatCave";
+    const memory = row.detail.metrics.find(
+      (metric) => payload.descriptors[metric[0]].semantic === "resident_memory",
+    )!;
+    memory[1] = memberIndex === 0 ? 2 * 1024 ** 3 : null;
+    memory[2] = payload.quality_codes.indexOf(memberIndex === 0 ? "native" : "unavailable");
+    memory[3] = memberIndex === 0 ? payload.sampled_at_ms : null;
+    memory[4] = memberIndex === 0 ? null : partialLimitation;
+    memberIndex += 1;
+  }
+  expect(memberIndex).toBe(2);
+  // Replace only protocol data; the real decoder, ranking, selection and inspector run.
+  await page.route("**/browser-macos.json?import", (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: `export default ${JSON.stringify(fixture)};`,
+    }),
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openFixture(page, "overview");
+  return id;
+}
+
+test("Overview hero opens the same scoped group and aggregate shown in leading workloads", async ({
+  page,
+}) => {
+  const id = await openGroupedHeroFixture(page);
+  const hero = page.locator("[data-overview-contributor-id]");
+  await expect(hero).toHaveAttribute("data-overview-contributor-id", id);
+  await expect(hero.locator("strong")).toHaveText("BatCave");
+  await expect(hero.locator("small")).toHaveText("2 processes · 18% of one core");
+  await expect(page.locator(".overview-workload-list [data-workload-id]").first()).toHaveAttribute(
+    "data-workload-id",
+    id,
+  );
+  await expect(page.locator(".overview-contributor .narrative-origin")).toHaveCount(0);
+  await hero.click();
+  const inspector = page.getByRole("dialog", { name: "Resource detail" });
+  await expect(inspector).toBeVisible();
+  await expect(inspector.locator('[aria-label="Workload group inspector"]')).toBeVisible();
+  await expect(inspector).toContainText("BatCave");
+  await expect(inspector).toContainText("18%");
+  await expect(page.locator(`.attention-table [data-workload-id="${id}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.keyboard.press("Escape");
+  await expect(inspector).toHaveCount(0);
+});
+
+test("Overview hero keeps group coverage and physical disk attribution separate", async ({
+  page,
+}) => {
+  const id = await openGroupedHeroFixture(page);
+  await page.locator('.overview-resource-card[data-resource-mode="memory"]').click();
+  const hero = page.locator("[data-overview-contributor-id]");
+  await expect(hero).toHaveAttribute("data-overview-contributor-id", id);
+  await expect(hero.locator("small")).toHaveText(
+    "2 processes · 2.0 GB resident memory · 1/2 · limited",
+  );
+  await expect(page.locator(".overview-workload-list [data-workload-id]").first()).toHaveAttribute(
+    "data-workload-id",
+    id,
+  );
+  await page.locator('[data-view="explore"]').click();
+  await page
+    .getByRole("textbox", { name: "Search apps and processes" })
+    .fill("no matching grouped workload");
+  await page.getByRole("textbox", { name: "Search apps and processes" }).press("Enter");
+  await page.locator('[data-view="overview"]').click();
+  await expect(hero).toHaveAttribute("data-overview-contributor-id", id);
+  await expect(hero.locator("small")).toContainText("1/2 · limited");
+  await page.locator('.overview-resource-card[data-resource-mode="network"]').click();
+  await expect(hero).toHaveCount(0);
+  await expect(page.locator(".overview-contributor")).toContainText(
+    "No available workload attribution for this resource",
+  );
+  await page.locator('.overview-resource-card[data-resource-mode="disk"]').click();
+  await expect(hero).toHaveCount(0);
+  await expect(page.locator(".overview-contributor")).toContainText(
+    "No compatible process attribution",
+  );
+  await expect(page.locator(".overview-workloads")).toContainText(
+    "Sorted by process read/write I/O",
+  );
 });
 
 for (const width of [1440, 760]) {
