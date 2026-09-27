@@ -12,7 +12,6 @@ import {
   advanceProcessRanking,
   rankingNearTie,
   ProcessInteraction,
-  stabilizeProcessRows,
   windowProcessViewRows,
   workloadSelectionHighlightsRow,
   workloadSelectionMatchesRow,
@@ -70,19 +69,6 @@ test("hasSameProcessOrder detects a live reorder", () => {
   assert.equal(
     hasSameProcessOrder([row("1", 10), row("2", 20)], [row("2", 30), row("1", 40)]),
     false,
-  );
-});
-
-test("stabilizeProcessRows updates values without moving rows under the user", () => {
-  const stable = stabilizeProcessRows(
-    [row("1", 10), row("2", 20)],
-    [row("2", 88), row("1", 77), row("3", 66)],
-  );
-
-  assert.deepEqual(stable.map(processViewRowKey), ["process:1:0", "process:2:0", "process:3:0"]);
-  assert.deepEqual(
-    stable.map((value) => processViewRowMetrics(value).cpuPercent),
-    [77, 88, 66],
   );
 });
 

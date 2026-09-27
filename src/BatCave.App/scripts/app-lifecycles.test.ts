@@ -160,7 +160,7 @@ class FixtureUpdate implements InstallableUpdateResource {
   readonly version = "2.0.0";
   closeCalls = 0;
   installCalls = 0;
-  private readonly closeError: Error | null;
+  closeError: Error | null;
   private readonly installError: Error | null;
 
   constructor(closeError: Error | null = null, installError: Error | null = null) {
@@ -215,6 +215,36 @@ test("stable update controller retains a cleanup-failed handle for retry", async
     messages.at(-1),
     "Unable to check for updates. Monitoring remains available offline.",
   );
+  update.closeError = null;
+  await controller.check("appimage", (state) => messages.push(state.message));
+  assert.equal(update.closeCalls, 2, "retry closes the retained handle before replacement");
+  assert.equal(checks, 2);
+  assert.equal(controller.state().status, "available");
+});
+
+test("stable update controller retries cleanup after installation and release both fail", async () => {
+  const update = new FixtureUpdate(
+    new Error("resource table unavailable"),
+    new Error("signature rejected"),
+  );
+  let checks = 0;
+  const controller = new StableUpdateController(async () => {
+    checks += 1;
+    return update;
+  });
+  await controller.check("appimage", () => {});
+  await controller.install(() => {});
+  assert.equal(controller.state().status, "error");
+  assert.equal(
+    controller.state().message,
+    "Update failed and its local selection could not be released. Retry will clean it up before checking again.",
+  );
+  assert.equal(update.closeCalls, 1);
+  update.closeError = null;
+  await controller.check("appimage", () => {});
+  assert.equal(update.closeCalls, 2);
+  assert.equal(checks, 2);
+  assert.equal(controller.state().status, "available");
 });
 
 test("Debian update checks remain package-manager guidance without invoking the updater", async () => {

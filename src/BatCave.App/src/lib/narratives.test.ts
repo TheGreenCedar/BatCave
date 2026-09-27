@@ -122,6 +122,16 @@ test("candidate admission excludes zero, unavailable and stale evidence and reje
     "memory_usage",
     "disk_activity",
   ]);
+  assert.deepEqual(
+    admittedNarrativeCandidates({
+      ...base,
+      metrics: base.metrics.map((metric) =>
+        metric.kind === "cpu" ? { ...metric, rounded_value: 0 } : metric,
+      ),
+    }),
+    ["memory_usage", "disk_activity"],
+    "a real zero is valid evidence but cannot offer a CPU explanation",
+  );
   for (const quality of ["unavailable", "stale"] satisfies Array<"unavailable" | "stale">) {
     assert.deepEqual(
       admittedNarrativeCandidates({
@@ -135,11 +145,20 @@ test("candidate admission excludes zero, unavailable and stale evidence and reje
       [],
     );
   }
-  for (const roundedValue of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0.11, 0.10000000001]) {
+  for (const roundedValue of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    -1,
+    1_000_000_001,
+    0.11,
+    0.10000000001,
+  ]) {
     assert.deepEqual(
       admittedNarrativeCandidates({
         ...base,
-        metrics: [{ kind: "cpu", rounded_value: roundedValue, unit: "percent" }],
+        metrics: base.metrics.map((metric) =>
+          metric.kind === "cpu" ? { ...metric, rounded_value: roundedValue } : metric,
+        ),
       }),
       [],
     );
@@ -147,7 +166,9 @@ test("candidate admission excludes zero, unavailable and stale evidence and reje
   assert.deepEqual(
     admittedNarrativeCandidates({
       ...base,
-      metrics: [{ kind: "cpu", rounded_value: 12, unit: "megabytes" }],
+      metrics: base.metrics.map((metric) =>
+        metric.kind === "cpu" ? { ...metric, unit: "megabytes" } : metric,
+      ),
     }),
     [],
   );
@@ -255,7 +276,29 @@ test("controller rate limits changing samples for one subject", async () => {
   assert.equal(calls, 2);
 });
 
-test("cancel and teardown discard an in-flight result", async () => {
+test("cancel discards an in-flight result and allows a later request", async () => {
+  const invocation = fixtureInvocation();
+  const generations: Array<{
+    signal: AbortSignal;
+    finish: (result: NarrativeResult) => void;
+  }> = [];
+  const controller = new NarrativeController(
+    (_current, signal) => new Promise((finish) => generations.push({ signal, finish })),
+    { minimumIntervalMs: 0 },
+  );
+  const cancelled = controller.request(invocation);
+  controller.cancel();
+  assert.equal(generations[0].signal.aborted, true);
+  const nextInvocation = fixtureInvocation(22);
+  const next = controller.request(nextInvocation);
+  assert.equal(generations.length, 2, "cancel releases the generation slot before delivery");
+  generations[0].finish(resultFor(invocation));
+  assert.equal(await cancelled, null);
+  generations[1].finish(resultFor(nextInvocation));
+  assert.equal((await next)?.explanation_id, "cpu_usage");
+});
+
+test("teardown discards an in-flight result and rejects later requests", async () => {
   const invocation = fixtureInvocation();
   let finish: ((result: NarrativeResult) => void) | undefined;
   const controller = new NarrativeController(

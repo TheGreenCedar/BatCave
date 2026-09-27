@@ -503,24 +503,6 @@ export function hasSameProcessOrder(
   );
 }
 
-export function stabilizeProcessRows(
-  current: ProcessViewRow[],
-  incoming: ProcessViewRow[],
-): ProcessViewRow[] {
-  if (current.length === 0) {
-    return incoming;
-  }
-
-  const incomingByKey = new Map(incoming.map((row) => [processViewRowKey(row), row]));
-  const stable = current.flatMap((row) => {
-    const next = incomingByKey.get(processViewRowKey(row));
-    return next ? [next] : [];
-  });
-  const stableKeys = new Set(stable.map(processViewRowKey));
-
-  return [...stable, ...incoming.filter((row) => !stableKeys.has(processViewRowKey(row)))];
-}
-
 export interface RankingSettle {
   rows: ProcessViewRow[];
   settledAt: number;
