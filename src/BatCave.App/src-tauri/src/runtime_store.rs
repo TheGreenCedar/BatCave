@@ -14,6 +14,8 @@ use std::{
 };
 
 #[cfg(test)]
+use crate::telemetry::now_ms;
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 #[cfg(all(test, target_os = "macos"))]
 use std::env;
@@ -44,7 +46,8 @@ use crate::{
     },
     runtime_health::{evaluate_snapshot_health, evaluated_health},
     runtime_provenance::RuntimeProvenance,
-    telemetry::{now_ms, TelemetrySampleProvenance},
+    telemetry::TelemetrySampleProvenance,
+    wire_clock::MonotonicWireClock,
 };
 
 #[cfg(test)]
@@ -90,37 +93,6 @@ struct PublishedRuntime {
     // Lowercased executables of every live process, independent of the active
     // query, so icon requests for filtered-out or selected rows stay trusted.
     live_exes: Arc<HashSet<String>>,
-}
-
-struct MonotonicWireClock {
-    origin: Instant,
-    wire_origin_ms: u64,
-}
-
-impl MonotonicWireClock {
-    fn new() -> Self {
-        Self {
-            origin: Instant::now(),
-            wire_origin_ms: now_ms(),
-        }
-    }
-
-    fn now_ms(&self) -> u64 {
-        self.at_ms(Instant::now())
-    }
-
-    fn at_ms(&self, instant: Instant) -> u64 {
-        if let Some(elapsed) = instant.checked_duration_since(self.origin) {
-            self.wire_origin_ms.saturating_add(duration_ms(elapsed))
-        } else {
-            self.wire_origin_ms
-                .saturating_sub(duration_ms(self.origin.duration_since(instant)))
-        }
-    }
-}
-
-fn duration_ms(duration: Duration) -> u64 {
-    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[derive(Clone)]
@@ -8588,6 +8560,137 @@ mod tests {
             .expect("elevated fallback remains protocol-valid after authority clamp");
 
         let _ = fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn service_connection_timestamps_share_runtime_clock_and_survive_cached_publications() {
+        use crate::collector_service::client::{
+            active_status_with_clock, status_from_failure_with_clock, ClientFailure,
+            ClientFailureKind,
+        };
+        let identity = crate::collector_service::protocol::ServiceIdentityV1 {
+            service_name: crate::collector_service::protocol::COLLECTOR_SERVICE_NAME.to_string(),
+            service_version: env!("CARGO_PKG_VERSION").to_string(),
+            release: crate::collector_service::host::current_release_identity(),
+            instance_id: "service-clock-fixture".to_string(),
+            protocol_version:
+                crate::collector_service::protocol::COLLECTOR_SERVICE_PROTOCOL_VERSION,
+            minimum_desktop_version: env!("CARGO_PKG_VERSION").to_string(),
+            limits: crate::collector_service::protocol::ServiceLimitsV1::contract(),
+        };
+        // Independent wall time is deterministically ahead of the first anchor
+        // and behind the second. These local clocks never change global state.
+        for wire_origin_ms in [10_000, now_ms() + 86_400_000] {
+            for kind in ["active", "connecting", "unnegotiated"] {
+                let base_dir = runtime_test_dir(&format!("service-clock-{wire_origin_ms}-{kind}"));
+                let origin = Instant::now();
+                let clock = Arc::new(MonotonicWireClock::with_origin(origin, wire_origin_ms));
+                let persistence = RuntimePersistenceCoordinator::for_current_user_directory(
+                    base_dir.clone(),
+                    clock.now_ms(),
+                );
+                let mut store = RuntimeStore::from_base_dir_with_persistence(
+                    base_dir.clone(),
+                    Arc::clone(&clock),
+                    persistence,
+                );
+                store.provenance =
+                    RuntimeProvenance::windows_for_test(RuntimeProcessElevation::Standard);
+                store.admin_mode = store.provenance.admin_mode_status();
+                let before_connection = clock.now_ms();
+                let failure = ClientFailure::new(ClientFailureKind::NotReady, "not ready");
+                let status = match kind {
+                    "active" => active_status_with_clock(&identity, &clock),
+                    "connecting" => status_from_failure_with_clock(
+                        &failure.with_service_identity(&identity),
+                        false,
+                        &clock,
+                    ),
+                    _ => status_from_failure_with_clock(&failure, false, &clock),
+                };
+                let completed_at_ms = clock.at_ms(Instant::now());
+                if let Some(connected_at) = status.last_connected_at_ms {
+                    assert!(connected_at >= before_connection);
+                    assert!(connected_at <= completed_at_ms);
+                } else {
+                    assert_eq!(kind, "unnegotiated");
+                }
+                let sample = crate::telemetry::TelemetrySample {
+                    latency_ms: 0,
+                    collector_state: RuntimeCollectorState::Healthy,
+                    system: empty_system(),
+                    processes: Vec::new(),
+                    warnings: Vec::new(),
+                    collector_service: Some(status.clone()),
+                    source_provenance: None,
+                    batcave_workload: None,
+                    standard_fallback_process_etw_disabled: true,
+                };
+                store.apply_raw_sample(sample.clone(), 0.0, completed_at_ms);
+                assert!(completed_at_ms <= store.snapshot.published_at_ms);
+                assert_eq!(
+                    store.snapshot.admin_mode.collector_service,
+                    Some(status.clone())
+                );
+                assert_eq!(
+                    store.snapshot.standard_fallback_process_etw_disabled,
+                    kind != "active"
+                );
+                let encoded = crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();
+                let bytes = serde_json::to_vec(&encoded).unwrap();
+                let decoded: crate::protocol::ProtocolEnvelope =
+                    serde_json::from_slice(&bytes).unwrap();
+                let decoded = serde_json::to_value(decoded).unwrap();
+                assert_eq!(
+                    decoded.pointer("/event/payload/privileged_collection/collector_service/last_connected_at_ms"),
+                    Some(&serde_json::json!(status.last_connected_at_ms))
+                );
+                // A cached failure can accompany later fallback samples and
+                // passive publications without inventing another connection.
+                store.clock = Arc::new(MonotonicWireClock::with_origin(
+                    origin,
+                    wire_origin_ms + 60_000,
+                ));
+                let later_completed_at_ms = store.clock.now_ms();
+                assert!(later_completed_at_ms > completed_at_ms);
+                if let Some(connected_at) = status.last_connected_at_ms {
+                    assert!(later_completed_at_ms > connected_at);
+                }
+                store.apply_raw_sample(sample, 0.0, later_completed_at_ms);
+                assert!(store.snapshot.published_at_ms >= later_completed_at_ms);
+                assert_eq!(
+                    store.snapshot.admin_mode.collector_service,
+                    Some(status.clone())
+                );
+                let cached_published_at_ms = store.snapshot.published_at_ms;
+                let sample_seq = store.sample_seq;
+                let sampled_at_ms = store.sampled_at_ms;
+                store.clock = Arc::new(MonotonicWireClock::with_origin(
+                    origin,
+                    wire_origin_ms + 120_000,
+                ));
+                store.publish_snapshot_only(None);
+                assert!(store.snapshot.published_at_ms > cached_published_at_ms);
+                assert_eq!(store.snapshot.admin_mode.collector_service, Some(status));
+                assert_eq!(store.sample_seq, sample_seq);
+                assert_eq!(store.sampled_at_ms, sampled_at_ms);
+                crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();
+                let mut invalid = store.snapshot.clone();
+                invalid
+                    .admin_mode
+                    .collector_service
+                    .as_mut()
+                    .unwrap()
+                    .last_connected_at_ms = Some(invalid.published_at_ms + 1);
+                assert_eq!(
+                    crate::protocol::encode_snapshot(invalid).unwrap_err(),
+                    "protocol_collector_service_timestamp_invalid"
+                );
+                store.shutdown_owned_resources().unwrap();
+                drop(store);
+                let _ = fs::remove_dir_all(base_dir);
+            }
+        }
     }
 
     #[test]
