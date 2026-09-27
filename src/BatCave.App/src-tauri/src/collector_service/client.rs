@@ -248,7 +248,9 @@ impl<T: ClientTransport> ServiceClientSession<T> {
     fn renew_connection(&mut self) -> Result<(), ClientFailure> {
         let replacement = self.transport.reconnect()?;
         let renewed = Self::connect(replacement)?;
-        if renewed.identity.instance_id != self.identity.instance_id {
+        if renewed.identity.instance_id != self.identity.instance_id
+            || renewed.transport.verified_peer() != self.transport.verified_peer()
+        {
             return Err(ClientFailure::new(
                 ClientFailureKind::Restarted,
                 "collector_service_instance_restarted",
@@ -532,12 +534,48 @@ fn process_quality(value: CollectorProcessQualityV1) -> ProcessMetricQuality {
     }
 }
 
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct SampleBoundWorkloadApproval {
+    provenance: Option<TelemetrySampleProvenance>,
+    peer: Option<VerifiedServicePeer>,
+    context: Option<crate::workload_identity::BatCaveWorkloadContext>,
+}
+
+#[cfg(any(windows, test))]
+impl SampleBoundWorkloadApproval {
+    fn context_for(
+        &mut self,
+        provenance: &TelemetrySampleProvenance,
+        peer: &VerifiedServicePeer,
+        probe: impl FnOnce() -> Option<crate::workload_identity::BatCaveWorkloadContext>,
+    ) -> Option<crate::workload_identity::BatCaveWorkloadContext> {
+        if self.provenance.as_ref() == Some(provenance) {
+            if self.peer.as_ref() != Some(peer) {
+                self.revoke();
+            }
+            return self.context.clone();
+        }
+        self.provenance = Some(provenance.clone());
+        self.peer = Some(peer.clone());
+        self.context = probe();
+        self.context.clone()
+    }
+
+    fn revoke(&mut self) {
+        // Remember the observed provenance so reconnect cannot reapprove these cached metrics.
+        self.peer = None;
+        self.context = None;
+    }
+}
+
 #[cfg(windows)]
 pub(crate) struct DesktopCollector {
     service: Option<ServiceClientSession<super::windows_client::WindowsServiceTransport>>,
     fallback: TelemetryCollector,
     retry_at: Instant,
     last_status: Option<RuntimeCollectorServiceStatus>,
+    workload_approval: SampleBoundWorkloadApproval,
 }
 
 #[cfg(windows)]
@@ -548,6 +586,7 @@ impl DesktopCollector {
             fallback: TelemetryCollector::for_standard_fallback(),
             retry_at: Instant::now(),
             last_status: None,
+            workload_approval: SampleBoundWorkloadApproval::default(),
         }
     }
 
@@ -596,6 +635,7 @@ impl DesktopCollector {
     }
 
     fn note_failure(&mut self, failure: ClientFailure) {
+        self.workload_approval.revoke();
         let previously_active = self
             .last_status
             .as_ref()
@@ -650,6 +690,7 @@ mod tests {
 
     struct RenewingTransport {
         peer: VerifiedServicePeer,
+        replacement_peer: Option<VerifiedServicePeer>,
         responses: VecDeque<ServiceResponseV1>,
         replacement_responses: Vec<ServiceResponseV1>,
         requests: Arc<Mutex<Vec<ClientRequestV1>>>,
@@ -674,7 +715,8 @@ mod tests {
         fn reconnect(&self) -> Result<Self, ClientFailure> {
             self.reconnects.fetch_add(1, Ordering::SeqCst);
             Ok(Self {
-                peer: self.peer.clone(),
+                peer: self.replacement_peer.as_ref().unwrap_or(&self.peer).clone(),
+                replacement_peer: self.replacement_peer.clone(),
                 responses: VecDeque::from(self.replacement_responses.clone()),
                 replacement_responses: self.replacement_responses.clone(),
                 requests: Arc::clone(&self.requests),
@@ -753,6 +795,7 @@ mod tests {
         let reconnects = Arc::new(AtomicUsize::new(0));
         let mut session = ServiceClientSession::connect(RenewingTransport {
             peer: peer(identity.release.clone()),
+            replacement_peer: None,
             responses: VecDeque::from([
                 negotiated_response(&identity),
                 response(
@@ -814,6 +857,7 @@ mod tests {
             }
             let mut session = ServiceClientSession::connect(RenewingTransport {
                 peer: peer(identity.release.clone()),
+                replacement_peer: None,
                 responses: VecDeque::from([negotiated_response(&identity)]),
                 replacement_responses,
                 requests: Arc::clone(&requests),
@@ -948,6 +992,135 @@ mod tests {
                 baseline.then_some(7)
             );
         }
+    }
+
+    #[test]
+    fn renewed_peer_generation_cannot_claim_the_retained_snapshot() {
+        let identity = identity("instance-1");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let reconnects = Arc::new(AtomicUsize::new(0));
+        let replacement_peer = VerifiedServicePeer::from_transport_verification(
+            20,
+            31,
+            [1; 32],
+            [2; 32],
+            identity.release.clone(),
+        )
+        .unwrap();
+        let mut session = ServiceClientSession::connect(RenewingTransport {
+            peer: peer(identity.release.clone()),
+            replacement_peer: Some(replacement_peer),
+            responses: VecDeque::from([
+                negotiated_response(&identity),
+                response(
+                    2,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Snapshot(Box::new(
+                        snapshot("instance-1", 7),
+                    ))),
+                ),
+            ]),
+            replacement_responses: vec![
+                negotiated_response(&identity),
+                response(
+                    2,
+                    ServiceOutcomeV1::LatestSnapshot(LatestSnapshotV1::Unchanged(
+                        super::super::protocol::UnchangedSnapshotV1 {
+                            service_instance_id: "instance-1".to_string(),
+                            sample_seq: 7,
+                        },
+                    )),
+                ),
+            ],
+            requests: Arc::clone(&requests),
+            reconnects: Arc::clone(&reconnects),
+        })
+        .unwrap();
+        session.latest_sample().unwrap();
+        session.last_activity =
+            Instant::now() - super::super::session_lease::SESSION_RENEW_IDLE_AFTER;
+        let failure = session.latest_sample().unwrap_err();
+        assert_eq!(failure.kind, ClientFailureKind::Restarted);
+        assert_eq!(reconnects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|request| request.request_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 1],
+            "replacement cannot request unchanged cached metrics after its generation changed"
+        );
+    }
+
+    #[test]
+    fn workload_approval_is_probed_once_per_sample_and_revoked_on_peer_failure() {
+        use crate::{
+            network_attribution::ProcessGeneration, workload_identity::BatCaveWorkloadContext,
+        };
+        let identity = identity("instance-1");
+        let original_peer = peer(identity.release.clone());
+        let changed_peer = VerifiedServicePeer::from_transport_verification(
+            20,
+            31,
+            [1; 32],
+            [2; 32],
+            identity.release,
+        )
+        .unwrap();
+        let desktop = ProcessGeneration {
+            pid: 10,
+            start_time_ms: 1,
+        };
+        let context = BatCaveWorkloadContext {
+            desktop,
+            members: vec![desktop],
+        };
+        let provenance = TelemetrySampleProvenance {
+            source_instance_id: "instance-1".to_string(),
+            source_sample_seq: 7,
+            sampled_at_ms: 7_000,
+        };
+        let probes = std::cell::Cell::new(0);
+        let probe = || {
+            probes.set(probes.get() + 1);
+            Some(context.clone())
+        };
+        let mut approval = SampleBoundWorkloadApproval::default();
+        assert_eq!(
+            approval.context_for(&provenance, &original_peer, probe),
+            Some(context.clone())
+        );
+        assert_eq!(
+            approval.context_for(&provenance, &original_peer, probe),
+            Some(context.clone())
+        );
+        assert_eq!(probes.get(), 1);
+        assert_eq!(
+            approval.context_for(&provenance, &changed_peer, probe),
+            None
+        );
+        assert_eq!(
+            approval.context_for(&provenance, &original_peer, probe),
+            None
+        );
+        assert_eq!(
+            probes.get(),
+            1,
+            "cached metrics cannot be reapproved after peer change"
+        );
+        let fresh = TelemetrySampleProvenance {
+            source_sample_seq: 8,
+            sampled_at_ms: 8_000,
+            ..provenance
+        };
+        assert_eq!(
+            approval.context_for(&fresh, &changed_peer, probe),
+            Some(context.clone())
+        );
+        approval.revoke();
+        assert_eq!(approval.context_for(&fresh, &changed_peer, probe), None);
+        assert_eq!(probes.get(), 2);
     }
 
     #[test]

@@ -113,12 +113,12 @@ impl VerifiedServicePeer {
         &self.executable_release
     }
 
-    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[cfg(any(windows, feature = "private-windows-lifecycle-proof"))]
     pub(crate) fn process_id(&self) -> u32 {
         self.process_id
     }
 
-    #[cfg(feature = "private-windows-lifecycle-proof")]
+    #[cfg(any(windows, feature = "private-windows-lifecycle-proof"))]
     pub(crate) fn process_started_at(&self) -> u64 {
         self.process_started_at
     }
