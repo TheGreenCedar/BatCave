@@ -23,6 +23,8 @@ On Windows, `build.rs` embeds the existing Common-Controls v6 `release.manifest.
 
 Frontend lifecycle tests run through `npm run test:update-lifecycle`. They exercise helper ordering, failure ownership, Retry routing, and the App wiring that calls those helpers. They do not instantiate a packaged Tauri JavaScript `Update`. Cleanup treats only Tauri 2.11.5's exact invalid-resource-ID error as an idempotent already-removed handle. Any other close failure blocks replacement and remains available for Retry; a combined operation and cleanup failure preserves both errors. The Rust matrix separately exercises Tauri's native resource table; packaged JavaScript-to-Rust resource cleanup remains outside this local fixture proof.
 
+The existing app-lifecycle and Settings browser tests also cover an installation that returns successfully: only after resource cleanup completes does Settings show **Restart required** and tell the user to close and reopen BatCave to use the installed version. Another check or installation is blocked in that process; monitoring controls and dialog dismissal remain available. This is client completion-state proof with an intercepted updater boundary, not native installation or A-to-B runtime proof. BatCave does not relaunch automatically.
+
 ## Evidence boundary
 
 This matrix stops at `Update::download`: that is the last common, non-mutating boundary after exact-byte signature verification and before platform-specific installation. `downloadAndInstall` would modify the host. A generic test package would not verify a packaged BatCave update.

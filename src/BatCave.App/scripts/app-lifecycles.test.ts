@@ -181,7 +181,11 @@ class FixtureUpdate implements InstallableUpdateResource {
 
 test("stable update controller exposes check and install transitions", async () => {
   const update = new FixtureUpdate();
-  const controller = new StableUpdateController(async () => update);
+  let checks = 0;
+  const controller = new StableUpdateController(async () => {
+    checks += 1;
+    return update;
+  });
   const states: string[] = [];
 
   await controller.check("appimage", (state) => states.push(`${state.status}:${state.message}`));
@@ -190,9 +194,15 @@ test("stable update controller exposes check and install transitions", async () 
   assert.deepEqual(states, [
     "checking:Checking the stable release channel…",
     "available:Version 2.0.0 is available.",
-    "installing:Downloading and verifying the signed update…",
-    "installing:Installing the verified update. BatCave will close when installation begins.",
+    "installing:Downloading, verifying, and installing the update…",
+    "restart_required:Version 2.0.0 is installed. Close and reopen BatCave to use it.",
   ]);
+  const completed = controller.state();
+  assert.equal(completed.status, "restart_required");
+  await controller.check("appimage", () => assert.fail("completed update cannot check again"));
+  await controller.install(() => assert.fail("completed update cannot install again"));
+  assert.deepEqual(controller.state(), completed);
+  assert.equal(checks, 1);
   assert.equal(update.installCalls, 1);
   assert.equal(update.closeCalls, 1);
 });

@@ -656,15 +656,42 @@ test("desktop workload table renders unavailable network attribution", async ({ 
   await expect(row.locator("td").nth(networkColumn)).toHaveText("—");
 });
 
-test("updater checks start only from the explicit Settings action and retry", async ({ page }) => {
+test("updater checks require explicit action and returning installs show restart guidance", async ({
+  page,
+}) => {
   let checks = 0;
+  let available = false;
+  let installs = 0;
+  let closes = 0;
+  let finishInstall: (() => void) | undefined;
+  let finishClose: (() => void) | undefined;
   await page.exposeFunction("batcaveUpdaterCheck", () => {
     checks += 1;
+    return available;
+  });
+  await page.exposeFunction("batcaveUpdaterInstall", () => {
+    installs += 1;
+    return new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    });
+  });
+  await page.exposeFunction("batcaveUpdaterClose", () => {
+    closes += 1;
+    return new Promise<void>((resolve) => {
+      finishClose = resolve;
+    });
   });
   await page.route("**/@tauri-apps_plugin-updater.js*", (route) =>
     route.fulfill({
       contentType: "text/javascript",
-      body: 'export async function check() { await window.batcaveUpdaterCheck(); throw new Error("fixture updater unavailable"); }',
+      body: `export async function check() {
+        if (!(await window.batcaveUpdaterCheck())) throw new Error("fixture updater unavailable");
+        return {
+          version: "2.0.0",
+          downloadAndInstall: () => window.batcaveUpdaterInstall(),
+          close: () => window.batcaveUpdaterClose(),
+        };
+      }`,
     }),
   );
   await openFixture(page, "settings");
@@ -677,6 +704,44 @@ test("updater checks start only from the explicit Settings action and retry", as
   );
   await dialog.getByRole("button", { name: "Retry", exact: true }).click();
   await expect.poll(() => checks).toBe(2);
+  await expect(dialog.getByRole("button", { name: "Retry", exact: true })).toBeEnabled();
+  available = true;
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(dialog).toContainText("Version 2.0.0 is available.");
+  await dialog.getByRole("button", { name: "Download and install", exact: true }).click();
+  await expect.poll(() => installs).toBe(1);
+  await expect(dialog).toContainText("Downloading, verifying, and installing the update…");
+  await expect(dialog.getByRole("button", { name: "Installing…", exact: true })).toBeDisabled();
+  if (!finishInstall) throw new Error("Expected pending fixture installation");
+  finishInstall();
+  await expect.poll(() => closes).toBe(1);
+  await expect(dialog.getByRole("button", { name: "Installing…", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Restart required", exact: true })).toHaveCount(
+    0,
+  );
+  if (!finishClose) throw new Error("Expected pending fixture resource cleanup");
+  finishClose();
+  await expect(dialog).toContainText(
+    "Version 2.0.0 is installed. Close and reopen BatCave to use it.",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Restart required", exact: true }),
+  ).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Installing…", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Restart required", exact: true }),
+  ).toBeDisabled();
+  await dialog.getByRole("button", { name: "Pause monitoring", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Resume monitoring", exact: true }),
+  ).toBeEnabled();
+  expect(checks).toBe(3);
+  expect(installs).toBe(1);
+  expect(closes).toBe(1);
+  await expectNoAxeViolations(page);
 });
 
 for (const viewport of [
