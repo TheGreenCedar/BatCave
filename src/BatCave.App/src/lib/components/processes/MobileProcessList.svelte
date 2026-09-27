@@ -80,6 +80,10 @@
     return displayProcessMetricValue(row.detail.network_bps, quality, formatRate);
   }
 
+  function metricTitle(row: ProcessViewRow, metric: "cpu" | "io" | "network"): string {
+    return (row.kind === "group" ? row.detail.quality[metric] : row.detail.process.quality?.[metric])?.message ?? "";
+  }
+
   const interaction = new ProcessInteraction();
 
   function setInteraction(source: "pointer" | "focus", active: boolean): void {
@@ -124,6 +128,17 @@
   }
 </script>
 
+{#snippet metricValue(value: string, title: string)}
+  <b {title}>
+    {#if value === "Unavailable"}
+      <span aria-hidden="true">—</span>
+      <span class="visually-hidden">Unavailable{title ? `. ${title}` : ""}</span>
+    {:else}
+      {value}
+    {/if}
+  </b>
+{/snippet}
+
 <div
   class="mobile-process-list"
   role="region"
@@ -153,6 +168,7 @@
         type="button"
         aria-pressed={actionSelected}
         aria-label={row.kind === "group" ? `Inspect ${row.detail.label} group` : `Inspect ${process?.name}, PID ${process?.pid}`}
+        aria-describedby={`workload-metrics-${encodeURIComponent(row.detail.workload_id)}`}
         aria-disabled={ghost || undefined}
         data-workload-id={row.detail.workload_id}
         onclick={() => {
@@ -175,22 +191,22 @@
           </span>
           <small>{row.attention_label}</small>
         </span>
-        <span class="card-metrics">
+        <span class="card-metrics" id={`workload-metrics-${encodeURIComponent(row.detail.workload_id)}`}>
           <span>
             <em>CPU / core</em>
-            <b title={process?.quality?.cpu?.message ?? ""}>{ghost ? ghostLabel : cpuLabel(row)}</b>
+            {@render metricValue(ghost ? ghostLabel : cpuLabel(row), metricTitle(row, "cpu"))}
           </span>
           <span>
             <em>{presentation.memoryLabel}</em>
-            <b title={process ? processMemoryTitle(process) : ""}>{ghost ? "—" : row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes)}</b>
+            {@render metricValue(ghost ? "—" : row.kind === "process" ? residentMemoryValue(row.detail.process, platform) : displayGroupMetricValue(metrics.memoryBytes, row.detail.quality.memory, row.detail.coverage.memory, formatBytes), process ? processMemoryTitle(process) : row.kind === "group" ? row.detail.quality.memory.message ?? "" : "")}
           </span>
           <span>
             <em>I/O</em>
-            <b title={process?.quality?.io?.message ?? ""}>{ghost ? "—" : ioLabel(row)}</b>
+            {@render metricValue(ghost ? "—" : ioLabel(row), metricTitle(row, "io"))}
           </span>
           <span>
             <em>Network</em>
-            <b>{ghost ? "—" : networkLabel(row)}</b>
+            {@render metricValue(ghost ? "—" : networkLabel(row), metricTitle(row, "network"))}
           </span>
         </span>
         <span class="card-foot">
