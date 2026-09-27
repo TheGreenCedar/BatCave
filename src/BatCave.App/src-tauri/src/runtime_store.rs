@@ -4838,6 +4838,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: false,
                 }),
                 FakeOutcome::Unavailable(error) => {
@@ -4943,6 +4944,7 @@ mod tests {
                 source_sample_seq,
                 sampled_at_ms,
             }),
+            batcave_workload: None,
             standard_fallback_process_etw_disabled: false,
         };
 
@@ -5064,6 +5066,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: false,
                 })),
                 collection_latency_ms: 0.0,
@@ -5953,6 +5956,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             },
             0.0,
@@ -7945,6 +7949,7 @@ mod tests {
                     source_sample_seq,
                     sampled_at_ms,
                 }),
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             }
         };
@@ -8037,6 +8042,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             }
         };
@@ -8280,6 +8286,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: true,
             },
             1.0,
@@ -8330,6 +8337,7 @@ mod tests {
                 ],
                 collector_service: Some(status),
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: true,
             },
             1.0,
@@ -8466,6 +8474,7 @@ mod tests {
                     )],
                     collector_service: Some(status),
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: true,
                 },
                 1.0,
@@ -9030,6 +9039,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             },
             0.0,
@@ -9245,6 +9255,7 @@ mod tests {
                 warnings: Vec::new(),
                 collector_service: None,
                 source_provenance: None,
+                batcave_workload: None,
                 standard_fallback_process_etw_disabled: false,
             },
             0.0,

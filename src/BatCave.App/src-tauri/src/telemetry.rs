@@ -52,6 +52,7 @@ pub struct TelemetrySample {
     pub warnings: Vec<String>,
     pub collector_service: Option<RuntimeCollectorServiceStatus>,
     pub source_provenance: Option<TelemetrySampleProvenance>,
+    pub(crate) batcave_workload: Option<crate::workload_identity::BatCaveWorkloadContext>,
     pub standard_fallback_process_etw_disabled: bool,
 }
 
@@ -274,6 +275,7 @@ impl TelemetryCollector {
             warnings,
             collector_service: None,
             source_provenance: None,
+            batcave_workload: None,
             standard_fallback_process_etw_disabled: self.standard_fallback_process_etw_disabled,
         })
     }
@@ -343,6 +345,7 @@ impl TelemetryCollector {
             warnings,
             collector_service: None,
             source_provenance: None,
+            batcave_workload: None,
             standard_fallback_process_etw_disabled: self.standard_fallback_process_etw_disabled,
         })
     }

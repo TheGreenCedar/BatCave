@@ -492,6 +492,7 @@ fn sample_from_snapshot(
         warnings: snapshot.warnings,
         collector_service: Some(status),
         source_provenance: Some(source_provenance),
+        batcave_workload: None,
         standard_fallback_process_etw_disabled: false,
     }
 }

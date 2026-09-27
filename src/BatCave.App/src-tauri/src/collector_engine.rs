@@ -907,6 +907,7 @@ mod tests {
                     warnings: Vec::new(),
                     collector_service: None,
                     source_provenance: None,
+                    batcave_workload: None,
                     standard_fallback_process_etw_disabled: false,
                 }),
                 FakeOutcome::Unavailable(error) => {

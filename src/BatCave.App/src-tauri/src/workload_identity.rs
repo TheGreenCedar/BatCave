@@ -8,11 +8,20 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::contracts::ProcessSample;
+use crate::network_attribution::ProcessGeneration;
+
+/// Native ownership approval belongs to one observed process sample, never to a display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BatCaveWorkloadContext {
+    pub(crate) desktop: ProcessGeneration,
+    pub(crate) members: Vec<ProcessGeneration>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkloadMembership {
     pub key: String,
     pub representative_index: usize,
+    pub batcave: bool,
 }
 
 /// Parent links are valid only within this sample's unambiguous PID generations.
@@ -77,11 +86,24 @@ pub(crate) fn verified_parent_indices(processes: &[ProcessSample]) -> Vec<Option
 }
 
 pub(crate) fn workload_memberships(processes: &[ProcessSample]) -> Vec<WorkloadMembership> {
+    workload_memberships_with_context(processes, None)
+}
+
+pub(crate) fn workload_memberships_with_context(
+    processes: &[ProcessSample],
+    context: Option<&BatCaveWorkloadContext>,
+) -> Vec<WorkloadMembership> {
     let parents = verified_parent_indices(processes);
     let executable_ids = processes
         .iter()
         .map(|process| executable_identity(&process.exe))
         .collect::<Vec<_>>();
+    let approved = approved_batcave_members(processes, &executable_ids, context);
+    let approved_member = |index| {
+        approved
+            .as_ref()
+            .is_some_and(|(_, members)| members.contains(&index))
+    };
     let mut resolved_roots = vec![None; processes.len()];
     for index in 0..processes.len() {
         let mut trail = Vec::new();
@@ -96,6 +118,7 @@ pub(crate) fn workload_memberships(processes: &[ProcessSample]) -> Vec<WorkloadM
             };
             if executable_ids[current].is_none()
                 || executable_ids[current] != executable_ids[parent]
+                || approved_member(current) != approved_member(parent)
             {
                 break current;
             }
@@ -108,7 +131,12 @@ pub(crate) fn workload_memberships(processes: &[ProcessSample]) -> Vec<WorkloadM
     let roots = resolved_roots
         .into_iter()
         .enumerate()
-        .map(|(index, root)| root.unwrap_or(index))
+        .map(|(index, root)| {
+            approved
+                .as_ref()
+                .filter(|(_, members)| members.contains(&index))
+                .map_or_else(|| root.unwrap_or(index), |(desktop, _)| *desktop)
+        })
         .collect::<Vec<_>>();
     let mut members = HashMap::<usize, Vec<usize>>::new();
     for (index, root) in roots.iter().enumerate() {
@@ -153,8 +181,40 @@ pub(crate) fn workload_memberships(processes: &[ProcessSample]) -> Vec<WorkloadM
         .map(|root| WorkloadMembership {
             key: keys[&root].clone(),
             representative_index: root,
+            batcave: approved
+                .as_ref()
+                .is_some_and(|(desktop, _)| root == *desktop),
         })
         .collect()
+}
+
+fn approved_batcave_members(
+    processes: &[ProcessSample],
+    executable_ids: &[Option<String>],
+    context: Option<&BatCaveWorkloadContext>,
+) -> Option<(usize, HashSet<usize>)> {
+    let context = context?;
+    if context.desktop.pid == 0 || !context.members.contains(&context.desktop) {
+        return None;
+    }
+    let mut by_pid = HashMap::<u32, Vec<usize>>::new();
+    for (index, process) in processes.iter().enumerate() {
+        if let Some(pid) = process_pid(process) {
+            by_pid.entry(pid).or_default().push(index);
+        }
+    }
+    let matching_index = |generation: &ProcessGeneration| {
+        let [index] = by_pid.get(&generation.pid)?.as_slice() else {
+            return None;
+        };
+        (generation.start_time_ms > 0
+            && processes[*index].start_time_ms == generation.start_time_ms
+            && executable_ids[*index].is_some())
+        .then_some(*index)
+    };
+    let desktop = matching_index(&context.desktop)?;
+    let members = context.members.iter().filter_map(matching_index).collect();
+    Some((desktop, members))
 }
 
 fn process_pid(process: &ProcessSample) -> Option<u32> {
@@ -229,6 +289,82 @@ mod tests {
             assert_ne!(ids[0].key, ids[1].key);
             assert_ne!(ids[0].key, ids[2].key);
         }
+    }
+    #[test]
+    fn approved_batcave_members_join_only_the_exact_observed_generations() {
+        let rows = [
+            process("10", None, 10, "C:/BatCave/batcave-monitor.exe"),
+            process("20", None, 5, "C:/BatCave/batcave-collector-service.exe"),
+            process("30", Some("10"), 30, "C:/WebView/msedgewebview2.exe"),
+            process("40", None, 40, "C:/WebView/msedgewebview2.exe"),
+            process("50", Some("10"), 50, "C:/BatCave/batcave-monitor.exe"),
+        ];
+        let context = BatCaveWorkloadContext {
+            desktop: ProcessGeneration::from_process(&rows[0]).unwrap(),
+            members: rows[..3]
+                .iter()
+                .map(|row| ProcessGeneration::from_process(row).unwrap())
+                .collect(),
+        };
+        let grouped = workload_memberships_with_context(&rows, Some(&context));
+        for member in &grouped[..3] {
+            assert_eq!(member.key, grouped[0].key);
+            assert_eq!(member.representative_index, 0);
+            assert!(member.batcave);
+        }
+        // The same runtime image elsewhere and an unapproved same-image child cannot leak in.
+        for other in &grouped[3..] {
+            assert_ne!(other.key, grouped[0].key);
+            assert!(!other.batcave);
+        }
+        let reordered = [rows[2].clone(), rows[1].clone(), rows[0].clone()];
+        assert_eq!(
+            workload_memberships_with_context(&reordered, Some(&context))[0].key,
+            grouped[0].key
+        );
+        let mut reused = rows.clone();
+        reused[1].start_time_ms += 1;
+        let next = workload_memberships_with_context(&reused, Some(&context));
+        assert_ne!(next[0].key, grouped[0].key);
+        assert_ne!(next[1].key, next[0].key);
+    }
+
+    #[test]
+    fn ambiguous_or_missing_desktop_approval_preserves_generic_memberships() {
+        let rows = [
+            process("10", None, 10, "C:/BatCave/batcave-monitor.exe"),
+            process("20", None, 20, "C:/BatCave/batcave-collector-service.exe"),
+        ];
+        let desktop = ProcessGeneration::from_process(&rows[0]).unwrap();
+        for context in [
+            BatCaveWorkloadContext {
+                desktop,
+                members: vec![ProcessGeneration::from_process(&rows[1]).unwrap()],
+            },
+            BatCaveWorkloadContext {
+                desktop: ProcessGeneration {
+                    start_time_ms: 11,
+                    ..desktop
+                },
+                members: vec![desktop],
+            },
+        ] {
+            let generic = workload_memberships(&rows);
+            let actual = workload_memberships_with_context(&rows, Some(&context));
+            assert!(actual.iter().all(|membership| !membership.batcave));
+            assert_eq!(actual[0].key, generic[0].key);
+            assert_eq!(actual[1].key, generic[1].key);
+        }
+        let duplicate = [rows[0].clone(), rows[0].clone(), rows[1].clone()];
+        let context = BatCaveWorkloadContext {
+            desktop,
+            members: vec![desktop, ProcessGeneration::from_process(&rows[1]).unwrap()],
+        };
+        assert!(
+            workload_memberships_with_context(&duplicate, Some(&context))
+                .iter()
+                .all(|membership| !membership.batcave)
+        );
     }
     #[test]
     fn verified_same_executable_descendants_form_one_scope() {
