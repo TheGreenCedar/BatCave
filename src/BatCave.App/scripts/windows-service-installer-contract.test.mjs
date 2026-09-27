@@ -416,8 +416,9 @@ test("Windows validation and release verify the generated NSIS contract", async 
   );
   const signedVerificationEnd =
     signedWindowsReleaseJob.indexOf(releaseVerification) + releaseVerification.length;
-  const signedCollectionStart =
-    signedWindowsReleaseJob.indexOf("      - name: Collect Windows distributables");
+  const signedCollectionStart = signedWindowsReleaseJob.indexOf(
+    "      - name: Collect Windows distributables",
+  );
   assert.doesNotMatch(
     signedWindowsReleaseJob.slice(signedVerificationEnd, signedCollectionStart),
     /(?:tauri\s+(?:build|bundle)|sign-artifact\.ps1|signtool\s+sign|build-signed-windows-release\.ps1)/iu,
