@@ -1814,6 +1814,22 @@ mod tests {
         RuntimePersistenceCoordinator::new(coordinator(backend), now_ms)
     }
 
+    impl RuntimePersistenceCoordinator {
+        pub(crate) fn in_memory_for_test(directory: PathBuf, now_ms: u64) -> Self {
+            Self::new(
+                UserStorageCoordinator::new(
+                    ResolvedStorageRoot {
+                        owner: StorageOwner::CurrentUser,
+                        directory,
+                    },
+                    FakeBackend::default(),
+                    DiagnosticPolicy::default(),
+                ),
+                now_ms,
+            )
+        }
+    }
+
     fn runtime_component(
         health: &RuntimePersistence,
         kind: RuntimePersistenceKind,
