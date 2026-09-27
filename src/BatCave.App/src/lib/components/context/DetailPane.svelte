@@ -22,7 +22,6 @@
 
   export let subject: "process" | "system";
   export let telemetryStatus: TelemetryPresentation;
-  export let compact = false;
   export let onClose: () => void = () => {};
   export let onShowSystem: () => void;
   export let selectedWorkload: WorkloadDetail | null;
@@ -65,28 +64,16 @@
   export let busyCoreCount = 0;
   export let coreTone: (load: number) => string;
 
-  let pane: HTMLElement | null = null;
-  let opener: HTMLElement | null = null;
+  let pane: HTMLDialogElement | null = null;
 
-  $: if (compact && pane instanceof HTMLDialogElement && !pane.open) {
-    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  $: if (pane && !pane.open) {
     pane.showModal();
     focusDialogStart(pane);
   }
 
-  $: if (!compact && opener) restoreOpener();
-
   function requestClose(): void {
-    if (pane instanceof HTMLDialogElement) {
-      pane.close();
-    }
-    restoreOpener();
+    pane?.close();
     onClose();
-  }
-
-  function restoreOpener(): void {
-    opener?.focus();
-    opener = null;
   }
 
   function handleBackdropClick(event: MouseEvent): void {
@@ -101,29 +88,26 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (compact && event.key === "Escape") {
+    if (event.key === "Escape") {
       event.preventDefault();
       requestClose();
       return;
     }
-    if (compact && pane instanceof HTMLDialogElement) {
+    if (pane) {
       trapDialogFocus(event, pane);
     }
   }
 </script>
 
-<svelte:element
-  this={compact ? "dialog" : "aside"}
+<dialog
   bind:this={pane}
   id="detail-pane"
   class:detail-pane={true}
-  class:is-drawer={compact}
+  class:is-drawer={true}
   class:process-detail={subject === "process"}
-  role={compact ? undefined : "complementary"}
-  tabindex={compact ? -1 : undefined}
+  tabindex="-1"
   aria-label="Resource detail"
   oncancel={handleCancel}
-  onclose={restoreOpener}
   onkeydown={handleKeydown}
   onclick={handleBackdropClick}
 >
@@ -135,17 +119,15 @@
       {#if subject === "process"}
         <button class="system-overview-action" type="button" onclick={onShowSystem}>System detail</button>
       {/if}
-      {#if compact}
-        <button
-          class="detail-pane-close"
-          type="button"
-          aria-label="Close resource detail"
-          data-dialog-initial-focus
-          onclick={requestClose}
-        >
-          <X size={19} weight="bold" aria-hidden="true" />
-        </button>
-      {/if}
+      <button
+        class="detail-pane-close"
+        type="button"
+        aria-label="Close resource detail"
+        data-dialog-initial-focus
+        onclick={requestClose}
+      >
+        <X size={19} weight="bold" aria-hidden="true" />
+      </button>
     </div>
   </header>
 
@@ -218,4 +200,4 @@
       />
     {/if}
   </div>
-</svelte:element>
+</dialog>

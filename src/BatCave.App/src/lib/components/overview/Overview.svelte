@@ -119,14 +119,25 @@
 </script>
 
 <main class="overview-view" aria-labelledby="overview-heading">
-  <section class="overview-hero">
-    <div class="overview-status-copy">
+  <section class="overview-status-area" aria-label="Monitoring status">
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable status text must be keyboard reachable.) -->
+    <div class="overview-status-copy" role="region" aria-labelledby="overview-heading" tabindex="0">
       <h2 id="overview-heading">{status.headline}</h2>
       <p>{status.summary}</p>
-      <button class="overview-inspect-resource" type="button" onclick={onInspectResource}>Inspect resource</button>
+      {#if status.attention.tone !== "healthy"}
+        <div class={`overview-attention tone-${status.attention.tone}`}>
+          <h3>{status.attention.title}</h3>
+          <p>{status.attention.detail}</p>
+        </div>
+      {/if}
     </div>
+    <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
+  </section>
 
-    <div class="overview-contributor">
+  <section class="overview-hero">
+    <button class="overview-inspect-resource" type="button" onclick={onInspectResource}>Inspect resource</button>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable contributor text must be keyboard reachable.) -->
+    <div class="overview-contributor" role="region" aria-label={leadingProcessLabel(status.primaryResource)} tabindex="0">
       <span class="overview-contributor-label">{leadingProcessLabel(status.primaryResource)}</span>
       {#if leadingName}
         <button
@@ -181,21 +192,11 @@
         <span class="resource-card-chart"><MiniChart values={resource.values} max={resource.max} stroke={resource.stroke} fill={resource.fill} /></span>
         <span class="resource-card-value">
           <strong>{resource.value}</strong>
-          {#if resourceQualityVisible(resource)}<small>{resource.shortStatusLabel}</small>{/if}
+          <small class:resource-quality-empty={!resourceQualityVisible(resource)} aria-hidden={!resourceQualityVisible(resource)}>{resource.shortStatusLabel}</small>
         </span>
       </button>
     {/each}
   </section>
-
-  {#if status.attention.tone !== "healthy"}
-    <section class={`overview-attention tone-${status.attention.tone}`} aria-labelledby="overview-attention-heading">
-      <div>
-        <h3 id="overview-attention-heading">{status.attention.title}</h3>
-        <p>{status.attention.detail}</p>
-      </div>
-      <button type="button" onclick={onOpenDiagnostics}>View diagnostics</button>
-    </section>
-  {/if}
 
   <section class="overview-workloads" aria-labelledby="leading-workloads-heading">
     <header>

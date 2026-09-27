@@ -143,7 +143,7 @@
   {#if ghost}
     <td class="ghost-cell">{ghostLabel}</td>
   {:else if label === "Unavailable"}
-    <td class="metric-unavailable" title={title || "Unavailable"} aria-label="Unavailable">—</td>
+    <td class="metric-unavailable" title={title || "Unavailable"} aria-label={title ? `Unavailable. ${title}` : "Unavailable"}>—</td>
   {:else}
     <td title={title}>{label}</td>
   {/if}

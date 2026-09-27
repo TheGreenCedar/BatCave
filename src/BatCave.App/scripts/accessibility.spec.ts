@@ -9,6 +9,7 @@ type RateFixture = {
       descriptors: { semantic: string }[];
       system: { metrics: [number, number | null, number, number | null, number | null][] };
       quality_codes: string[];
+      limitations: { message: string }[];
       sampled_at_ms: number | null;
     };
   };
@@ -265,6 +266,7 @@ test("only the active workload layout is mounted and resizing preserves explorat
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "group");
+  await page.getByRole("button", { name: "Close resource detail" }).click();
   await page.setViewportSize({ width: 1000, height: 900 });
   await expect(page.locator(".attention-table-wrap")).toHaveCount(1);
   await expect(page.locator(".mobile-process-list")).toHaveCount(0);
@@ -329,9 +331,7 @@ test("compact resource detail closes with Escape and restores the selected workl
   await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
 });
 
-test("compact workload detail restores its live workload control after expanding to desktop", async ({
-  page,
-}) => {
+test("workload detail keeps its dialog and focus after expanding to desktop", async ({ page }) => {
   await page.setViewportSize({ width: 760, height: 900 });
   await openFixture(page, "overview");
   const workloadControl = page
@@ -344,11 +344,13 @@ test("compact workload detail restores its live workload control after expanding
 
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+  await page.keyboard.press("Escape");
   await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
 });
 
-test("desktop workload detail restores its live workload control after collapsing to compact", async ({
+test("workload detail keeps its dialog and focused control after collapsing to compact", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -360,11 +362,13 @@ test("desktop workload detail restores its live workload control after collapsin
 
   await page.setViewportSize({ width: 760, height: 900 });
 
-  await expect(page.getByRole("dialog", { name: "Resource detail" })).not.toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy workload summary" })).toBeFocused();
+  await page.keyboard.press("Escape");
   await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
 });
 
-test("compact system detail restores its resource control after expanding to desktop", async ({
+test("system detail stays open after expanding and restores navigation on dismissal", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 760, height: 900 });
@@ -377,11 +381,13 @@ test("compact system detail restores its resource control after expanding to des
 
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+  await page.keyboard.press("Escape");
   await expect(page.locator('[data-view="explore"]')).toBeFocused();
 });
 
-test("desktop system detail restores its resource control after collapsing to compact", async ({
+test("system detail stays open after collapsing and restores navigation on dismissal", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -390,11 +396,13 @@ test("desktop system detail restores its resource control after collapsing to co
   await resourceControl.click();
   await expect(resourceControl).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Inspect resource", exact: true }).click();
-  await page.getByText("Memory accounting", { exact: true }).focus();
+  await page.getByRole("button", { name: "Close resource detail" }).focus();
 
   await page.setViewportSize({ width: 760, height: 900 });
 
-  await expect(page.getByRole("dialog", { name: "Resource detail" })).not.toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+  await page.keyboard.press("Escape");
   await expect(page.locator('[data-view="explore"]')).toBeFocused();
 });
 
@@ -429,6 +437,7 @@ for (const width of [1440, 760]) {
   test(`group inspection actions expose exact selection state at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openFixture(page, "group");
+    await page.getByRole("button", { name: "Close resource detail" }).click();
     await page.setViewportSize({ width, height: 900 });
     const surface = page.locator(width === 1440 ? ".attention-table" : ".mobile-process-list");
     const group = surface.locator('[data-workload-id="group:batcave.app.exe"]');
@@ -436,11 +445,11 @@ for (const width of [1440, 760]) {
     await surface.locator('[data-workload-group-key="batcave.app.exe"]').click();
     const child = surface.locator('[data-workload-id="process:1234:1699999999000"]');
     await child.click();
-    if (width === 760) await page.getByRole("button", { name: "Close resource detail" }).click();
+    await page.getByRole("button", { name: "Close resource detail" }).click();
     await expect(child).toHaveAttribute("aria-pressed", "true");
     await expect(group).toHaveAttribute("aria-pressed", "false");
     await group.click();
-    if (width === 760) await page.getByRole("button", { name: "Close resource detail" }).click();
+    await page.getByRole("button", { name: "Close resource detail" }).click();
     await expect(group).toHaveAttribute("aria-pressed", "true");
     await expect(child).toHaveAttribute("aria-pressed", "false");
     if (width === 760) {
@@ -472,6 +481,7 @@ test("compact workload controls change the active sort direction", async ({ page
 test("desktop workload table renders unavailable network attribution", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "group");
+  await page.getByRole("button", { name: "Close resource detail" }).click();
   const table = page.locator(".attention-table");
   await expect(table.getByRole("columnheader", { name: /Network/ })).toBeVisible();
   const row = table.locator("tr").filter({
@@ -480,7 +490,12 @@ test("desktop workload table renders unavailable network attribution", async ({ 
   const networkColumn = await table
     .getByRole("columnheader", { name: /Network/ })
     .evaluate((header) => Array.from(header.parentElement!.children).indexOf(header));
-  await expect(row.locator("td").nth(networkColumn)).toHaveAttribute("aria-label", "Unavailable");
+  const qualityReason = await row.locator("td").nth(networkColumn).getAttribute("title");
+  expect(qualityReason).toBeTruthy();
+  await expect(row.locator("td").nth(networkColumn)).toHaveAttribute(
+    "aria-label",
+    `Unavailable. ${qualityReason}`,
+  );
   await expect(row.locator("td").nth(networkColumn)).toHaveText("—");
 });
 
@@ -726,8 +741,9 @@ test("Overview drill-down and Explore controls preserve the workload task", asyn
   expect(workloadId).not.toBeNull();
   await workloadControl.evaluate((button) => (button as HTMLButtonElement).click());
 
+  await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
+  await page.getByRole("button", { name: "Close resource detail" }).click();
   await expect(page.getByRole("heading", { name: "Workloads" })).toBeVisible();
-  await expect(page.getByRole("complementary", { name: "Resource detail" })).toBeVisible();
   await expect(
     page.locator(`[data-workload-id="${workloadId}"][aria-pressed="true"]:visible`).first(),
   ).toBeVisible();
@@ -774,24 +790,31 @@ test("independent inspection keeps identity and timestamp when switching A to B 
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "process");
-  const pane = page.getByRole("complementary", { name: "Resource detail" });
+  const pane = page.getByRole("dialog", { name: "Resource detail" });
   await pane.getByRole("button", { name: "Memory history" }).click();
   const first = page.locator('[data-workload-id][aria-pressed="true"]:visible').first();
   const id = await first.getAttribute("data-workload-id");
   const identity = await pane.locator(".identity-title-row strong").textContent();
   const timestamp = await pane.locator(".history-readout time").getAttribute("datetime");
+  await pane.getByRole("button", { name: "Close resource detail" }).click();
   await first.click();
   await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
+  await pane.getByRole("button", { name: "Memory history" }).click();
   await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", timestamp ?? "");
+  await pane.getByRole("button", { name: "Close resource detail" }).click();
   await page.locator('[data-view="overview"]').click();
   await expect(pane).not.toBeVisible();
   await page.locator('[data-view="explore"]').click();
+  await expect(pane).not.toBeVisible();
+  await page.locator(`[data-workload-id="${id}"]:visible`).first().click();
   await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
   await pane.getByRole("button", { name: "Memory history" }).click();
   await expect(pane.locator(".history-readout time")).toHaveAttribute("datetime", timestamp ?? "");
   const second = page.locator('[data-workload-id][aria-pressed="false"]:visible').first();
+  await pane.getByRole("button", { name: "Close resource detail" }).click();
   await second.click();
   await expect(pane.locator(".identity-title-row strong")).not.toHaveText(identity ?? "");
+  await pane.getByRole("button", { name: "Close resource detail" }).click();
   await page.locator(`[data-workload-id="${id}"]:visible`).first().click();
   await expect(pane.locator(".identity-title-row strong")).toHaveText(identity ?? "");
   const memoryHistory = pane.getByRole("button", { name: "Memory history" });
@@ -804,7 +827,9 @@ test("independent inspection keeps identity and timestamp when switching A to B 
   await expectNoAxeViolations(page);
   await page.setViewportSize({ width: 760, height: 900 });
   const dialog = page.getByRole("dialog", { name: "Resource detail" });
-  await expect(dialog).not.toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(slider).toBeFocused();
+  await dialog.getByRole("button", { name: "Close resource detail" }).click();
   const compactSelection = page.locator(`[data-workload-id="${id}"]:visible`).first();
   await compactSelection.click();
   await expect(dialog.locator(".identity-title-row strong")).toHaveText(identity ?? "");
@@ -824,7 +849,7 @@ test("exited inspection retains exact identity and last sample on desktop and co
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openFixture(page, "exited");
-  const pane = page.getByRole("complementary", { name: "Resource detail" });
+  const pane = page.getByRole("dialog", { name: "Resource detail" });
   await expect(
     pane.getByText(
       "This process is no longer in the latest sample. Showing its last recorded activity.",
@@ -845,3 +870,305 @@ test("Explore stays horizontally contained at the 720px minimum window width", a
   await expect(page.locator(".mobile-process-card").first()).toBeVisible();
   await expect(page.locator("html")).toHaveJSProperty("scrollWidth", 720);
 });
+
+for (const width of [1440, 1280, 1000, 760, 720]) {
+  test(`Explore keeps its full width and inspector dismissal restores its opener at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await openFixture(page, "overview");
+    await page.getByRole("button", { name: "Explore", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Resource detail" });
+    await expect(dialog).toHaveCount(0);
+    const queue = page.locator(".explore-queue");
+    const workspace = await page.locator(".explore-workspace").boundingBox();
+    const before = await queue.boundingBox();
+    expect(workspace).not.toBeNull();
+    expect(before).not.toBeNull();
+    expect(before!.width).toBeCloseTo(workspace!.width, 0);
+    const opener = page.locator(".explore-queue button[data-workload-id]").first();
+
+    for (const dismissal of ["button", "escape", "backdrop"]) {
+      await opener.focus();
+      await opener.click();
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "Close resource detail" })).toBeFocused();
+      const during = await queue.boundingBox();
+      expect(during).toEqual(before);
+      if (dismissal === "button") {
+        await dialog.getByRole("button", { name: "Close resource detail" }).click();
+      } else if (dismissal === "escape") {
+        await page.keyboard.press("Escape");
+      } else {
+        const bounds = await dialog.boundingBox();
+        expect(bounds!.x).toBeGreaterThan(8);
+        await page.mouse.click(4, 450);
+      }
+      await expect(dialog).toHaveCount(0);
+      await expect(opener).toBeFocused();
+      await expect(opener).toHaveAttribute("aria-pressed", "true");
+      expect(await queue.boundingBox()).toEqual(before);
+    }
+  });
+}
+
+test("compact unavailable readings expose the actual reason without repeating visible text", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 760, height: 900 });
+  await openFixture(page, "group");
+  await page.getByRole("button", { name: "Close resource detail" }).click();
+  const group = page.locator('.mobile-card-select[data-workload-id="group:batcave.app.exe"]');
+  await expect(group).toHaveAccessibleDescription(
+    /Network Unavailable\. 0 of 2 processes contribute to this aggregate\./,
+  );
+  const reading = group
+    .locator(".card-metrics > span")
+    .filter({ has: page.getByText("Network", { exact: true }) })
+    .locator("b");
+  await expect(reading.locator('[aria-hidden="true"]')).toHaveText("—");
+  await expect(reading.locator(".visually-hidden")).toHaveText(
+    "Unavailable. 0 of 2 processes contribute to this aggregate.",
+  );
+});
+
+test("resource detail remains contained and dismissible at minimum width with 200% text", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  await openFixture(page, "overview");
+  await page.addStyleTag({ content: ":root { font-size: 200% !important; }" });
+  await page.locator('.overview-resource-card[data-resource-mode="memory"]').click();
+  await page.getByRole("button", { name: "Inspect resource", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Resource detail" });
+  const close = dialog.getByRole("button", { name: "Close resource detail" });
+  await expect(close).toBeVisible();
+  await expect(close).toBeFocused();
+  await dialog.getByText("Memory accounting", { exact: true }).click();
+  const bounds = await dialog.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(720);
+  const content = await dialog.locator(".detail-pane-scroll").evaluate((element) => ({
+    width: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    height: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflow: [...element.querySelectorAll("*")]
+      .filter(
+        (child) => child.getBoundingClientRect().right > element.getBoundingClientRect().right + 1,
+      )
+      .slice(0, 6)
+      .map((child) => ({
+        tag: child.tagName,
+        class: child.className,
+        text: child.textContent?.slice(0, 100),
+      })),
+  }));
+  expect(content.scrollWidth, JSON.stringify(content.overflow)).toBeLessThanOrEqual(
+    content.width + 1,
+  );
+  expect(content.scrollHeight).toBeGreaterThan(content.height);
+  await expectNoAxeViolations(page);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-view="explore"]')).toBeFocused();
+});
+
+for (const viewport of [
+  { width: 1440, textScale: 100 },
+  { width: 720, textScale: 200 },
+  { width: 360, textScale: 100 },
+  { width: 360, textScale: 200 },
+]) {
+  test(`Overview status remains readable without moving metrics at ${viewport.width}px and ${viewport.textScale}% text`, async ({
+    page,
+  }) => {
+    const fixtureUrl = "/src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json?import";
+    const fixture: unknown = JSON.parse(
+      readFileSync(
+        new URL(
+          "../src-tauri/src/fixtures/runtime-protocol-v4/browser-macos.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    await page.route("**/browser-macos.json?import", (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: `export default ${JSON.stringify(fixture)};`,
+      }),
+    );
+    await page.setViewportSize({ width: viewport.width, height: 1000 });
+    await openFixture(page, "overview");
+    await page.addStyleTag({ content: `:root { font-size: ${viewport.textScale}% !important; }` });
+    await expect
+      .poll(() =>
+        page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize)),
+      )
+      .toBe((16 * viewport.textScale) / 100);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    const header = page.locator(".app-header");
+    const headerControls = [
+      page.getByRole("heading", { name: "BatCave", exact: true }),
+      header.locator(".view-navigation"),
+      header.locator(".header-status-actions"),
+    ];
+    const headerBoxes = await Promise.all(headerControls.map((control) => control.boundingBox()));
+    for (const box of headerBoxes) {
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    for (let index = 0; index < headerBoxes.length; index += 1) {
+      for (let other = index + 1; other < headerBoxes.length; other += 1) {
+        const left = headerBoxes[index]!;
+        const right = headerBoxes[other]!;
+        const disjoint =
+          left.x + left.width <= right.x ||
+          right.x + right.width <= left.x ||
+          left.y + left.height <= right.y ||
+          right.y + right.height <= left.y;
+        expect(disjoint, "Header title, navigation and status controls must not overlap").toBe(
+          true,
+        );
+      }
+    }
+    const resources = page.locator(".overview-resources");
+    const workloads = page.locator(".overview-workloads");
+    const beforeResources = await resources.boundingBox();
+    const beforeWorkloads = await workloads.boundingBox();
+    const reason =
+      "A current machine CPU sample is unavailable. " +
+      "The detailed local collector reason remains readable while workload controls keep their position. ".repeat(
+        20,
+      ) +
+      "End of the collector reason.";
+    await page.evaluate(
+      async ({ fixtureUrl, reason }) => {
+        const imported = (await import(fixtureUrl)) as {
+          default: RateFixture;
+        };
+        if (imported.default.event.kind !== "runtime_snapshot")
+          throw new Error("Expected snapshot fixture");
+        const payload = imported.default.event.payload;
+        const cpu = payload.system.metrics.find(
+          (metric) => payload.descriptors[metric[0]].semantic === "cpu_usage",
+        );
+        if (!cpu || !payload.limitations[0]) throw new Error("Expected CPU and limitation fixture");
+        payload.limitations[0].message = reason;
+        cpu[1] = null;
+        cpu[2] = payload.quality_codes.indexOf("unavailable");
+        cpu[3] = null;
+        cpu[4] = 0;
+      },
+      { fixtureUrl, reason },
+    );
+    await page.locator(".settings-action").click();
+    await page.getByRole("button", { name: "Refresh now", exact: true }).click();
+    await page.keyboard.press("Escape");
+    const status = page.locator(".overview-status-copy");
+    await expect(status).toContainText(reason);
+    expect(await resources.boundingBox()).toEqual(beforeResources);
+    expect(await workloads.boundingBox()).toEqual(beforeWorkloads);
+    const content = await status.evaluate((element) => ({
+      width: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      height: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }));
+    expect(content.scrollWidth).toBeLessThanOrEqual(content.width + 1);
+    expect(content.scrollHeight).toBeGreaterThan(content.height);
+    await status.focus();
+    await status.press("End");
+    await expect.poll(() => status.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect(page.getByRole("button", { name: "View diagnostics", exact: true })).toBeVisible();
+    await expectNoAxeViolations(page);
+    await page.locator('.overview-resource-card[data-resource-mode="disk"]').click();
+    const leadingHeader = workloads.locator("header");
+    if (viewport.width === 360 && viewport.textScale === 200) {
+      // Wider glyphs reproduce the intrinsic CTA width boundary reached on Linux.
+      await page.addStyleTag({
+        content:
+          ".overview-workloads > header > button { font-family: monospace; letter-spacing: 2px; }",
+      });
+      const naturalActionWidth = await leadingHeader
+        .locator(":scope > button")
+        .evaluate((button) => {
+          const measurement = button.cloneNode(true);
+          if (!(measurement instanceof HTMLElement) || !button.parentElement)
+            throw new Error("Expected measurable action");
+          measurement.setAttribute("aria-hidden", "true");
+          measurement.tabIndex = -1;
+          Object.assign(measurement.style, {
+            position: "absolute",
+            visibility: "hidden",
+            width: "max-content",
+            maxWidth: "none",
+            whiteSpace: "nowrap",
+            flex: "none",
+          });
+          button.parentElement.append(measurement);
+          try {
+            return measurement.getBoundingClientRect().width;
+          } finally {
+            measurement.remove();
+          }
+        });
+      expect(naturalActionWidth).toBeGreaterThan(
+        await leadingHeader.evaluate((element) => element.clientWidth),
+      );
+    }
+    const leadingContent = await leadingHeader.evaluate((element) => ({
+      width: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(
+      leadingContent.scrollWidth,
+      "Leading workloads header must contain its Explore action",
+    ).toBeLessThanOrEqual(leadingContent.width + 1);
+    const exploreAction = leadingHeader.getByRole("button", {
+      name: "View all in Explore",
+      exact: true,
+    });
+    await exploreAction.scrollIntoViewIfNeeded();
+    const exploreBox = await exploreAction.boundingBox();
+    expect(exploreBox).not.toBeNull();
+    expect(exploreBox!.x + exploreBox!.width).toBeLessThanOrEqual(viewport.width + 1);
+    await exploreAction.focus();
+    await expect(exploreAction).toBeFocused();
+    await exploreAction.press("Enter");
+    await expect(page.locator('[data-view="explore"]')).toHaveAttribute("aria-current", "page");
+    await page.locator(".settings-action").click();
+    const settings = page.getByRole("dialog", { name: "Settings" });
+    const pauseAction = settings.getByRole("button", { name: "Pause monitoring", exact: true });
+    await pauseAction.focus();
+    await pauseAction.press("Enter");
+    const resumeAction = settings.getByRole("button", { name: "Resume monitoring", exact: true });
+    await expect(resumeAction).toBeFocused();
+    const samplingContent = await settings
+      .locator(".sampling-actions")
+      .evaluate((element) => ({ width: element.clientWidth, scrollWidth: element.scrollWidth }));
+    expect(
+      samplingContent.scrollWidth,
+      "Paused Settings actions must remain horizontally contained",
+    ).toBeLessThanOrEqual(samplingContent.width + 1);
+    const refreshAction = settings.getByRole("button", { name: "Refresh now", exact: true });
+    for (const action of [resumeAction, refreshAction]) {
+      const box = await action.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    await resumeAction.press("Tab");
+    await expect(refreshAction).toBeFocused();
+    await refreshAction.press("Enter");
+    await expect(pauseAction).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(settings).toHaveCount(0);
+  });
+}
