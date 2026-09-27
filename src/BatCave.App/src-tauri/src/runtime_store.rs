@@ -8583,10 +8583,8 @@ mod tests {
         for wire_origin_ms in [10_000, now_ms() + 86_400_000] {
             for kind in ["active", "connecting", "unnegotiated"] {
                 let base_dir = runtime_test_dir(&format!("service-clock-{wire_origin_ms}-{kind}"));
-                let clock = Arc::new(MonotonicWireClock::with_origin(
-                    Instant::now(),
-                    wire_origin_ms,
-                ));
+                let origin = Instant::now();
+                let clock = Arc::new(MonotonicWireClock::with_origin(origin, wire_origin_ms));
                 let persistence = RuntimePersistenceCoordinator::for_current_user_directory(
                     base_dir.clone(),
                     clock.now_ms(),
@@ -8649,10 +8647,30 @@ mod tests {
                 );
                 // A cached failure can accompany later fallback samples and
                 // passive publications without inventing another connection.
-                store.apply_raw_sample(sample, 0.0, clock.now_ms());
+                store.clock = Arc::new(MonotonicWireClock::with_origin(
+                    origin,
+                    wire_origin_ms + 60_000,
+                ));
+                let later_completed_at_ms = store.clock.now_ms();
+                assert!(later_completed_at_ms > completed_at_ms);
+                if let Some(connected_at) = status.last_connected_at_ms {
+                    assert!(later_completed_at_ms > connected_at);
+                }
+                store.apply_raw_sample(sample, 0.0, later_completed_at_ms);
+                assert!(store.snapshot.published_at_ms >= later_completed_at_ms);
+                assert_eq!(
+                    store.snapshot.admin_mode.collector_service,
+                    Some(status.clone())
+                );
+                let cached_published_at_ms = store.snapshot.published_at_ms;
                 let sample_seq = store.sample_seq;
                 let sampled_at_ms = store.sampled_at_ms;
+                store.clock = Arc::new(MonotonicWireClock::with_origin(
+                    origin,
+                    wire_origin_ms + 120_000,
+                ));
                 store.publish_snapshot_only(None);
+                assert!(store.snapshot.published_at_ms > cached_published_at_ms);
                 assert_eq!(store.snapshot.admin_mode.collector_service, Some(status));
                 assert_eq!(store.sample_seq, sample_seq);
                 assert_eq!(store.sampled_at_ms, sampled_at_ms);
