@@ -1,5 +1,13 @@
 # Native UI evidence
 
+## View navigation regression, September 27, 2026
+
+The installed `c54363d344e8b65459e9515b5a0c77ff931814bd` candidate exposed a compact-view navigation defect. At 720-pixel content width with enlarged text, Return on the focused Leading workloads action replaced Overview with Explore while retaining the outer document scroll. The client area showed the theme background and scrollbar. One Ctrl+Home restored the rendered Explore view without reload or a process-generation change; this observation does not establish a WebView crash.
+
+View changes now reset the document scroll after the destination mounts and focus its main landmark. The `/` shortcut focuses search; workload and resource drill-down retain the inspector's initial-focus and close-focus behavior. Competing navigation invalidates stale deferred focus work. Query and workload selection are preserved.
+
+The automated regression starts from a scrolled narrow Overview, activates the action by keyboard, checks the visible destination and scroll position, and exercises navigation, retained search text and inspector dismissal. Browser fixture comparisons are layout diagnostics only. Fresh packaged native verification remains required: reproduce the 720-pixel enlarged-text path, confirm that Explore is immediately visible and keyboard reachable, and recheck inspector dismissal and search focus. The historical captures below do not verify this correction.
+
 ## Windows inspector and enlarged text, September 26, 2026
 
 These raw Computer Use captures show the source-built Windows app with production frontend assets and live local telemetry. Explore uses the full table width while the inspector is closed; selecting a workload opens the dismissible side drawer at wide and compact sizes.
