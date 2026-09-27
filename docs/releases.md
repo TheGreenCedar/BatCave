@@ -47,7 +47,7 @@ NSIS installs the desktop and collector service. `batcave-monitor-cli.exe` is a 
 
 The installer keeps Public Desktop and Common Programs shortcuts absent. A native provisioner retires only the exact historical links, using pinned known-folder ancestry and the same verified file handle for deletion. Unknown objects block the installer. Shared folder ACLs stay unchanged. Generated `installer.nsi` checks enforce the callback guards, omitted finish-page shortcut control, and native retirement order while preserving AppUserModelId cleanup.
 
-The machine-wide App Paths registration remains installer-owned. Separately, a normal unelevated launch of the verified installed app may create a missing Start entry for that user. Existing entries are preserved, and machine uninstall leaves them as user state. See [Windows shared-shortcut retirement](decisions/0013-windows-shared-shortcut-retirement.md) for registration, creation, rollback, and cleanup rules.
+The machine-wide App Paths registration remains installer-owned. Separately, a normal unelevated launch of the verified installed app may create a missing Start entry for that user. Existing entries are preserved, and machine uninstall currently leaves them as user state. That retention does not satisfy #216's revised requirement for automatic entries and guaranteed all-user cleanup. See [Windows shared-shortcut retirement](decisions/0013-windows-shared-shortcut-retirement.md) for current behavior and the [additional lifecycle ownership plan](windows-start-lifecycle-plan.md) for the proposed implementation and migration gates.
 
 ## Windows collector privilege migration
 

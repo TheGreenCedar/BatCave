@@ -1,6 +1,6 @@
 # Windows shared-shortcut retirement
 
-- Status: accepted source contract; native install proof remains outstanding
+- Status: shared-shortcut retirement and App Paths source contract accepted; current-user Start cleanup does not meet the revised #216 requirement; native install proof remains outstanding
 - Date: 2026-07-16
 - Issues: #212, #214, #216
 
@@ -31,6 +31,8 @@ This machine registration avoids user-profile inference: over-the-shoulder crede
 ## Proof boundary
 
 ### Current-user Start entry
+
+The following describes current source behavior. On 2026-09-26 the owner required automatic Start entries with guaranteed cleanup for every user. Leaving app-created entries after uninstall no longer satisfies #216. The [additional lifecycle ownership plan](../windows-start-lifecycle-plan.md) records the proposed Windows-owned projection and unresolved historical-link migration; it is not implemented.
 
 An unelevated interactive launch of the verified installed monitor may create `BatCave Monitor.lnk` in that process user's `FOLDERID_Programs`. This is app-created user state. The GUI resolves the folder using its own process token; elevated, service-account, session-zero, and impersonated executions skip creation. It never selects a different user, enumerates profiles, or creates a shared shortcut. The existing native image checks pin the fixed Program Files monitor and its install directory throughout creation.
 
