@@ -601,7 +601,23 @@ impl DesktopCollector {
         }
         if let Some(service) = &mut self.service {
             match service.latest_sample() {
-                Ok(sample) => {
+                Ok(mut sample) => {
+                    if let Some(provenance) = sample.source_provenance.as_ref() {
+                        let peer = service.transport.verified_peer();
+                        let generation = crate::network_attribution::ProcessGeneration {
+                            pid: peer.process_id(),
+                            start_time_ms: crate::windows_process::filetime_100ns_to_unix_ms(
+                                peer.process_started_at(),
+                            ),
+                        };
+                        sample.batcave_workload =
+                            self.workload_approval.context_for(provenance, peer, || {
+                                crate::windows_process::batcave_workload_context(
+                                    &sample.processes,
+                                    Some(generation),
+                                )
+                            });
+                    }
                     self.last_status = sample.collector_service.clone();
                     return Ok(sample);
                 }
@@ -631,6 +647,8 @@ impl DesktopCollector {
             ));
         }
         sample.collector_service = Some(status);
+        sample.batcave_workload =
+            crate::windows_process::batcave_workload_context(&sample.processes, None);
         Ok(sample)
     }
 
