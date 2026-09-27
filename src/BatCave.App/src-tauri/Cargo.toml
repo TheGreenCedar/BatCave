@@ -10,6 +10,7 @@ default-run = "batcave-monitor"
 [features]
 default = []
 private-windows-lifecycle-proof = ["dep:uiautomation"]
+private-windows-lifecycle-public-rc6-stable = ["private-windows-lifecycle-proof"]
 private-windows-lifecycle-service-fixtures = []
 private-release-verifier = [
     "dep:flate2",

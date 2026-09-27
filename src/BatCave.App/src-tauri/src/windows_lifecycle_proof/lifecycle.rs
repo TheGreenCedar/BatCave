@@ -16,7 +16,7 @@ use crate::windows_lifecycle_proof_contract::{
     validate_envelope, AbortReason, DesktopPhase, DesktopPhaseDisposition, DesktopPhaseObservation,
     DesktopPhaseResult, DesktopSecondInstanceObservation, Envelope, LifecycleStage, ParentMessage,
     ProofPlan, RestorationOutcome, SequenceGate, WorkerAbort, WorkerCheckpoint, WorkerDisposition,
-    WorkerFailure, WorkerFailureKind, WorkerMessage, WorkerResult,
+    WorkerFailure, WorkerFailureKind, WorkerMessage, WorkerResult, UPGRADE_READY_EVIDENCE_LEAF,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -331,7 +331,7 @@ struct WorkerPipeline<'context, 'checkpoint> {
 }
 
 struct InitialAssets {
-    historical_cli: OwnedFile,
+    historical_cli: Option<OwnedFile>,
     final_installer: OwnedFile,
 }
 
@@ -502,7 +502,18 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let baseline_restart = self.restart_baseline(baseline_install.state)?;
         let baseline_crash_recovery = self.recover_baseline_crash(baseline_restart)?;
         let _baseline_rollback = self.prove_baseline_rollback_recovery(baseline_crash_recovery)?;
-        let legacy_residue = self.seed_legacy_residue(&assets.historical_cli)?;
+        let legacy_residue = if self.plan.is_public_pair() {
+            self.capture_public_upgrade_ready()?
+        } else {
+            let historical_cli = assets.historical_cli.as_ref().ok_or_else(|| {
+                (
+                    Some(LifecycleStage::BaselineRollbackRecovery),
+                    controller_failure("lifecycle_historical_cli_not_retained".to_string()),
+                    true,
+                )
+            })?;
+            self.seed_legacy_residue(historical_cli)?
+        };
         let final_upgrade = self.upgrade_final(legacy_residue, &assets.final_installer)?;
         let final_restart = self.restart_final(final_upgrade)?;
         let final_crash_recovery = self.recover_final_crash(final_restart)?;
@@ -535,6 +546,13 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         )?;
         require_allowlisted_elevated_preflight(&initial, plan)
             .map_err(|failure| (None, controller_failure(failure), true, None))?;
+        if plan.is_public_pair() {
+            super::evidence::validate_restoration_machine_authority(
+                &initial,
+                super::evidence::RestorationAuthorityExpectation::PublicBaselineRunning,
+            )
+            .map_err(|failure| (None, controller_failure(failure), true, None))?;
+        }
         authenticated_checkpoint(
             LifecycleStage::InitialState,
             evidence,
@@ -543,20 +561,10 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
             controller_bindings,
         )?;
 
-        let historical_cli = open_allowlisted_legacy_cli(plan).map_err(|failure| {
-            (
-                Some(LifecycleStage::InitialState),
-                controller_failure(failure),
-                true,
-                None,
-            )
-        })?;
-        let historical_cli_copy = historical_cli
-            .copy_to(
-                &evidence.root().join("historical-cli.exe"),
-                "historical_cli_copy",
-            )
-            .map_err(|failure| {
+        let historical_cli_copy = if plan.is_public_pair() {
+            None
+        } else {
+            let historical_cli = open_allowlisted_legacy_cli(plan).map_err(|failure| {
                 (
                     Some(LifecycleStage::InitialState),
                     controller_failure(failure),
@@ -564,7 +572,22 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
                     None,
                 )
             })?;
-        drop(historical_cli);
+            let historical_cli_copy = historical_cli
+                .copy_to(
+                    &evidence.root().join("historical-cli.exe"),
+                    "historical_cli_copy",
+                )
+                .map_err(|failure| {
+                    (
+                        Some(LifecycleStage::InitialState),
+                        controller_failure(failure),
+                        true,
+                        None,
+                    )
+                })?;
+            drop(historical_cli);
+            Some(historical_cli_copy)
+        };
 
         let final_copy = final_candidate
             .copy_to(
@@ -1222,6 +1245,56 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         })
     }
 
+    fn capture_public_upgrade_ready(
+        &mut self,
+    ) -> Result<ElevatedMachineSnapshot, WorkerExecutionFailure> {
+        let state = capture_elevated_machine_snapshot(self.controller_bindings);
+        require_elevated_installed_candidate(
+            &state,
+            &self.plan.baseline,
+            true,
+            "public_baseline_upgrade_ready",
+        )
+        .map_err(|reason| {
+            (
+                Some(LifecycleStage::BaselineRollbackRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+        super::evidence::validate_restoration_machine_authority(
+            &state,
+            super::evidence::RestorationAuthorityExpectation::PublicBaselineRunning,
+        )
+        .map_err(|reason| {
+            (
+                Some(LifecycleStage::BaselineRollbackRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
+        write_machine_packet(self.evidence, UPGRADE_READY_EVIDENCE_LEAF, &state).map_err(
+            |error| {
+                (
+                    Some(LifecycleStage::PublicBaselineUpgradeReady),
+                    evidence_write_failure(
+                        "lifecycle_public_upgrade_ready_evidence_incomplete",
+                        error,
+                    ),
+                    true,
+                )
+            },
+        )?;
+        authenticated_checkpoint(
+            LifecycleStage::PublicBaselineUpgradeReady,
+            self.evidence,
+            &mut self.transport,
+            &mut *self.last_authenticated_checkpoint,
+            self.controller_bindings,
+        )?;
+        Ok(state)
+    }
+
     fn seed_legacy_residue(
         &mut self,
         historical_cli_copy: &OwnedFile,
@@ -1231,6 +1304,13 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         let transport = &mut self.transport;
         let last_authenticated_checkpoint = &mut *self.last_authenticated_checkpoint;
         let controller_bindings = self.controller_bindings;
+        let historical_cli_sha256 = plan.historical_cli_sha256().map_err(|reason| {
+            (
+                Some(LifecycleStage::BaselineRollbackRecovery),
+                controller_failure(reason),
+                true,
+            )
+        })?;
         let restored_legacy_cli =
             restore_allowlisted_legacy_cli(historical_cli_copy).map_err(|reason| {
                 (
@@ -1249,7 +1329,7 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
         .and_then(|_| {
             require_legacy_cli_hash(
                 &legacy_residue_seeded_state,
-                &plan.allowlisted_start.legacy_cli_sha256,
+                historical_cli_sha256,
                 "legacy_residue_seeded",
             )
         })
@@ -1317,7 +1397,11 @@ impl<'context, 'checkpoint> WorkerPipeline<'context, 'checkpoint> {
             },
         )
         .map_err(|(failure, settled)| {
-            (Some(LifecycleStage::LegacyResidueSeeded), failure, settled)
+            (
+                Some(crate::windows_lifecycle_proof_contract::upgrade_ready_stage()),
+                failure,
+                settled,
+            )
         })?;
         let final_upgrade_state = execute_mutation(
             evidence,
@@ -2954,6 +3038,7 @@ fn restoration_target_for_stage(stage: LifecycleStage) -> RestorationTarget {
         | LifecycleStage::BaselineCrashRecovery
         | LifecycleStage::BaselineRollbackRecovery => RestorationTarget::BaselineRunningClean,
         LifecycleStage::LegacyResidueSeeded => RestorationTarget::BaselineRunningWithLegacyCli,
+        LifecycleStage::PublicBaselineUpgradeReady => RestorationTarget::BaselineRunningClean,
     }
 }
 
@@ -3065,7 +3150,11 @@ pub(super) fn validate_restoration_target(
             require_allowlisted_elevated_preflight(snapshot, plan)?;
             super::evidence::validate_restoration_machine_authority(
                 snapshot,
-                super::evidence::RestorationAuthorityExpectation::AllowlistedStopped,
+                if plan.is_public_pair() {
+                    super::evidence::RestorationAuthorityExpectation::PublicBaselineRunning
+                } else {
+                    super::evidence::RestorationAuthorityExpectation::AllowlistedStopped
+                },
             )
         }
         RestorationTarget::ProductAbsent => {
@@ -3085,7 +3174,11 @@ pub(super) fn validate_restoration_target(
             require_legacy_cli_absent(snapshot, "stage_restoration_baseline")?;
             super::evidence::validate_restoration_machine_authority(
                 snapshot,
-                super::evidence::RestorationAuthorityExpectation::BaselineRunning,
+                if plan.is_public_pair() {
+                    super::evidence::RestorationAuthorityExpectation::PublicBaselineRunning
+                } else {
+                    super::evidence::RestorationAuthorityExpectation::BaselineRunning
+                },
             )
         }
         RestorationTarget::BaselineRunningWithLegacyCli => {
@@ -3097,7 +3190,7 @@ pub(super) fn validate_restoration_target(
             )?;
             require_legacy_cli_hash(
                 snapshot,
-                &plan.allowlisted_start.legacy_cli_sha256,
+                plan.historical_cli_sha256()?,
                 "stage_restoration_legacy_seeded",
             )?;
             super::evidence::validate_restoration_machine_authority(
@@ -3535,6 +3628,7 @@ mod tests {
             LifecycleStage::BaselineCrashRecovery,
             LifecycleStage::BaselineRollbackRecovery,
             LifecycleStage::LegacyResidueSeeded,
+            LifecycleStage::PublicBaselineUpgradeReady,
             LifecycleStage::FinalUpgrade,
             LifecycleStage::FinalRestart,
             LifecycleStage::FinalCrashRecovery,
@@ -3554,6 +3648,9 @@ mod tests {
                 }
                 LifecycleStage::LegacyResidueSeeded => {
                     RestorationTarget::BaselineRunningWithLegacyCli
+                }
+                LifecycleStage::PublicBaselineUpgradeReady => {
+                    RestorationTarget::BaselineRunningClean
                 }
                 LifecycleStage::FinalRepair
                 | LifecycleStage::FinalUpgrade

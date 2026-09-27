@@ -4,6 +4,7 @@ use crate::collector_service::windows_provisioner::{
 };
 use crate::windows_lifecycle_proof_contract::{
     DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult, EvidenceReceipt,
+    UPGRADE_READY_EVIDENCE_LEAF,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,10 +65,7 @@ const PRIVATE_SUCCESS_BINDINGS: [(&str, PrivatePayloadBinding); 28] = [
         "baseline-rollback-recovery-state.private.json",
         PrivatePayloadBinding::UpgradeRollback,
     ),
-    (
-        "legacy-residue-seeded-state.private.json",
-        PrivatePayloadBinding::Machine,
-    ),
+    (UPGRADE_READY_EVIDENCE_LEAF, PrivatePayloadBinding::Machine),
     (
         "final-upgrade-state.private.json",
         PrivatePayloadBinding::Machine,
@@ -686,6 +684,7 @@ mod tests {
                 service_binary: Observation::Absent,
                 uninstaller: Observation::Absent,
                 legacy_cli: Observation::Absent,
+                start_entry_residue: super::super::native::StartEntryResidueSnapshot::absent(),
                 uninstall_registry: Observation::Present(super::super::native::RegistrySnapshot {
                     view: RegistryView::Registry64,
                     install_location: r"C:\Program Files\BatCave Monitor".to_string(),

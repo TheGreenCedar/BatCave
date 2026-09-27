@@ -6,12 +6,12 @@ mod native;
 mod private_evidence;
 
 use crate::windows_lifecycle_proof_contract::{
-    message_sha256, parse_plan, plan_sha256, validate_desktop_phase_result, validate_envelope,
-    validate_locator, validate_nonce, validate_sha256, AbortReason, ClosedRequest, DesktopPhase,
-    DesktopPhaseDisposition, DesktopPhaseResult, Envelope, EvidenceReceipt, LifecycleStage,
-    Observation, ParentMessage, ProofPlan, RestorationOutcome, SequenceGate, WorkerAbort,
-    WorkerCheckpoint, WorkerFailureKind, WorkerMessage, WorkerResult, PROTOCOL_SCHEMA,
-    SUCCESS_PRIVATE_EVIDENCE_LEAVES,
+    message_sha256, parse_plan, plan_sha256, upgrade_ready_stage, validate_desktop_phase_result,
+    validate_envelope, validate_locator, validate_nonce, validate_sha256, AbortReason,
+    ClosedRequest, DesktopPhase, DesktopPhaseDisposition, DesktopPhaseResult, Envelope,
+    EvidenceReceipt, LifecycleStage, Observation, ParentMessage, ProofPlan, RestorationOutcome,
+    SequenceGate, WorkerAbort, WorkerCheckpoint, WorkerFailureKind, WorkerMessage, WorkerResult,
+    PROTOCOL_SCHEMA, SUCCESS_PRIVATE_EVIDENCE_LEAVES,
 };
 use native::{OwnedFile, PipeConnection, PreflightSnapshot};
 use serde::Serialize;
@@ -31,6 +31,7 @@ const DESKTOP_PHASES: [DesktopPhase; 6] = [
 
 #[derive(Debug)]
 enum Entry {
+    Identity,
     Preflight,
     Run,
     Worker { locator: String },
@@ -362,7 +363,7 @@ impl ParentCurrentUserResidueState {
             LifecycleStage::BaselineRestart,
             LifecycleStage::BaselineCrashRecovery,
             LifecycleStage::BaselineRollbackRecovery,
-            LifecycleStage::LegacyResidueSeeded,
+            upgrade_ready_stage(),
             LifecycleStage::FinalUpgrade,
             LifecycleStage::FinalRestart,
             LifecycleStage::FinalCrashRecovery,
@@ -469,6 +470,7 @@ fn checkpoint_parent_residue_expectation(stage: LifecycleStage) -> ParentResidue
         | LifecycleStage::BaselineCrashRecovery
         | LifecycleStage::BaselineRollbackRecovery => ParentResidueExpectation::Clean,
         LifecycleStage::LegacyResidueSeeded
+        | LifecycleStage::PublicBaselineUpgradeReady
         | LifecycleStage::FinalUpgrade
         | LifecycleStage::FinalRestart
         | LifecycleStage::FinalCrashRecovery => ParentResidueExpectation::SeededKnownHelpers,
@@ -909,6 +911,15 @@ pub(crate) fn run() -> i32 {
 
 fn dispatch(entry: Entry) -> Result<i32, String> {
     match entry {
+        Entry::Identity => {
+            let plan = parse_plan()?;
+            print_json(&serde_json::json!({
+                "profile": plan.profile,
+                "plan_sha256": plan_sha256(),
+                "controller_source_commit_sha": embedded_source_commit()?,
+            }));
+            Ok(0)
+        }
         Entry::Preflight => {
             native::require_standard_token()?;
             let preflight = parent_preflight()?;
@@ -947,6 +958,7 @@ fn dispatch(entry: Entry) -> Result<i32, String> {
 
 fn parse_entry(args: Vec<String>) -> Result<Entry, String> {
     match args.as_slice() {
+        [action] if action == "identity" => Ok(Entry::Identity),
         [action] if action == "preflight" => Ok(Entry::Preflight),
         [action] if action == "run" => Ok(Entry::Run),
         [flag, locator] if flag == "--worker" => {
@@ -1540,6 +1552,7 @@ fn expected_desktop_phase_index_at_checkpoint(stage: LifecycleStage) -> usize {
         | LifecycleStage::BaselineCrashRecovery
         | LifecycleStage::BaselineRollbackRecovery
         | LifecycleStage::LegacyResidueSeeded
+        | LifecycleStage::PublicBaselineUpgradeReady
         | LifecycleStage::FinalUpgrade
         | LifecycleStage::FinalRestart
         | LifecycleStage::FinalCrashRecovery => 3,
@@ -1557,6 +1570,7 @@ fn minimum_desktop_phase_index_before_stage(stage: LifecycleStage) -> usize {
         | LifecycleStage::BaselineCrashRecovery
         | LifecycleStage::BaselineRollbackRecovery
         | LifecycleStage::LegacyResidueSeeded
+        | LifecycleStage::PublicBaselineUpgradeReady
         | LifecycleStage::FinalUpgrade
         | LifecycleStage::FinalRestart
         | LifecycleStage::FinalCrashRecovery
@@ -1576,8 +1590,11 @@ fn next_lifecycle_stage(previous: Option<LifecycleStage>) -> Option<LifecycleSta
         Some(LifecycleStage::BaselineCrashRecovery) => {
             Some(LifecycleStage::BaselineRollbackRecovery)
         }
-        Some(LifecycleStage::BaselineRollbackRecovery) => Some(LifecycleStage::LegacyResidueSeeded),
-        Some(LifecycleStage::LegacyResidueSeeded) => Some(LifecycleStage::FinalUpgrade),
+        Some(LifecycleStage::BaselineRollbackRecovery) => Some(upgrade_ready_stage()),
+        Some(
+            stage @ (LifecycleStage::LegacyResidueSeeded
+            | LifecycleStage::PublicBaselineUpgradeReady),
+        ) => (stage == upgrade_ready_stage()).then_some(LifecycleStage::FinalUpgrade),
         Some(LifecycleStage::FinalUpgrade) => Some(LifecycleStage::FinalRestart),
         Some(LifecycleStage::FinalRestart) => Some(LifecycleStage::FinalCrashRecovery),
         Some(LifecycleStage::FinalCrashRecovery) => Some(LifecycleStage::FinalFallbackStates),
@@ -2676,6 +2693,9 @@ fn parent_abort_leaf_for_stage(stage: LifecycleStage) -> &'static str {
             "baseline-rollback-recovery-parent-abort.private.json"
         }
         LifecycleStage::LegacyResidueSeeded => "legacy-residue-seeded-parent-abort.private.json",
+        LifecycleStage::PublicBaselineUpgradeReady => {
+            "baseline-upgrade-ready-parent-abort.private.json"
+        }
         LifecycleStage::FinalUpgrade => "final-upgrade-parent-abort.private.json",
         LifecycleStage::FinalRestart => "final-restart-parent-abort.private.json",
         LifecycleStage::FinalCrashRecovery => "final-crash-recovery-parent-abort.private.json",
@@ -2718,6 +2738,9 @@ fn restoration_leaf_for_stage(stage: LifecycleStage) -> Option<&'static str> {
         }
         LifecycleStage::LegacyResidueSeeded => {
             Some("legacy-residue-seeded-restoration.private.json")
+        }
+        LifecycleStage::PublicBaselineUpgradeReady => {
+            Some("baseline-upgrade-ready-restoration.private.json")
         }
         LifecycleStage::FinalUpgrade => Some("final-upgrade-restoration.private.json"),
         LifecycleStage::FinalRestart => Some("final-restart-restoration.private.json"),
@@ -2819,7 +2842,7 @@ fn mutation_failure_binding(
         (LifecycleStage::BaselineRollbackRecovery, Some(LifecycleStage::BaselineCrashRecovery)) => {
             Some("baseline-rollback-recovery-failure.private.json")
         }
-        (LifecycleStage::FinalUpgrade, Some(LifecycleStage::LegacyResidueSeeded)) => {
+        (LifecycleStage::FinalUpgrade, Some(stage)) if stage == upgrade_ready_stage() => {
             Some("final-upgrade-failure.private.json")
         }
         (LifecycleStage::FinalRestart, Some(LifecycleStage::FinalUpgrade)) => {
@@ -2962,6 +2985,11 @@ mod tests {
     #[test]
     fn entry_is_closed_and_worker_accepts_only_a_locator() {
         assert!(matches!(
+            parse_entry(vec!["identity".to_string()]),
+            Ok(Entry::Identity)
+        ));
+        assert!(parse_entry(vec!["identity".to_string(), "--run".to_string()]).is_err());
+        assert!(matches!(
             parse_entry(vec!["preflight".to_string()]),
             Ok(Entry::Preflight)
         ));
@@ -3014,6 +3042,12 @@ mod tests {
 
     #[test]
     fn stage_engine_order_preserves_parent_current_user_timing() {
+        let wrong_profile_stage = if upgrade_ready_stage() == LifecycleStage::LegacyResidueSeeded {
+            LifecycleStage::PublicBaselineUpgradeReady
+        } else {
+            LifecycleStage::LegacyResidueSeeded
+        };
+        assert_eq!(next_lifecycle_stage(Some(wrong_profile_stage)), None);
         assert_eq!(
             DESKTOP_PHASES,
             [
@@ -3030,7 +3064,7 @@ mod tests {
             ParentResidueExpectation::Clean
         );
         for stage in [
-            LifecycleStage::LegacyResidueSeeded,
+            upgrade_ready_stage(),
             LifecycleStage::FinalUpgrade,
             LifecycleStage::FinalRestart,
             LifecycleStage::FinalCrashRecovery,
@@ -3784,7 +3818,7 @@ mod tests {
             LifecycleStage::BaselineRestart,
             LifecycleStage::BaselineCrashRecovery,
             LifecycleStage::BaselineRollbackRecovery,
-            LifecycleStage::LegacyResidueSeeded,
+            upgrade_ready_stage(),
             LifecycleStage::FinalUpgrade,
             LifecycleStage::FinalRestart,
             LifecycleStage::FinalCrashRecovery,
@@ -4855,7 +4889,7 @@ mod tests {
             ),
             (
                 LifecycleStage::FinalUpgrade,
-                LifecycleStage::LegacyResidueSeeded,
+                upgrade_ready_stage(),
                 "final-upgrade-failure.private.json",
             ),
             (

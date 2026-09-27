@@ -1,6 +1,6 @@
 use crate::windows_lifecycle_proof_contract::{
-    validate_desktop_visible, DesktopCollectorState, DesktopPhase, DesktopPrivilegedSource,
-    DesktopProcessObservation, DesktopVisibleObservation,
+    parse_plan, validate_desktop_visible, DesktopCollectorState, DesktopPhase,
+    DesktopPrivilegedSource, DesktopProcessObservation, DesktopVisibleObservation,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -439,8 +439,12 @@ fn classify_visible_labels(
     phase: DesktopPhase,
     labels: impl IntoIterator<Item = String>,
 ) -> VisibleRead {
+    let plan = match parse_plan() {
+        Ok(plan) => plan,
+        Err(reason) => return VisibleRead::Authority(reason),
+    };
     match parse_visible_labels(labels) {
-        Ok(visible) => match validate_desktop_visible(phase, &visible) {
+        Ok(visible) => match validate_desktop_visible(phase, &visible, &plan) {
             Ok(()) => VisibleRead::Ready(visible),
             Err(reason) => classify_visible_contract_failure(reason),
         },

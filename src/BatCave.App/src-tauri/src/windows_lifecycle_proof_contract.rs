@@ -2,7 +2,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 
+#[cfg(not(feature = "private-windows-lifecycle-public-rc6-stable"))]
 pub(crate) const EMBEDDED_PLAN: &str = include_str!("windows_lifecycle_proof_plan.v1.json");
+#[cfg(feature = "private-windows-lifecycle-public-rc6-stable")]
+pub(crate) const EMBEDDED_PLAN: &str =
+    include_str!("windows_lifecycle_proof_public_rc6_stable_plan.v1.json");
+pub(crate) const PUBLIC_PAIR_PROFILE: &str = "supported_public_rc6_to_stable";
+const PUBLIC_BASELINE_SOURCE: &str = "a2f16f222d276dfd93cc898c6b337f232bd80dc2";
+const PUBLIC_FINAL_SOURCE: &str = "2355d82b08a097259a67ccd789da032945768027";
+pub(crate) const UPGRADE_READY_EVIDENCE_LEAF: &str =
+    if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        "baseline-upgrade-ready-state.private.json"
+    } else {
+        "legacy-residue-seeded-state.private.json"
+    };
+
+pub(crate) fn upgrade_ready_stage() -> LifecycleStage {
+    if cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        LifecycleStage::PublicBaselineUpgradeReady
+    } else {
+        LifecycleStage::LegacyResidueSeeded
+    }
+}
 pub(crate) const PLAN_SCHEMA: &str = "batcave_windows_lifecycle_proof_plan_v1";
 pub(crate) const PROTOCOL_SCHEMA: &str = "batcave_windows_lifecycle_proof_protocol_v4";
 pub(crate) const NONCE_HEX_LENGTH: usize = 64;
@@ -24,7 +45,7 @@ pub(crate) const SUCCESS_PRIVATE_EVIDENCE_LEAVES: [&str; 28] = [
     "baseline-crashed-state.private.json",
     "baseline-crash-recovery-state.private.json",
     "baseline-rollback-recovery-state.private.json",
-    "legacy-residue-seeded-state.private.json",
+    UPGRADE_READY_EVIDENCE_LEAF,
     "final-upgrade-state.private.json",
     "final-restart-stopped-state.private.json",
     "final-restart-state.private.json",
@@ -53,6 +74,30 @@ pub(crate) struct ProofPlan {
     pub incompatible_service_fixture: ServiceFixture,
     pub rollback_failing_service_fixture: ServiceFixture,
     pub allowlisted_start: AllowlistedStart,
+}
+
+impl ProofPlan {
+    pub(crate) fn is_public_pair(&self) -> bool {
+        self.profile == PUBLIC_PAIR_PROFILE
+    }
+
+    pub(crate) fn historical_cli_sha256(&self) -> Result<&str, String> {
+        self.allowlisted_start
+            .legacy_cli_sha256
+            .as_deref()
+            .ok_or_else(|| "lifecycle_historical_cli_not_plan_bound".to_string())
+    }
+
+    pub(crate) fn release_version<'a>(&'a self, candidate: &Candidate) -> Result<&'a str, String> {
+        if !self.is_public_pair() {
+            return Ok(env!("CARGO_PKG_VERSION"));
+        }
+        match candidate.source_commit_sha.as_str() {
+            PUBLIC_BASELINE_SOURCE => Ok("0.2.0-rc.6"),
+            PUBLIC_FINAL_SOURCE => Ok("0.2.0"),
+            _ => Err("lifecycle_public_candidate_source_not_allowlisted".to_string()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -94,7 +139,7 @@ pub(crate) struct AllowlistedStart {
     pub monitor_sha256: String,
     pub service_sha256: String,
     pub uninstaller_sha256: String,
-    pub legacy_cli_sha256: String,
+    pub legacy_cli_sha256: Option<String>,
     pub win32_exit_code: u32,
     pub service_specific_exit_code: u32,
 }
@@ -104,6 +149,7 @@ pub(crate) struct AllowlistedStart {
 pub(crate) enum StartState {
     #[serde(rename = "legacy_stopped_1066_1")]
     LegacyStopped1066_1,
+    PublicRc6Running,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -223,6 +269,14 @@ impl DesktopPhase {
 
     pub(crate) fn expects_existing_primary_focus(self) -> bool {
         self == Self::BaselineSecondInstance
+    }
+
+    pub(crate) fn expected_release_version(self, plan: &ProofPlan) -> Result<&str, String> {
+        let candidate = match self {
+            Self::BaselinePrimary | Self::BaselineSecondInstance => &plan.baseline,
+            _ => &plan.final_candidate,
+        };
+        plan.release_version(candidate)
     }
 
     fn expected_monitor_sha256(self, plan: &ProofPlan) -> &str {
@@ -378,7 +432,7 @@ pub(crate) fn validate_desktop_phase_result(
             validate_collector_runtime(result.phase, &observation.collector_runtime, plan)?;
             validate_desktop_process_roles(observation)?;
             validate_second_instance(result.phase, observation)?;
-            validate_desktop_visible(result.phase, &observation.visible)
+            validate_desktop_visible(result.phase, &observation.visible, plan)
         }
         DesktopPhaseDisposition::Failed => {
             if result
@@ -675,6 +729,7 @@ fn validate_second_instance(
 pub(crate) fn validate_desktop_visible(
     phase: DesktopPhase,
     visible: &DesktopVisibleObservation,
+    plan: &ProofPlan,
 ) -> Result<(), String> {
     if !visible.current_process_standard
         || visible.collector_state != phase.expected_collector_state()
@@ -697,10 +752,11 @@ pub(crate) fn validate_desktop_visible(
 
     match visible.collector_state {
         DesktopCollectorState::Active => {
-            if visible.service_version.as_deref() != Some(env!("CARGO_PKG_VERSION"))
-                || visible.service_release_version.as_deref() != Some(env!("CARGO_PKG_VERSION"))
+            let expected_version = phase.expected_release_version(plan)?;
+            if visible.service_version.as_deref() != Some(expected_version)
+                || visible.service_release_version.as_deref() != Some(expected_version)
                 || visible.negotiated_protocol_version != Some(1)
-                || visible.minimum_desktop_version.as_deref() != Some(env!("CARGO_PKG_VERSION"))
+                || visible.minimum_desktop_version.as_deref() != Some(expected_version)
                 || visible
                     .service_instance_id
                     .as_deref()
@@ -840,6 +896,7 @@ pub(crate) enum LifecycleStage {
     BaselineCrashRecovery,
     BaselineRollbackRecovery,
     LegacyResidueSeeded,
+    PublicBaselineUpgradeReady,
     FinalUpgrade,
     FinalRestart,
     FinalCrashRecovery,
@@ -894,6 +951,9 @@ pub(crate) fn parse_plan() -> Result<ProofPlan, String> {
     let plan: ProofPlan = serde_json::from_str(EMBEDDED_PLAN)
         .map_err(|error| format!("lifecycle_plan_json_invalid:{error}"))?;
     validate_plan(&plan)?;
+    if plan.is_public_pair() != cfg!(feature = "private-windows-lifecycle-public-rc6-stable") {
+        return Err("lifecycle_compiled_profile_invalid".to_string());
+    }
     Ok(plan)
 }
 
@@ -934,6 +994,7 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
         &plan.incompatible_service_fixture,
         &plan.baseline,
         &plan.final_candidate,
+        plan.is_public_pair(),
     )?;
     if plan.baseline.installer_relative_path == plan.final_candidate.installer_relative_path {
         return Err("lifecycle_plan_installer_paths_collide".to_string());
@@ -945,15 +1006,60 @@ pub(crate) fn validate_plan(plan: &ProofPlan) -> Result<(), String> {
             &plan.allowlisted_start.uninstaller_sha256,
             "start_uninstaller",
         ),
-        (&plan.allowlisted_start.legacy_cli_sha256, "start_cli"),
     ] {
         validate_sha256(value, field)?;
     }
-    if plan.allowlisted_start.product_version != ALLOWLISTED_START_PRODUCT_VERSION
+    if plan.is_public_pair() {
+        return validate_public_pair(plan);
+    }
+    validate_sha256(plan.historical_cli_sha256()?, "start_cli")?;
+    if plan.allowlisted_start.state != StartState::LegacyStopped1066_1
+        || plan.allowlisted_start.product_version != ALLOWLISTED_START_PRODUCT_VERSION
         || plan.allowlisted_start.win32_exit_code != 1066
         || plan.allowlisted_start.service_specific_exit_code != 1
     {
         return Err("lifecycle_plan_start_exit_codes_invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_public_pair(plan: &ProofPlan) -> Result<(), String> {
+    if plan.baseline.source_commit_sha != PUBLIC_BASELINE_SOURCE
+        || plan.baseline.installer_size != 277_010_916
+        || plan.baseline.installer_sha256
+            != "fda302c180fd7ffb6d2b1a6cd9ab16d8404675ea3b72ed3f3bebfac88eed5374"
+        || plan.baseline.monitor_sha256
+            != "b65b638f67dc48efc811a3bca44cff7fcec8960fd75809185e9043fb1f407df6"
+        || plan.baseline.service_sha256
+            != "cb9f542dc61fbfcc432c32be3f9ded204e8678266d91920d74a7fca8614f82de"
+        || plan.baseline.uninstaller_size != 151_876
+        || plan.baseline.uninstaller_sha256
+            != "1cf8c8567e85d30cf369cf65da51a178780bd3de238889e8b8117a27e5372e52"
+        || plan.final_candidate.source_commit_sha != PUBLIC_FINAL_SOURCE
+        || plan.final_candidate.installer_size != 276_990_386
+        || plan.final_candidate.installer_sha256
+            != "a3826ad78a0370fc534abc3d84c8c92a09ea99ac93c6baa2391e9fe45a386cb4"
+        || plan.final_candidate.monitor_sha256
+            != "9b8c01d426e83467f3dd0e1612bac9cb28901a3380cb94d90dd23b5c07ecf78b"
+        || plan.final_candidate.service_sha256
+            != "00684ac1207fe7d396bbca642c914001fab1835eece277139dc391d5d7f6d029"
+        || plan.final_candidate.uninstaller_size != 151_846
+        || plan.final_candidate.uninstaller_sha256
+            != "c04216119683d8378c804805f858208e552f99b454ef2c2eb04e506c3161f04b"
+    {
+        return Err("lifecycle_public_pair_not_allowlisted".to_string());
+    }
+    let start = &plan.allowlisted_start;
+    if start.state != StartState::PublicRc6Running
+        || start.product_version != "0.2.0-rc.6"
+        || start.monitor_sha256 != plan.baseline.monitor_sha256
+        || start.service_sha256 != plan.baseline.service_sha256
+        || start.uninstaller_sha256 != plan.baseline.uninstaller_sha256
+        || start.legacy_cli_sha256.is_some()
+        || start.win32_exit_code != 0
+        || start.service_specific_exit_code != 0
+    {
+        return Err("lifecycle_public_start_not_allowlisted".to_string());
     }
     Ok(())
 }
@@ -992,9 +1098,15 @@ fn validate_rollback_service_fixture(
     incompatible_fixture: &ServiceFixture,
     baseline: &Candidate,
     final_candidate: &Candidate,
+    public_pair: bool,
 ) -> Result<(), String> {
     validate_commit_sha(&fixture.build_source_commit_sha, "rollback_fixture")?;
-    if fixture.build_source_commit_sha != "c95fffc870226f0852048055d79fa4a18a14471c" {
+    let expected_source = if public_pair {
+        final_candidate.source_commit_sha.as_str()
+    } else {
+        "c95fffc870226f0852048055d79fa4a18a14471c"
+    };
+    if fixture.build_source_commit_sha != expected_source {
         return Err("lifecycle_plan_rollback_fixture_source_invalid".to_string());
     }
     validate_relative_artifact_path(&fixture.relative_path, "rollback_fixture")?;
@@ -1010,7 +1122,12 @@ fn validate_rollback_service_fixture(
         return Err("lifecycle_plan_rollback_fixture_identity_invalid".to_string());
     }
     validate_sha256(&fixture.sha256, "rollback_fixture")?;
-    if fixture.product_version != ROLLBACK_FIXTURE_PRODUCT_VERSION
+    let expected_version = if public_pair {
+        "0.2.0"
+    } else {
+        ROLLBACK_FIXTURE_PRODUCT_VERSION
+    };
+    if fixture.product_version != expected_version
         || fixture.behavior != ServiceFixtureBehavior::FailOnScmStart
     {
         return Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string());
@@ -1122,7 +1239,11 @@ mod tests {
         assert_eq!(plan.sequence, FIRST_SEQUENCE);
         assert_eq!(
             plan.allowlisted_start.state,
-            StartState::LegacyStopped1066_1
+            if plan.is_public_pair() {
+                StartState::PublicRc6Running
+            } else {
+                StartState::LegacyStopped1066_1
+            }
         );
         assert_eq!(
             plan.incompatible_service_fixture.behavior,
@@ -1138,7 +1259,11 @@ mod tests {
         );
         assert_eq!(
             plan.rollback_failing_service_fixture.product_version,
-            ROLLBACK_FIXTURE_PRODUCT_VERSION
+            if plan.is_public_pair() {
+                "0.2.0"
+            } else {
+                ROLLBACK_FIXTURE_PRODUCT_VERSION
+            }
         );
         assert_eq!(plan_sha256().len(), 64);
     }
@@ -1155,6 +1280,46 @@ mod tests {
                 Err("lifecycle_start_product_version_not_allowlisted".to_string())
             );
         }
+    }
+
+    #[test]
+    fn public_profile_cannot_relabel_the_historical_plan_or_cli_seed() {
+        let mut historical: ProofPlan =
+            serde_json::from_str(include_str!("windows_lifecycle_proof_plan.v1.json"))
+                .expect("historical v1");
+        assert!(!historical.is_public_pair());
+        assert!(historical.historical_cli_sha256().is_ok());
+        historical.profile = PUBLIC_PAIR_PROFILE.to_string();
+        assert!(validate_plan(&historical).is_err());
+        historical.allowlisted_start.legacy_cli_sha256 = None;
+        assert!(historical.historical_cli_sha256().is_err());
+        assert!(validate_plan(&historical).is_err());
+    }
+
+    #[test]
+    fn public_release_versions_follow_exact_candidate_source_identity() {
+        let mut plan: ProofPlan =
+            serde_json::from_str(include_str!("windows_lifecycle_proof_plan.v1.json"))
+                .expect("historical v1");
+        plan.profile = PUBLIC_PAIR_PROFILE.to_string();
+        plan.baseline.source_commit_sha = PUBLIC_BASELINE_SOURCE.to_string();
+        plan.final_candidate.source_commit_sha = PUBLIC_FINAL_SOURCE.to_string();
+        assert_eq!(
+            DesktopPhase::BaselinePrimary.expected_release_version(&plan),
+            Ok("0.2.0-rc.6")
+        );
+        assert_eq!(
+            DesktopPhase::BaselineSecondInstance.expected_release_version(&plan),
+            Ok("0.2.0-rc.6")
+        );
+        assert_eq!(
+            DesktopPhase::FinalPrimary.expected_release_version(&plan),
+            Ok("0.2.0")
+        );
+        plan.baseline.source_commit_sha = "f".repeat(40);
+        assert!(DesktopPhase::BaselinePrimary
+            .expected_release_version(&plan)
+            .is_err());
     }
 
     #[test]
@@ -1212,7 +1377,11 @@ mod tests {
 
         let mut plan = parse_plan().expect("plan");
         plan.rollback_failing_service_fixture
-            .build_source_commit_sha = plan.final_candidate.source_commit_sha.clone();
+            .build_source_commit_sha = if plan.is_public_pair() {
+            plan.baseline.source_commit_sha.clone()
+        } else {
+            plan.final_candidate.source_commit_sha.clone()
+        };
         assert_eq!(
             validate_plan(&plan),
             Err("lifecycle_plan_rollback_fixture_source_invalid".to_string())
@@ -1235,8 +1404,12 @@ mod tests {
         );
 
         let mut plan = parse_plan().expect("plan");
-        plan.rollback_failing_service_fixture.product_version =
-            env!("CARGO_PKG_VERSION").to_string();
+        plan.rollback_failing_service_fixture.product_version = if plan.is_public_pair() {
+            ROLLBACK_FIXTURE_PRODUCT_VERSION
+        } else {
+            env!("CARGO_PKG_VERSION")
+        }
+        .to_string();
         assert_eq!(
             validate_plan(&plan),
             Err("lifecycle_plan_rollback_fixture_behavior_invalid".to_string())
@@ -1714,6 +1887,7 @@ mod tests {
 
     fn passed_desktop_phase(phase: DesktopPhase) -> DesktopPhaseResult {
         let plan = parse_plan().expect("plan");
+        let release_version = phase.expected_release_version(&plan).expect("plan version");
         let state = phase.expected_collector_state();
         let active = state == DesktopCollectorState::Active;
         let incompatible = state == DesktopCollectorState::Incompatible;
@@ -1766,13 +1940,13 @@ mod tests {
                     protected_sample_current: active,
                     fallback_etw_disabled: !active,
                     service_version: active
-                        .then(|| env!("CARGO_PKG_VERSION").to_string())
+                        .then(|| release_version.to_string())
                         .or_else(|| incompatible.then(|| "0.2.0-rc.3".to_string())),
                     service_release_version: active
-                        .then(|| env!("CARGO_PKG_VERSION").to_string())
+                        .then(|| release_version.to_string())
                         .or_else(|| incompatible.then(|| "0.2.0-rc.3".to_string())),
                     negotiated_protocol_version: active.then_some(1),
-                    minimum_desktop_version: active.then(|| env!("CARGO_PKG_VERSION").to_string()),
+                    minimum_desktop_version: active.then(|| release_version.to_string()),
                     service_instance_id: active
                         .then(|| "00000065-00000000000000000000000000000001".to_string()),
                     service_detail: if incompatible {
