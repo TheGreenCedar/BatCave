@@ -83,14 +83,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
-        run: node scripts/linux-deb-post-public-smoke.mjs "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}"
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: node scripts/linux-deb-post-public-smoke.mjs "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${RELEASE_RUN_ID}"
 
       - name: Retain sanitized Linux deb post-public observation
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: batcave-linux-deb-post-public-${{ inputs.tag }}
-          path: post-public-output/linux-deb-observation.json
+          path: |
+            post-public-output/linux-deb-observation.json
+            post-public-output/linux-deb-release-evidence.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -138,14 +141,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
-        run: node scripts/linux-appimage-post-public-smoke.mjs "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}"
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: node scripts/linux-appimage-post-public-smoke.mjs "${RELEASE_TAG}" "${RELEASE_SOURCE_SHA}" "${RELEASE_RUN_ID}"
 
       - name: Retain sanitized Linux AppImage post-public observation
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: batcave-linux-appimage-post-public-${{ inputs.tag }}
-          path: post-public-output/linux-appimage-observation.json
+          path: |
+            post-public-output/linux-appimage-observation.json
+            post-public-output/linux-appimage-release-evidence.json
           if-no-files-found: warn
           retention-days: 30
 
