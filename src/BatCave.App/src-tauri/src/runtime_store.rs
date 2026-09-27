@@ -6738,6 +6738,9 @@ mod tests {
         );
         assert_eq!(detail.cpu_percent, 8.0);
         assert_eq!(detail.memory_bytes, 180);
+        assert_eq!(detail.io_bps, 210);
+        assert_eq!(detail.network_bps, 240);
+        assert_eq!(detail.threads, 3);
         assert_eq!(
             detail.coverage.cpu,
             MetricCoverage {
@@ -6769,6 +6772,26 @@ mod tests {
             standard_fallback_process_etw_disabled: false,
         };
         store.apply_raw_sample(observation(7, Some(context.clone())), 0.0, 10_000);
+        let envelope = crate::protocol::encode_snapshot(store.snapshot.clone()).unwrap();
+        let crate::protocol::types::ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+            panic!("runtime snapshot");
+        };
+        assert_eq!(payload.total_process_count, 5);
+        assert_eq!(payload.visible_process_count, 5);
+        let group = payload
+            .workloads
+            .iter()
+            .find_map(|workload| match workload {
+                crate::protocol::types::WorkloadDetailV4::Group(group)
+                    if group.label == "BatCave" =>
+                {
+                    Some(group)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(group.member_ids.len(), 4);
+        assert_eq!(group.member_ids.iter().collect::<HashSet<_>>().len(), 4);
         let group_id = store
             .full_view_rows
             .iter()

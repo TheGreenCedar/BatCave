@@ -1,4 +1,4 @@
-//! Workload membership requires both executable identity and observed process ancestry.
+//! Workload membership uses verified executable ancestry or sample-bound native app ownership.
 //! Display names never establish membership, and every aggregate key identifies its exact scope.
 use std::{
     collections::{HashMap, HashSet},
