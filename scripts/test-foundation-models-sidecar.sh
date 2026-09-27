@@ -9,12 +9,6 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   echo "Foundation Models sidecar tests require Apple Silicon." >&2
   exit 2
 fi
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--guard-controls-only" ) ]]; then
-  echo "Usage: $0 [--guard-controls-only]" >&2
-  exit 2
-fi
-guard_controls_only="${1:-}"
-
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 source_root="$repo_root/src/BatCave.App/src-tauri/swift/foundation-models-sidecar"
@@ -25,79 +19,25 @@ trap 'rm -rf -- "$test_root"' EXIT
 
 compile_swift() {
   local output="$1"
-  local protocol_source="$2"
-  local optimization="$3"
-  shift 3
+  shift
   xcrun --sdk macosx swiftc \
-    "$protocol_source" \
+    "$source_root/SidecarProtocol.swift" \
     "$@" \
     -parse-as-library \
     -target arm64-apple-macos12.0 \
     -sdk "$sdk_path" \
-    "$optimization" \
+    -O \
     -framework Foundation \
     -Xlinker -weak_framework \
     -Xlinker FoundationModels \
     -o "$output"
 }
 
-expect_guard_failure() {
-  local name="$1"
-  local protocol_source="$2"
-  local expected_failure="$3"
-  local executable="$test_root/${name}-control"
-  local log="$test_root/${name}-control.log"
-  compile_swift "$executable" "$protocol_source" -Onone "$source_root/SidecarProtocolTests.swift"
-  if "$executable" >"$log" 2>&1; then
-    echo "Disabling the $name guard unexpectedly passed its control." >&2
-    exit 1
-  fi
-  if ! grep -Fq "$expected_failure" "$log"; then
-    cat "$log" >&2
-    echo "The $name control failed for an unrelated reason." >&2
-    exit 1
-  fi
-  echo "Confirmed the test rejects disabled $name guard."
-}
-
-test_guard_controls() {
-  local baseline="$test_root/foundation-models-sidecar-control-baseline"
-  compile_swift "$baseline" "$source_root/SidecarProtocol.swift" -Onone \
-    "$source_root/SidecarProtocolTests.swift"
-  "$baseline"
-
-  sed '/!generation\.factDigest\.isEmpty,/d' "$source_root/SidecarProtocol.swift" \
-    >"$test_root/no-empty-digest-guard.swift"
-  expect_guard_failure \
-    "empty-digest" \
-    "$test_root/no-empty-digest-guard.swift" \
-    "empty fact digest was accepted"
-
-  sed 's/guard !data.isEmpty, data.count <= maximumInputBytes else {/guard !data.isEmpty else {/' \
-    "$source_root/SidecarProtocol.swift" >"$test_root/no-input-size-guard.swift"
-  expect_guard_failure \
-    "input-size" \
-    "$test_root/no-input-size-guard.swift" \
-    "oversized request was accepted"
-
-  sed '/guard data.count + 1 <= maximumOutputBytes else {/,/^    }/d' \
-    "$source_root/SidecarProtocol.swift" >"$test_root/no-output-size-guard.swift"
-  expect_guard_failure \
-    "output-size" \
-    "$test_root/no-output-size-guard.swift" \
-    "oversized response was accepted"
-}
-
-if [[ "$guard_controls_only" == "--guard-controls-only" ]]; then
-  test_guard_controls
-  exit 0
-fi
-
 protocol_tests="$test_root/foundation-models-sidecar-tests"
 sidecar="$test_root/batcave-foundation-models"
 unavailable_sidecar="$test_root/batcave-foundation-models-unavailable"
-compile_swift "$protocol_tests" "$source_root/SidecarProtocol.swift" -O "$source_root/SidecarProtocolTests.swift"
-compile_swift "$sidecar" "$source_root/SidecarProtocol.swift" -O "$source_root/FoundationModelsSidecar.swift"
+compile_swift "$protocol_tests" "$source_root/SidecarProtocolTests.swift"
+compile_swift "$sidecar" "$source_root/FoundationModelsSidecar.swift"
 "$protocol_tests"
 
 xcrun --sdk macosx swiftc \

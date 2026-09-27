@@ -281,12 +281,6 @@ jobs:
           "$DEVELOPER_DIR/usr/bin/xcodebuild" -version
           bash scripts/test-foundation-models-sidecar.sh
 
-      - name: Prove Foundation Models sidecar guards reject isolated mutations
-        if: github.event_name == 'pull_request' && github.head_ref == 'codex/tooling-test-repairs'
-        env:
-          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-        run: bash scripts/test-foundation-models-sidecar.sh --guard-controls-only
-
       - name: Reject Rust warnings for Apple Silicon
         run: cargo clippy --manifest-path src/BatCave.App/src-tauri/Cargo.toml --all-targets --target aarch64-apple-darwin -- -D warnings
 
