@@ -7314,13 +7314,24 @@ mod tests {
 
     #[test]
     fn snapshot_reads_are_passive() {
-        let state = RuntimeState::new().expect("engine starts");
+        let (collector, collect_count) = FakeCollector::new([FakeOutcome::Sample]);
+        let (state, base_dir) = state_with_collector("passive-snapshot-reads", collector, false);
+        assert_eq!(collect_count.load(TestOrdering::SeqCst), 0);
+        state.refresh_now().expect("initial sample publishes");
 
         let first = state.snapshot().expect("snapshot read succeeds");
         let second = state.snapshot().expect("snapshot read succeeds");
 
+        assert_eq!(first.sample_seq, 1);
         assert_eq!(first.sample_seq, second.sample_seq);
         assert_eq!(first.publication_seq, second.publication_seq);
+        assert_eq!(collect_count.load(TestOrdering::SeqCst), 1);
+        assert_eq!(
+            first.environment.data_directory,
+            Some(base_dir.display().to_string())
+        );
+        state.shutdown().expect("engine joins");
+        let _ = fs::remove_dir_all(base_dir);
     }
 
     #[test]
