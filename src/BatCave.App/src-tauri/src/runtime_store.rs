@@ -9197,7 +9197,8 @@ mod tests {
         let initial =
             store.set_query_with_intent(RuntimeQuery::default(), QueryWriteIntent::RuntimeOnly);
         assert_eq!(initial.sample_seq, 1);
-        assert_eq!(initial.process_view_rows.len(), 5);
+        assert_eq!(store.process_groups.len(), 5);
+        assert_eq!(initial.process_view_rows.len(), 11);
         feed_processes(&mut store, vec![sample("302", "worker", 5.0)], 11_000);
         let replacement = &store.snapshot;
         assert_eq!(replacement.sample_seq, 2);
@@ -9210,7 +9211,7 @@ mod tests {
         ));
         assert_eq!(store.process_groups.len(), 1);
         assert_eq!(store.full_view_rows.len(), 1);
-        assert_eq!(initial.process_view_rows.len(), 5);
+        assert_eq!(initial.process_view_rows.len(), 11);
     }
 
     fn attention_score_of(process: &ProcessSample) -> f64 {
