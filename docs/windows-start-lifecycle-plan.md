@@ -33,6 +33,7 @@ Use the OS package database to enumerate only the fixed family across users. Dep
 |---|---|
 | Bind publisher, name, family, version and external location | Exact signed package and manifest identity; reject colliding/foreign registrations without adopting them. Choose credentials before production signing changes. |
 | Scope desktop identity | Apply identity only to the monitor. `build.rs` currently embeds the release manifest through global linker arguments; service, proof and test binaries must not inherit GUI identity. |
+| Transfer Start-entry ownership | Disable the `windows_user_launch` raw-link creation path when package projection becomes the owner. Repeated launch, repair and concurrent stale processes must not create fresh raw links outside package cleanup; prove this during the transition. |
 | Integrate install, update and repair | Observe deployment results and read them back. Define retry, concurrent registration and user-removed-package repair behavior. Candidate failure restores the prior registration and service generation. |
 | Integrate uninstall | Remove all-user registration/provisioning before deleting external binaries. Failure keeps launch targets intact and reports incomplete cleanup; recovery must also handle later service-removal failure. |
 | Qualify native activation and data | Start launches the exact installed monitor with current WebView/native resources. Settings/cache remain governed by the existing retention policy. |
