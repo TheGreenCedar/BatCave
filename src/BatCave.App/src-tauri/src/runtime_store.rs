@@ -9126,7 +9126,14 @@ mod tests {
         store
             .persist_warm_cache()
             .expect("restricted cache write is skipped");
-        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        store
+            .persistence
+            .flush(Duration::from_secs(5))
+            .expect("isolated writes settle");
+        assert!(
+            !base_dir.join(WARM_CACHE_FILE).exists(),
+            "elevated rows must not be written to warm cache"
+        );
 
         let cache = WarmCache {
             seq: 7,
@@ -9140,7 +9147,10 @@ mod tests {
         store
             .shutdown_owned_resources()
             .expect("elevated shutdown purges cache");
-        assert!(!base_dir.join(WARM_CACHE_FILE).exists());
+        assert!(
+            !base_dir.join(WARM_CACHE_FILE).exists(),
+            "elevated shutdown must purge the prior cache"
+        );
         let _ = fs::remove_dir_all(base_dir);
     }
 
