@@ -20,6 +20,7 @@ const FIXTURES = [
   ["macos-dmg.json", "macos", "dmg"],
   ["macos-updater.json", "macos", "macos_updater"],
 ];
+const WORKFLOW_TEST = "scripts/validate-release-evidence-packet.test.mjs";
 const PACKAGE_ROLES = {
   appimage: "Linux AppImage package and updater payload",
   deb: "Linux deb package",
@@ -53,6 +54,37 @@ const SYNTHETIC_SIGNATURE_IDENTITIES = {
   developer_id: "synthetic Developer ID signer fixture",
   tauri_updater: "synthetic updater key fingerprint fixture",
 };
+
+function workflowJob(source, id) {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => line === `  ${id}:`);
+  assert.notEqual(start, -1, `workflow must define the ${id} job`);
+  let end = lines.findIndex((line, index) => index > start && /^  [a-z0-9_-]+:$/u.test(line));
+  if (end === -1) end = lines.length;
+  return lines.slice(start, end).join("\n");
+}
+
+function activeTestPattern({ capture = false } = {}) {
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(WORKFLOW_TEST)}[^#\\n]*`;
+  return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
+}
+
+function assertWorkflowCoverage(release, validation) {
+  for (const [label, job] of [
+    ["release prepare", workflowJob(release, "prepare")],
+    ["validation linux", workflowJob(validation, "linux")],
+    ["validation macos", workflowJob(validation, "macos")],
+  ]) {
+    assert.match(job, activeTestPattern(), `${label} must actively run ${WORKFLOW_TEST}`);
+  }
+}
+
+function commentActiveTest(source, id) {
+  const job = workflowJob(source, id);
+  const commented = job.replace(activeTestPattern({ capture: true }), "$1# $2");
+  assert.notEqual(commented, job, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  return source.replace(job, commented);
+}
 
 function authenticodeSignature(identity, packetKind, asset) {
   const fixture = packetKind === "schema_fixture";
@@ -727,12 +759,31 @@ test("release and validation workflows run the evidence contract tests", () => {
     path.join(ROOT, ".github", "workflows", "validation.yml"),
     "utf8",
   );
-  assert.equal(
-    releaseWorkflow.match(/scripts\/validate-release-evidence-packet\.test\.mjs/gu)?.length,
-    1,
+  assertWorkflowCoverage(releaseWorkflow, validationWorkflow);
+});
+
+test("workflow coverage rejects commented-out evidence test commands", () => {
+  const releaseWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release.yml"),
+    "utf8",
   );
-  assert.equal(
-    validationWorkflow.match(/scripts\/validate-release-evidence-packet\.test\.mjs/gu)?.length,
-    2,
+  const validationWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "validation.yml"),
+    "utf8",
   );
+  for (const [label, release, validation] of [
+    ["release prepare", commentActiveTest(releaseWorkflow, "prepare"), validationWorkflow],
+    [
+      "validation linux",
+      releaseWorkflow,
+      commentActiveTest(validationWorkflow, "linux"),
+    ],
+    [
+      "validation macos",
+      releaseWorkflow,
+      commentActiveTest(validationWorkflow, "macos"),
+    ],
+  ]) {
+    assert.throws(() => assertWorkflowCoverage(release, validation), new RegExp(`${label} must actively run`, "u"));
+  }
 });

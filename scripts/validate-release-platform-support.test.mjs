@@ -15,6 +15,7 @@ import {
 } from "./validate-release-platform-support.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const WORKFLOW_TEST = "scripts/validate-release-platform-support.test.mjs";
 const LINUX_CLI_DESTINATION = "/usr/bin/batcave-monitor-cli";
 const LINUX_CLI_SOURCE = "target/release/batcave-monitor-cli";
 const PROFILES = new Map(
@@ -69,6 +70,28 @@ function workflowJob(source, id) {
   let end = lines.findIndex((line, index) => index > start && /^  [a-z0-9_-]+:$/u.test(line));
   if (end === -1) end = lines.length;
   return lines.slice(start, end).join("\n");
+}
+
+function activeTestPattern({ capture = false } = {}) {
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(WORKFLOW_TEST)}[^#\\n]*`;
+  return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
+}
+
+function assertWorkflowCoverage(release, validation) {
+  for (const [label, job] of [
+    ["release prepare", workflowJob(release, "prepare")],
+    ["validation linux", workflowJob(validation, "linux")],
+    ["validation macos", workflowJob(validation, "macos")],
+  ]) {
+    assert.match(job, activeTestPattern(), `${label} must actively run ${WORKFLOW_TEST}`);
+  }
+}
+
+function commentActiveTest(source, id) {
+  const job = workflowJob(source, id);
+  const commented = job.replace(activeTestPattern({ capture: true }), "$1# $2");
+  assert.notEqual(job, commented, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  return source.replace(job, commented);
 }
 
 function shellReadonly(source, name) {
@@ -1180,12 +1203,30 @@ test("release and validation workflows run the focused platform contract tests",
     path.join(ROOT, ".github", "workflows", "validation.yml"),
     "utf8",
   );
-  assert.equal(
-    releaseWorkflow.match(/scripts\/validate-release-platform-support\.test\.mjs/gu)?.length,
-    1,
+  assertWorkflowCoverage(releaseWorkflow, validationWorkflow);
+});
+
+test("workflow coverage rejects commented-out platform test commands", () => {
+  const releaseWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release.yml"),
+    "utf8",
   );
-  assert.equal(
-    validationWorkflow.match(/scripts\/validate-release-platform-support\.test\.mjs/gu)?.length,
-    2,
+  const validationWorkflow = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "validation.yml"),
+    "utf8",
   );
+  for (const [label, release, validation] of [
+    ["release prepare", commentActiveTest(releaseWorkflow, "prepare"), validationWorkflow],
+    ["validation linux", releaseWorkflow, commentActiveTest(validationWorkflow, "linux")],
+    [
+      "validation macos",
+      releaseWorkflow,
+      commentActiveTest(validationWorkflow, "macos"),
+    ],
+  ]) {
+    assert.throws(
+      () => assertWorkflowCoverage(release, validation),
+      new RegExp(`${label} must actively run`, "u"),
+    );
+  }
 });

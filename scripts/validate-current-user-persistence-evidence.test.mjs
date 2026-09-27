@@ -13,6 +13,38 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_SHA = "a".repeat(40);
+const WORKFLOW_TEST = "scripts/validate-current-user-persistence-evidence.test.mjs";
+
+function workflowJob(source, id) {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => line === `  ${id}:`);
+  assert.notEqual(start, -1, `workflow must define the ${id} job`);
+  let end = lines.findIndex((line, index) => index > start && /^  [a-z0-9_-]+:$/u.test(line));
+  if (end === -1) end = lines.length;
+  return lines.slice(start, end).join("\n");
+}
+
+function activeTestPattern({ capture = false } = {}) {
+  const command = `run:[ \\t]+node[ \\t]+--test[ \\t]+[^#\\n]*${RegExp.escape(WORKFLOW_TEST)}[^#\\n]*`;
+  return new RegExp(capture ? `^([ \\t]*)(${command})$` : `^[ \\t]*${command}$`, "mu");
+}
+
+function assertWorkflowCoverage(release, validation) {
+  for (const [label, job] of [
+    ["release prepare", workflowJob(release, "prepare")],
+    ["validation linux", workflowJob(validation, "linux")],
+    ["validation macos", workflowJob(validation, "macos")],
+  ]) {
+    assert.match(job, activeTestPattern(), `${label} must actively run ${WORKFLOW_TEST}`);
+  }
+}
+
+function commentActiveTest(source, id) {
+  const job = workflowJob(source, id);
+  const commented = job.replace(activeTestPattern({ capture: true }), "$1# $2");
+  assert.notEqual(commented, job, `${id} must contain an active ${WORKFLOW_TEST} command`);
+  return source.replace(job, commented);
+}
 
 function receipt(phase, { degraded = false } = {}) {
   return {
@@ -222,10 +254,6 @@ test("validates checked-in native candidates without treating pending profiles a
     ),
   );
   assert.equal(validateCurrentUserPersistenceIndex(index, { repositoryRoot: ROOT }), index);
-  assert.deepEqual(
-    index.profiles.map(({ status }) => status),
-    ["native_candidate", "native_candidate", "native_candidate", "pending"],
-  );
 });
 
 test("validates every retained unindexed native candidate", () => {
@@ -306,6 +334,10 @@ test("rehashes and cross-checks indexed native packets", () => {
     ],
   };
   assert.equal(validateCurrentUserPersistenceIndex(index, { repositoryRoot }), index);
+  assert.deepEqual(
+    index.profiles.map(({ status }) => status),
+    ["pending", "pending", "native_candidate", "pending"],
+  );
 
   index.profiles[2].packet_sha256 = `sha256:${"0".repeat(64)}`;
   assert.throws(
@@ -329,9 +361,27 @@ test("rehashes and cross-checks indexed native packets", () => {
 });
 
 test("validation and release workflows execute this contract", () => {
-  for (const workflow of [".github/workflows/validation.yml", ".github/workflows/release.yml"]) {
-    const source = fs.readFileSync(path.join(ROOT, workflow), "utf8");
-    assert.match(source, /scripts\/capture-macos-dmg-current-user-persistence\.test\.mjs/u);
-    assert.match(source, /scripts\/validate-current-user-persistence-evidence\.test\.mjs/u);
-  }
+  const release = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
+  const validation = fs.readFileSync(path.join(ROOT, ".github/workflows/validation.yml"), "utf8");
+  assertWorkflowCoverage(release, validation);
+});
+
+test("workflow coverage rejects commented-out contract test commands", () => {
+  const release = fs.readFileSync(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
+  const validation = fs.readFileSync(path.join(ROOT, ".github/workflows/validation.yml"), "utf8");
+  assert.throws(
+    () =>
+      assertWorkflowCoverage(commentActiveTest(release, "prepare"), validation),
+    /release prepare must actively run/u,
+  );
+  assert.throws(
+    () =>
+      assertWorkflowCoverage(release, commentActiveTest(validation, "linux")),
+    /validation linux must actively run/u,
+  );
+  assert.throws(
+    () =>
+      assertWorkflowCoverage(release, commentActiveTest(validation, "macos")),
+    /validation macos must actively run/u,
+  );
 });

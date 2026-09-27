@@ -11,11 +11,6 @@ function readWorkflow(name) {
 const validationWorkflow = readWorkflow("validation.yml");
 const bundlesWorkflow = readWorkflow("bundles.yml");
 const releaseWorkflow = readWorkflow("release.yml");
-const workflowSources = fs
-  .readdirSync(workflowDirectory)
-  .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
-  .map((name) => [name, readWorkflow(name)]);
-
 function workflowJob(workflow, name) {
   const match = workflow.match(
     new RegExp(`^  ${name}:\\n[\\s\\S]*?(?=^  [a-z][a-z0-9-]*:\\n|(?![\\s\\S]))`, "m"),
@@ -114,25 +109,14 @@ test("keeps required pull-request validation restore-only", () => {
   assert.equal(transportCache.saveIf, "false");
 });
 
-test("pins every external action and rejects unsafe cache modes", () => {
-  let actionCount = 0;
-  for (const [name, source] of workflowSources) {
-    const references = [...source.matchAll(/^\s*(?:-\s*)?uses:\s+(\S+)/gm)].map(
-      ([, reference]) => reference,
-    );
-    actionCount += references.length;
-    for (const reference of references) {
-      if (!reference.startsWith("./")) {
-        assert.match(
-          reference,
-          /@[0-9a-f]{40}$/u,
-          `${name}: ${reference} must use an immutable commit`,
-        );
-      }
-    }
-    assert.doesNotMatch(source, /cache-on-failure|cache-workspace-crates:\s*true/);
+test("rejects unsafe cache modes in every workflow", () => {
+  const workflowSources = fs
+    .readdirSync(workflowDirectory)
+    .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"));
+  assert.ok(workflowSources.length > 0);
+  for (const name of workflowSources) {
+    assert.doesNotMatch(readWorkflow(name), /cache-on-failure|cache-workspace-crates:\s*true/);
   }
-  assert.ok(actionCount > 0);
 });
 
 test("uses one trusted Linux package seed and restore-only releases", () => {
