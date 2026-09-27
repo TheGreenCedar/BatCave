@@ -7765,24 +7765,51 @@ mod native {
             EtwSessionIdentityV1, WindowsEtwOwnerAcquire, WindowsEtwOwnerGuard,
             ETW_LEASE_SCHEMA_VERSION,
         };
+        use windows_sys::Win32::Security::{TokenUser, TOKEN_USER};
 
         #[test]
         fn mutable_lease_verification_does_not_block_atomic_replacement() {
             let temporary = tempfile::tempdir().expect("isolated protected-root fixture");
             let program_data = temporary.path().to_path_buf();
             let mut principals = SecurityPrincipals::load_with_service().expect("fixed principals");
-            let directory = open_directory(&program_data, "fixture owner").expect("fixture opens");
-            let security = OwnedSecurityInfo::read(directory.raw(), "fixture owner")
-                .expect("fixture security");
-            let sid_size = unsafe { GetLengthSid(security.owner) } as usize;
-            assert!(sid_size > 0);
-            // Only this isolated fixture maps its user owner to the system role;
+            let mut token = ptr::null_mut();
+            assert_ne!(
+                unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+                0,
+                "fixture token opens"
+            );
+            let token = OwnedHandle::new(token, "fixture token").expect("fixture token handle");
+            let buffer_size = size_of::<TOKEN_USER>() + SECURITY_MAX_SID_SIZE as usize;
+            let mut user_buffer = vec![0_usize; buffer_size.div_ceil(size_of::<usize>())];
+            let mut returned = 0_u32;
+            assert_ne!(
+                unsafe {
+                    GetTokenInformation(
+                        token.raw(),
+                        TokenUser,
+                        user_buffer.as_mut_ptr().cast(),
+                        (user_buffer.len() * size_of::<usize>()) as u32,
+                        &mut returned,
+                    )
+                },
+                0,
+                "fixture token user is available"
+            );
+            let user_sid = unsafe { (*user_buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+            assert_eq!(
+                unsafe { EqualSid(user_sid, principals.administrators.as_psid()) },
+                0,
+                "fixture user and administrators must remain distinct"
+            );
+            let sid_size = unsafe { GetLengthSid(user_sid) } as usize;
+            assert!((1..=SECURITY_MAX_SID_SIZE as usize).contains(&sid_size));
+            // An elevated temporary directory may be owned by Administrators.
+            // Only this fixture maps the token user to the system role;
             // production still loads the fixed LocalSystem SID.
             principals.system = OwnedSid(
-                unsafe { std::slice::from_raw_parts(security.owner.cast::<u8>(), sid_size) }
-                    .to_vec(),
+                unsafe { std::slice::from_raw_parts(user_sid.cast::<u8>(), sid_size) }.to_vec(),
             );
-            drop((security, directory));
+            drop(token);
             let system_sid = sid_string(&principals.system).expect("fixture owner SID");
             let service_sid = sid_string(principals.service().unwrap()).unwrap();
             let product = program_data.join(PRODUCT_ROOT_NAME);
