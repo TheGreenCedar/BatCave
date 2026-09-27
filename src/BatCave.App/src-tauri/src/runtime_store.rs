@@ -5066,6 +5066,12 @@ mod tests {
         }));
         let mut last_collector_revision = 0;
         let first_completed = Instant::now() - Duration::from_secs(5);
+        // Both synthetic samples follow this fixture-local anchor, just as real
+        // collector completions follow the process clock's initialization.
+        store.clock = Arc::new(MonotonicWireClock::with_origin(
+            first_completed - Duration::from_secs(1),
+            store.clock.at_ms(first_completed).saturating_sub(1_000),
+        ));
 
         let publication = |revision, completed_at, network_received_total_bytes| {
             let mut system = empty_system();
