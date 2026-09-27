@@ -98,6 +98,17 @@ function ubuntuHost(host, glibcVersion) {
 
 function packetFromObservedState(kind, receipt, state, origin, glibcVersion) {
   const { asset, packet } = state;
+  const guiObserved = kind === "deb" && state.gui !== undefined && state.gui !== null;
+  if (
+    guiObserved &&
+    (state.gui.observation?.mapped !== true ||
+      state.gui.observation.rendered_frame !== true ||
+      state.gui.observation.artifact_sha256 !== asset.sha256 ||
+      state.gui.settlement?.operation !== "gui" ||
+      state.gui.settlement.process_tree_settled !== true)
+  ) {
+    fail("packet requires the matching mapped GUI and settled session observation");
+  }
   if (
     packet.result !== "passed" ||
     packet.source.source_sha !== receipt.source_sha ||
@@ -122,11 +133,6 @@ function packetFromObservedState(kind, receipt, state, origin, glibcVersion) {
   const osVersion = ubuntuHost(packet.host, glibcVersion);
   const check = (status, outcome) => ({ status, outcome });
   const limitations = {
-    desktop_window_not_observed: {
-      disposition: "blocked",
-      summary:
-        "Packaged CLI phases ran; no mapped production desktop window or rendered UI was observed.",
-    },
     github_hosted_ubuntu_22_04: {
       disposition: "not_applicable",
       summary:
@@ -135,9 +141,22 @@ function packetFromObservedState(kind, receipt, state, origin, glibcVersion) {
     qualification_review_pending: {
       disposition: "blocked",
       summary:
-        "Blocked launch and independent native qualification review remain; support-contract status is unchanged.",
+        "Independent native qualification review remains; support-contract status is unchanged.",
     },
   };
+  if (guiObserved) {
+    limitations.private_display_render_review_pending = {
+      disposition: "blocked",
+      summary:
+        "Mapped production window and nonblank frame were captured on an owned private X display; independent screenshot review and attended desktop qualification remain.",
+    };
+  } else {
+    limitations.desktop_window_not_observed = {
+      disposition: "blocked",
+      summary:
+        "Packaged CLI phases ran; no mapped production desktop window or rendered UI was observed.",
+    };
+  }
   if (kind === "deb") {
     limitations.deb_checksum_attestation_only = {
       disposition: "not_applicable",
@@ -237,10 +256,15 @@ function packetFromObservedState(kind, receipt, state, origin, glibcVersion) {
           "passed",
           "Packaged CLI reported degraded persistence and retained corrupt settings bytes.",
         ),
-        launch: check(
-          "blocked",
-          "Packaged CLI phases completed; a mapped production desktop window and rendered UI remain unobserved.",
-        ),
+        launch: guiObserved
+          ? check(
+              "passed",
+              "Exact public deb GUI executable produced a mapped current-user production window and nonblank PNG in an owned authenticated Xvfb and D-Bus session; screenshot review remains pending.",
+            )
+          : check(
+              "blocked",
+              "Packaged CLI phases completed; a mapped production desktop window and rendered UI remain unobserved.",
+            ),
         release_identity: check(
           "passed",
           "Packaged CLI phases reported the exact public source, version and package install kind.",
@@ -264,7 +288,9 @@ function packetFromObservedState(kind, receipt, state, origin, glibcVersion) {
         owned_runtime_cleanup: check(
           "passed",
           kind === "deb"
-            ? "Owned invocation process groups and all five root units settled before workspace cleanup."
+            ? guiObserved
+              ? "Owned invocation process groups, all five package units and the standard-user GUI unit settled before workspace cleanup."
+              : "Owned invocation process groups and all five root units settled before workspace cleanup."
             : "Owned invocation process groups settled before private workspace cleanup.",
         ),
         user_state_policy: check(
@@ -296,6 +322,7 @@ function buildDebEvidence(receipt, captureResult) {
     receipt,
   );
   const { asset, packet, rootSettlements, telemetry } = state;
+  linuxPersistenceCaptureInternals.requireVerifiedGuiObservation(state.gui);
   if (packet.result !== "passed") fail("public deb lifecycle observation did not pass");
   const observedChecks = {
     anonymous_public_bytes: "passed",
@@ -309,6 +336,9 @@ function buildDebEvidence(receipt, captureResult) {
         ? "passed"
         : "failed",
     advancing_telemetry: telemetry.samples_advanced ? "passed" : "failed",
+    mapped_production_gui: "passed",
+    nonblank_production_frame: "passed",
+    gui_process_settlement: "passed",
     package_owned_files_removed: packet.checks.application_removed ? "passed" : "failed",
     root_process_settlement:
       rootSettlements.length === 5 &&
@@ -541,14 +571,16 @@ async function run(profile, selectors) {
     const packet = origin
       ? buildReleasePacket(profile, verification.receipt, result, origin)
       : null;
-    return { evidence, packet };
+    const gui =
+      profile.kind === "deb" ? profile.requireCapture(result, verification.receipt).gui : null;
+    return { evidence, packet, gui };
   } finally {
     fs.rmSync(workspace, { force: true, recursive: true });
   }
 }
 
 async function main(profile, argv) {
-  const { evidence, packet } = await run(profile, parseSelectors(profile, argv));
+  const { evidence, packet, gui } = await run(profile, parseSelectors(profile, argv));
   try {
     fs.lstatSync(OUTPUT_DIRECTORY);
     fail("fixed post-public output directory must not already exist");
@@ -573,6 +605,18 @@ async function main(profile, argv) {
           flag: "wx",
           mode: 0o600,
         },
+      );
+    }
+    if (gui) {
+      linuxPersistenceCaptureInternals.requireVerifiedGuiObservation(gui);
+      fs.writeFileSync(path.join(OUTPUT_DIRECTORY, "linux-deb-gui.png"), gui.screenshot, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      fs.writeFileSync(
+        path.join(OUTPUT_DIRECTORY, "linux-deb-gui-observation.json"),
+        `${JSON.stringify({ ...gui.observation, settlement: gui.settlement }, null, 2)}\n`,
+        { flag: "wx", mode: 0o600 },
       );
     }
   } catch (error) {

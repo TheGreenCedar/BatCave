@@ -436,3 +436,65 @@ for (const { name, internals } of profiles) {
     );
   });
 }
+
+test("deb GUI mapping describes only observed production launch and keeps qualification review blocked", async () => {
+  const receipt = await genuinePublicReceipt();
+  const { internals } = profiles.find(({ name }) => name === "deb");
+  const state = observedState(receipt, "deb");
+  state.gui = {
+    observation: { mapped: true, rendered_frame: true, artifact_sha256: state.asset.sha256 },
+    settlement: { operation: "gui", process_tree_settled: true },
+  };
+  const origin = { runId: 123, runAttempt: 2 };
+  const packet = internals.packetFromObservedState(receipt, state, origin, "2.35");
+  assert.equal(packet.checks.runtime.launch.status, "passed");
+  assert.match(
+    packet.checks.runtime.launch.outcome,
+    /mapped current-user production window.*screenshot review remains pending/u,
+  );
+  assert.equal(packet.limitations.desktop_window_not_observed, undefined);
+  assert.equal(packet.limitations.private_display_render_review_pending.disposition, "blocked");
+  assert.equal(packet.limitations.qualification_review_pending.disposition, "blocked");
+  assert.match(packet.checks.runtime.telemetry.outcome, /does not prove UI updates/u);
+  const appimage = profiles.find(({ name }) => name === "AppImage");
+  const appimageState = observedState(receipt, "appimage");
+  appimageState.gui = structuredClone(state.gui);
+  appimageState.gui.observation.artifact_sha256 = appimageState.asset.sha256;
+  const unsupported = appimage.internals.packetFromObservedState(
+    receipt,
+    appimageState,
+    origin,
+    "2.35",
+  );
+  assert.equal(
+    unsupported.checks.runtime.launch.status,
+    "blocked",
+    "deb observation must not qualify AppImage launch",
+  );
+  assert.match(
+    packet.checks.cleanup.owned_runtime_cleanup.outcome,
+    /standard-user GUI unit settled/u,
+  );
+  for (const mutate of [
+    (value) => (value.observation.mapped = false),
+    (value) => (value.observation.artifact_sha256 = `sha256:${"b".repeat(64)}`),
+    (value) => (value.settlement.process_tree_settled = false),
+    (value) => (value.settlement.operation = "install"),
+  ]) {
+    const invalid = structuredClone(state);
+    mutate(invalid.gui);
+    assert.throws(
+      () => internals.packetFromObservedState(receipt, invalid, origin, "2.35"),
+      /mapped GUI and settled session/u,
+    );
+  }
+  // Pure mapping fixtures never cross the production native-result brand.
+  const verifiedOrigin = internals.verifyOrigin(
+    { tag: receipt.tag, sourceSha, runId: "123" },
+    originalRun(),
+  );
+  assert.throws(
+    () => internals.buildReleasePacket(receipt, state, verifiedOrigin),
+    /in-process verified native result/u,
+  );
+});

@@ -56,6 +56,9 @@ const verifiedPublicDebCaptureStates = new WeakMap();
 const verifiedPublicAppImageCaptureResults = new WeakSet();
 const verifiedPublicAppImageCaptureStates = new WeakMap();
 const verifiedRootUnitSettlementReceipts = new WeakSet();
+const verifiedGuiObservations = new WeakSet();
+const GUI_HELPER = path.join(SCRIPT_DIRECTORY, "capture-linux-packaged-gui.py");
+const GUI_EXECUTABLE = "/usr/bin/batcave-monitor";
 const HOSTILE_ROOT_SETTLEMENT_PROGRAM =
   '/usr/bin/sleep 300 & normal=$!; /usr/bin/setsid /usr/bin/sleep 300 & escaped=$!; /usr/bin/printf \'{"schema_version":1,"pids":[%s,%s]}\\n\' "$normal" "$escaped"';
 
@@ -483,7 +486,7 @@ function requireFixedExecutable(file) {
   }
 }
 
-function rootUnitPayload(operation, value) {
+function rootUnitPayload(operation, value, unit) {
   if (operation === "apt-update") return ["/usr/bin/apt-get", "--quiet=2", "update"];
   if (operation === "apt-install") {
     return [
@@ -503,6 +506,17 @@ function rootUnitPayload(operation, value) {
   if (operation === "purge") return ["/usr/bin/dpkg", "--purge", DEB_PACKAGE_NAME];
   if (operation === "hostile-settlement") {
     return ["/usr/bin/bash", "-c", HOSTILE_ROOT_SETTLEMENT_PROGRAM];
+  }
+  if (operation === "gui") {
+    return [
+      "/usr/bin/python3.10",
+      "-I",
+      GUI_HELPER,
+      "session",
+      value.workspace,
+      value.artifact,
+      unit,
+    ];
   }
   fail("unknown fixed root unit operation");
 }
@@ -580,9 +594,10 @@ async function runFixedRootUnit(operation, value = null) {
   for (const executable of ["/usr/bin/sudo", "/usr/bin/systemd-run", "/usr/bin/systemctl"]) {
     requireFixedExecutable(executable);
   }
-  const payload = rootUnitPayload(operation, value);
-  requireFixedExecutable(payload[0]);
   const unit = `batcave-deb-${operation}-${crypto.randomBytes(12).toString("hex")}.service`;
+  const payload = rootUnitPayload(operation, value, unit);
+  requireFixedExecutable(payload[0]);
+  const guiIdentity = operation === "gui" ? standardGuiIdentity() : null;
   let interrupted = null;
   let resolveSignal;
   const signalReceived = new Promise((resolve) => {
@@ -616,6 +631,7 @@ async function runFixedRootUnit(operation, value = null) {
       "--property=TasksMax=256",
       "--property=ProtectControlGroups=yes",
       "--property=Delegate=no",
+      ...(guiIdentity ? guiUnitUserProperties(guiIdentity.uid, guiIdentity.gid) : []),
       "--setenv=LANG=C",
       "--setenv=LC_ALL=C",
       // dpkg resolves ldconfig and start-stop-daemon from the system administration directories.
@@ -675,7 +691,134 @@ async function runFixedRootUnit(operation, value = null) {
     process_tree_settled: settlement.process_tree_settled,
   });
   verifiedRootUnitSettlementReceipts.add(receipt);
-  return { output: outcome.output, receipt };
+  return { output: outcome.output, receipt, unit };
+}
+
+function standardGuiIdentity() {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  guiUnitUserProperties(uid, gid);
+  return { uid, gid };
+}
+
+function guiUnitUserProperties(uid, gid) {
+  if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) {
+    fail("packaged GUI capture requires a nonzero current UID and GID");
+  }
+  return [`--property=User=${uid}`, `--property=Group=${gid}`];
+}
+
+// Pure validation is testable; only captureInstalledGui can grant native authority.
+function validateGuiObservation(observation, expected, screenshot) {
+  if (
+    observation?.schema_version !== 1 ||
+    observation.proof_scope !== "packaged_linux_gui_window" ||
+    observation.artifact_sha256 !== expected.artifactDigest ||
+    observation.gui_sha256 !== expected.guiDigest ||
+    observation.uid !== expected.uid ||
+    observation.gid !== expected.gid ||
+    observation.unit !== expected.unit ||
+    !Number.isSafeInteger(observation.pid) ||
+    observation.pid <= 1 ||
+    !/^[1-9][0-9]*$/u.test(observation.start_time_ticks ?? "") ||
+    !Number.isSafeInteger(observation.window_id) ||
+    observation.window_id <= 0 ||
+    observation.title !== "BatCave Monitor" ||
+    observation.mapped !== true ||
+    observation.rendered_frame !== true ||
+    !Number.isSafeInteger(observation.width) ||
+    observation.width < 720 ||
+    observation.width > 1440 ||
+    !Number.isSafeInteger(observation.height) ||
+    observation.height < 680 ||
+    observation.height > 1000 ||
+    !Number.isSafeInteger(observation.color_count) ||
+    observation.color_count < 32 ||
+    !Number.isFinite(observation.standard_deviation) ||
+    observation.standard_deviation < 0.02 ||
+    observation.standard_deviation > 1 ||
+    !Buffer.isBuffer(screenshot) ||
+    screenshot.length < 24 ||
+    screenshot.length > 8 * 1024 * 1024 ||
+    !screenshot.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+    screenshot.toString("ascii", 12, 16) !== "IHDR" ||
+    screenshot.readUInt32BE(16) !== observation.width ||
+    screenshot.readUInt32BE(20) !== observation.height ||
+    sha256(screenshot) !== observation.screenshot_sha256
+  ) {
+    fail("packaged GUI observation does not match exact bytes, owned identity and rendered window");
+  }
+  return observation;
+}
+
+function requireVerifiedGuiObservation(gui) {
+  if (!gui || !verifiedGuiObservations.has(gui)) {
+    fail("GUI observation requires the in-process settled production capture");
+  }
+  requireRootUnitSettlementReceipt(gui.settlement);
+  if (gui.settlement.operation !== "gui" || !gui.settlement.process_tree_settled) {
+    fail("packaged GUI descendants did not settle");
+  }
+  if (sha256(gui.screenshot) !== gui.observation.screenshot_sha256) {
+    fail("production GUI screenshot changed after settled observation");
+  }
+  return gui;
+}
+
+async function captureInstalledGui(artifact, artifactDigest, workspace) {
+  const identity = standardGuiIdentity();
+  for (const executable of [
+    "/usr/bin/python3.10",
+    "/usr/bin/Xvfb",
+    "/usr/bin/dbus-run-session",
+    "/usr/bin/import-im6.q16",
+    "/usr/bin/identify-im6.q16",
+    "/usr/bin/dpkg-deb",
+    GUI_EXECUTABLE,
+  ]) {
+    requireFixedExecutable(executable);
+  }
+  readStableRegularFile(GUI_HELPER, "fixed GUI helper");
+  const guiDigest = readStableRegularFile(GUI_EXECUTABLE, "installed production GUI").digest;
+  const guiWorkspace = path.join(workspace, "gui");
+  createPrivateDirectory(guiWorkspace);
+  const result = await runFixedRootUnit("gui", { workspace: guiWorkspace, artifact });
+  requireRootUnitSettlementReceipt(result.receipt);
+  const screenshotFile = path.join(guiWorkspace, "linux-deb-gui.png");
+  const observationFile = path.join(guiWorkspace, "linux-deb-gui-observation.json");
+  for (const file of [screenshotFile, observationFile]) {
+    const metadata = fs.lstatSync(file);
+    const maximum = file === screenshotFile ? 8 * 1024 * 1024 : 16 * 1024;
+    if (
+      metadata.uid !== identity.uid ||
+      (metadata.mode & 0o777) !== 0o600 ||
+      metadata.size <= 0 ||
+      metadata.size > maximum
+    )
+      fail("GUI evidence is not private current-user output");
+  }
+  const screenshot = readStableRegularFile(screenshotFile, "production GUI screenshot").bytes;
+  const observation = JSON.parse(
+    readStableRegularFile(observationFile, "production GUI observation").bytes,
+  );
+  validateGuiObservation(
+    observation,
+    { ...identity, artifactDigest, guiDigest, unit: result.unit },
+    screenshot,
+  );
+  if (
+    readStableRegularFile(GUI_EXECUTABLE, "installed production GUI").digest !== guiDigest ||
+    readStableRegularFile(artifact, "private public deb").digest !== artifactDigest
+  ) {
+    fail("production GUI or public deb changed after observation");
+  }
+  const gui = Object.freeze({
+    observation: Object.freeze(observation),
+    screenshot,
+    settlement: result.receipt,
+  });
+  verifiedGuiObservations.add(gui);
+  return gui;
 }
 
 async function runRootSettlementHostileProof() {
@@ -1126,7 +1269,12 @@ async function captureLifecycle({
 async function captureDeb(
   source,
   sourceSha,
-  { expectedArtifact = null, rootSettlementRequired = false, telemetryRequired = false } = {},
+  {
+    expectedArtifact = null,
+    rootSettlementRequired = false,
+    telemetryRequired = false,
+    guiRequired = false,
+  } = {},
 ) {
   const workspace = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "batcave-linux-deb-persistence-")),
@@ -1152,6 +1300,7 @@ async function captureDeb(
     const telemetry = telemetryRequired
       ? await runInstalledTelemetryProof(executable, sourceSha, metadata.version, workspace)
       : null;
+    const gui = guiRequired ? await captureInstalledGui(artifact, artifactDigest, workspace) : null;
     const packet = await captureLifecycle({
       expectedAppVersion: metadata.version,
       artifactDigest,
@@ -1185,7 +1334,7 @@ async function captureDeb(
     ) {
       fail("verified public deb root unit settlement receipts are incomplete");
     }
-    return { packet, rootSettlements, telemetry };
+    return { packet, rootSettlements, telemetry, gui };
   } finally {
     let cleanupError = null;
     try {
@@ -1208,10 +1357,15 @@ async function captureVerifiedPublicDeb(receipt) {
   const asset = verified.assets.find(({ name }) => name === role.name);
   if (!asset) fail("verified public release receipt has no Linux deb package");
 
-  const { packet, rootSettlements, telemetry } = await captureDeb(
+  const { packet, rootSettlements, telemetry, gui } = await captureDeb(
     path.join(directory, role.name),
     verified.source_sha,
-    { expectedArtifact: asset, rootSettlementRequired: true, telemetryRequired: true },
+    {
+      expectedArtifact: asset,
+      rootSettlementRequired: true,
+      telemetryRequired: true,
+      guiRequired: true,
+    },
   );
   if (packet.result !== "passed") fail("verified public deb lifecycle did not pass");
   if (packet.artifact.sha256 !== asset.sha256) {
@@ -1221,6 +1375,7 @@ async function captureVerifiedPublicDeb(receipt) {
     fail("verified public deb lifecycle version does not match the public verification receipt");
   }
   if (!telemetry?.samples_advanced) fail("verified public deb telemetry proof did not pass");
+  requireVerifiedGuiObservation(gui);
   const result = Object.freeze({
     schema_version: 1,
     proof_scope: "post_public_deb_native_observation",
@@ -1234,6 +1389,7 @@ async function captureVerifiedPublicDeb(receipt) {
     receipt: verified,
     rootSettlements,
     telemetry,
+    gui,
   });
   return result;
 }
@@ -1443,6 +1599,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 
 export const linuxPersistenceCaptureInternals = {
+  guiUnitUserProperties,
+  validateGuiObservation,
+  requireVerifiedGuiObservation,
   buildPacket,
   captureVerifiedPublicAppImage,
   captureVerifiedPublicDeb,

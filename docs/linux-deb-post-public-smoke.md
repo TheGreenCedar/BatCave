@@ -37,15 +37,32 @@ The installed package must own executable regular GUI and CLI files. The job rec
 - corrupt-settings degradation with visible persistence failure and preserved corrupt bytes; and
 - a fixed two-tick strict packaged CLI benchmark that requires advancing core-runtime telemetry.
 
+The public deb capture also launches `/usr/bin/batcave-monitor` with no arguments, using its production entry point. The fixed Python helper streams only the GUI regular-file member from the exact verified deb and requires the installed executable to have identical bytes. A separate transient unit runs the entire GUI observation as the invoking nonzero UID/GID. It inherits the same cgroup lifetime, output, task and settlement bounds as package operations; no root GUI or user-systemd manager is required.
+
+The existing Ubuntu runner must provide regular executable files for `/usr/bin/python3.10`, `/usr/bin/Xvfb`, `/usr/bin/dbus-run-session`, `/usr/bin/import-im6.q16` and `/usr/bin/identify-im6.q16`, plus libX11 and the established app runtime libraries. The capture does not install additional tools. Missing tools fail the capture. It creates an owned Xvfb display with TCP disabled and a private MIT-MAGIC-COOKIE authority file, then a private D-Bus session. HOME, XDG directories and TMPDIR are isolated; caller credentials, fixture settings and the persistence-proof environment flag are not inherited. WebKit sandbox controls are unchanged. The [X.Org authorization contract](https://www.x.org/docs/man/man.pdf) permits the private FamilyWild record to authenticate the display selected by `-displayfd`; it does not disable authentication.
+
+The observer requires a mapped `BatCave Monitor` window whose X11 PID matches the launched process. It checks the PID generation, current UID, exact owned unit cgroup, executable inode and executable digest before and after capturing that window. The PNG must match the window dimensions and contain at least 32 colors with normalized standard deviation of at least 0.02; a solid mapped frame does not pass. These mechanical checks establish a nonblank frame, not the correctness of every rendered control or live telemetry in the GUI. The private PNG must still be inspected independently.
+
+```mermaid
+flowchart LR
+  Public[Verified public deb] --> Installed[Matching installed GUI bytes]
+  Installed --> Unit[Standard-user owned cgroup]
+  Unit --> Window[Authenticated Xvfb and D-Bus production window]
+  Window --> Capture[PID and generation bound PNG]
+  Capture --> Settled[GUI and package descendants settled]
+  Settled --> Packet[Validated packet and fixed workflow artifacts]
+  Packet --> Review[Independent render and qualification review pending]
+```
+
 Purge is unconditional after any install attempt. Inventory acquisition errors cannot skip it. Cleanup distinguishes a truly absent dpkg record from a failed query, treats dangling links as residue, requires the GUI, CLI, and observed package-owned files to be gone, preserves the documented current-user state root, and checks an outside sentinel.
 
-The script writes and prints sanitized JSON only after public verification, native checks, root-unit settlement, purge, residue checks, and workspace cleanup complete. The existing `linux_deb_post_public_observation` retains `release_evidence_eligible: false`; the current-user `native_candidate` packet is never relabeled or promoted.
+The script writes and prints sanitized JSON only after public verification, native checks, package and GUI unit settlement, purge, residue checks, and workspace cleanup complete. The existing `linux_deb_post_public_observation` retains `release_evidence_eligible: false`; the current-user `native_candidate` packet is never relabeled or promoted. It also writes fixed private `post-public-output/linux-deb-gui.png` and `linux-deb-gui-observation.json` files with the byte/window identity and settlement receipt. The existing replay workflow retains these two files beside the sanitized observation and packet for 30 days. They may contain local process names or window pixels and are workflow evidence only, never public release assets; cookies, user-state files and environment contents are not retained. File permissions protect the local capture workspace; uploaded artifact access follows repository visibility and must not be treated as confidential storage.
 
-## Incomplete public-release packet
+## Public-release packet and remaining qualification
 
 When the original release run ID is supplied, the driver also writes `post-public-output/linux-deb-release-evidence.json`. It rechecks the original publication job, source commit, run attempt, immutable release, and retained candidate through the existing origin verifier. Only matching in-process public-verification and native-capture receipts can produce this additional packet. It records the exact observed Ubuntu 22.04 x86_64/glibc 2.35 host, public package bytes, checksum-and-attestation trust, packaged CLI checks, and cleanup. The existing release-evidence validator runs before either output is written. Both fixed sanitized files are retained for 30 days.
 
-`runtime.launch` is **blocked**: the capture runs packaged CLI phases and has not observed a mapped production desktop window or rendered UI. Its `platform.proof.native: observed` describes those actual native CLI phases, not completed GUI or oldest-host qualification. The packet keeps `desktop_window_not_observed` and `qualification_review_pending` blocked, preserves `deb_checksum_attestation_only`, and leaves every support-contract `native_oldest_supported` field pending. Schema validation does not resolve those blocks or approve the release.
+For a successfully observed deb GUI, `runtime.launch` records the mapped current-user production window and nonblank frame. It keeps `private_display_render_review_pending` and `qualification_review_pending` blocked, preserves `deb_checksum_attestation_only`, and leaves every support-contract `native_oldest_supported` field pending. A CLI-only packet still keeps `runtime.launch` and `desktop_window_not_observed` blocked. Schema validation does not inspect the screenshot, complete attended desktop acceptance, qualify other hosts, or approve the release.
 
 The shared AppImage lane writes `linux-appimage-release-evidence.json` with the same launch block. It records the verified updater-key identity and keeps extract-and-run, missing network isolation, and unexercised A-to-B updating explicit. `package_install` is `not_applicable`; extraction is not conventional installation.
 
@@ -56,4 +73,4 @@ node scripts/linux-deb-post-public-smoke.mjs v0.2.0 2355d82b08a097259a67ccd789da
 node scripts/validate-release-evidence-packet.mjs post-public-output/linux-deb-release-evidence.json
 ```
 
-These commands perform native install/purge on the dedicated Ubuntu host; they are not a local source-test command. Completing the launch check requires a separately owned production GUI/session observation, with mapped-window/render proof and settled descendants. The current script does not create that display/session or weaken the WebKit sandbox.
+These commands perform native install/purge and the owned production GUI observation on the dedicated Ubuntu host; they are not a local source-test command. Before using the resulting packet for qualification, confirm the observed runner OS/glibc, inspect the fixed PNG and receipt together, and review the remaining limitations. The AppImage lane, macOS and unsupported hosts gain no GUI or oldest-host proof from this deb-only capture.
