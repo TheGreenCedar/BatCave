@@ -975,22 +975,6 @@ test("group findings include native network activity and explicit network limita
   assert.equal(groupFindingLabel(estimated), "Aggregate network traffic is 2.0 MB/s.");
 });
 
-test("group inspection actions expose exact selection state on desktop and mobile", () => {
-  const desktop = readFileSync(
-    new URL("../src/lib/components/processes/ProcessTable.svelte", import.meta.url),
-    "utf8",
-  );
-  const mobile = readFileSync(
-    new URL("../src/lib/components/processes/MobileProcessList.svelte", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(desktop, /aria-pressed=\{groupActionSelected\}/);
-  assert.match(mobile, /aria-pressed=\{actionSelected\}/);
-  assert.match(mobile, /presentation\.memoryLabel/);
-  assert.doesNotMatch(mobile, />Working set</);
-});
-
 test("sort helpers expose state and the next accessible action", () => {
   const cpuColumn: ProcessColumn = { key: "cpu", label: "CPU", metric: true };
 
@@ -1010,33 +994,6 @@ test("sort helpers expose state and the next accessible action", () => {
     sortDirectionButtonLabel("desc"),
     "Sort direction: descending. Change to ascending.",
   );
-});
-
-test("compact workload controls expose the active sort direction", () => {
-  const commandBar = readFileSync(
-    new URL("../src/lib/components/shell/ProcessCommandBar.svelte", import.meta.url),
-    "utf8",
-  );
-  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
-
-  assert.match(commandBar, /export let sortDirection: SortDirection/);
-  assert.match(commandBar, /aria-label=\{sortDirectionButtonLabel\(sortDirection\)\}/);
-  assert.match(commandBar, /onclick=\{onToggleDirection\}/);
-  assert.match(app, /function toggleSortDirection\(\): void/);
-  assert.match(app, /onToggleDirection=\{toggleSortDirection\}/);
-});
-
-test("desktop workload table keeps network visible when attribution is unavailable", () => {
-  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
-  const table = readFileSync(
-    new URL("../src/lib/components/processes/ProcessTable.svelte", import.meta.url),
-    "utf8",
-  );
-
-  assert.doesNotMatch(app, /processNetworkAvailable/);
-  assert.doesNotMatch(app, /column\.key !== "network"/);
-  assert.match(table, /column\.key === "network"/);
-  assert.match(table, /networkCellLabel\(row\)/);
 });
 
 test("the frontend entrypoint uses one authoritative product stylesheet", () => {

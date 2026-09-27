@@ -82,6 +82,8 @@ test("local fallback clears only for the latest exact durable runtime echo", () 
   const first = sequence.begin({ theme: "cave:dark", history_point_limit: 72 });
   const latest = sequence.begin({ theme: "canopy:system", history_point_limit: 180 });
 
+  assert.equal(sequence.isLatest(first), false, "an older save failure is stale too");
+  assert.equal(sequence.isLatest(latest), true, "the latest failure still owns its fallback");
   assert.equal(sequence.isLatestDurable(first, durableSnapshot("cave:dark", 72)), false);
   assert.equal(sequence.isLatestDurable(latest, durableSnapshot("canopy:system", 72)), false);
   assert.equal(
