@@ -2,7 +2,7 @@
 
 BatCave has a dedicated `batcave-collector-service.exe` source target. The binary enters the Windows Service Control Manager (SCM) dispatcher as the `BatCaveCollector` own-process service, starts the shared immutable collector engine, and serves the frozen collector-service IPC v1 contract over a local named pipe.
 
-The Windows NSIS bundle packages the service binary beside the desktop executable and uses installer hooks to own its SCM and `ProgramData` boundaries. The desktop remains `asInvoker`; the installer never starts the GUI as an elevated child. Installed behavior still requires exact-artifact native proof before it is treated as release evidence.
+The Windows NSIS bundle packages the service binary beside the desktop executable and uses installer hooks to own its SCM and `ProgramData` boundaries. The per-machine installer requests administrator approval and unconditionally provisions and starts the LocalSystem service, configured for delayed automatic startup. Normal desktop launches connect and reconnect automatically, without a settings opt-in or another administrator prompt. Upgrade and uninstall can require separate approval. The desktop remains `asInvoker`; the installer never starts the GUI as an elevated child. Installed behavior still requires exact-artifact native proof before it is treated as release evidence.
 
 ## Service and pipe identity
 
@@ -32,6 +32,8 @@ The pipe access-control list is only the first gate. The service performs one bo
 7. The executable's fixed file version and full `ProductVersion` string match the service package version, including any prerelease suffix.
 
 Only then does the transport create `VerifiedPeer`. The JSON negotiation release must still match that transport-derived peer. A changed PID, start time, session, principal, file identity, release, path, or elevation state fails closed. The release identity omits `source_commit_sha`: the current executable resource proves the full package version but does not embed independently readable commit metadata.
+
+The standard-token requirement is BatCave's client trust policy, not a Windows restriction on reading service data. Windows permits the installed LocalSystem service to control the privileged ETW session while a normal desktop receives its metrics. Launching the desktop from an elevated parent retains that parent's token and fails this policy. The runtime preserves the connection error and advises opening BatCave normally; it does not infer active privileged collection from token elevation or start a second ETW owner. Only an accepted active service sample establishes `collector_service` provenance, and per-metric ETW quality remains independently checked.
 
 The desktop independently authenticates the other direction. It confirms that the pipe server PID is the running `BatCaveCollector` SCM own-process service before and after inspection, opens that PID, requires a Local System token, canonicalizes the process image to `batcave-collector-service.exe` beside `batcave-monitor.exe`, binds its file identity, and reads its full `ProductVersion`. Only that transport evidence can create `VerifiedServicePeer`; JSON cannot supply or override it. A different service `ProductVersion` is reported as incompatible before negotiation. Before authenticated negotiation, that status includes the transport-verified service version but leaves the minimum desktop version unreported.
 
