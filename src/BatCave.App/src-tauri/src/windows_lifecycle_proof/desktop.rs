@@ -617,7 +617,11 @@ mod tests {
     use std::cell::Cell;
     use std::collections::VecDeque;
 
-    fn active_labels() -> Vec<String> {
+    fn active_labels(phase: DesktopPhase) -> Vec<String> {
+        let plan = parse_plan().expect("selected proof plan");
+        let release_version = phase
+            .expected_release_version(&plan)
+            .expect("phase version");
         [
             "Current process: Standard token",
             "Privileged source: Installed collector service",
@@ -625,10 +629,10 @@ mod tests {
             "Protected sample: Current",
             "Fallback process ETW: Not active",
             "Collector service: Collector service active",
-            concat!("Service version: ", env!("CARGO_PKG_VERSION")),
+            &format!("Service version: {release_version}"),
             "Service protocol: 1",
-            concat!("Minimum desktop: ", env!("CARGO_PKG_VERSION")),
-            concat!("Service release: ", env!("CARGO_PKG_VERSION")),
+            &format!("Minimum desktop: {release_version}"),
+            &format!("Service release: {release_version}"),
             "Service instance: 00000065-00000000000000000000000000000001",
             "Service detail: None",
         ]
@@ -730,7 +734,8 @@ mod tests {
 
     #[test]
     fn active_diagnostics_parse_without_inference() {
-        let visible = parse_visible_labels(active_labels()).expect("active labels");
+        let visible =
+            parse_visible_labels(active_labels(DesktopPhase::FinalPrimary)).expect("active labels");
         assert_eq!(visible.collector_state, DesktopCollectorState::Active);
         assert_eq!(
             visible.privileged_source,
@@ -766,7 +771,7 @@ mod tests {
 
     #[test]
     fn unverified_fallback_etw_is_retryable_until_the_deadline() {
-        let labels = active_labels()
+        let labels = active_labels(DesktopPhase::FinalPrimary)
             .into_iter()
             .map(|label| {
                 if label.starts_with("Fallback process ETW:") {
@@ -784,19 +789,25 @@ mod tests {
 
     #[test]
     fn visible_poll_does_not_retry_active_identity_failures() {
-        for (key, value) in [
-            ("Service version", "9.9.9"),
-            ("Service release", "9.9.9"),
-            ("Service protocol", "2"),
-            ("Minimum desktop", "9.9.9"),
-            ("Service instance", "invalid-instance"),
-            ("Service detail", "unexpected_active_detail"),
+        for phase in [
+            DesktopPhase::BaselinePrimary,
+            DesktopPhase::BaselineSecondInstance,
+            DesktopPhase::FinalPrimary,
         ] {
-            assert_visible_poll_stops_without_wait(
-                DesktopPhase::FinalPrimary,
-                replace_label(active_labels(), key, value),
-                "lifecycle_desktop_active_identity_invalid",
-            );
+            for (key, value) in [
+                ("Service version", "9.9.9"),
+                ("Service release", "9.9.9"),
+                ("Service protocol", "2"),
+                ("Minimum desktop", "9.9.9"),
+                ("Service instance", "invalid-instance"),
+                ("Service detail", "unexpected_active_detail"),
+            ] {
+                assert_visible_poll_stops_without_wait(
+                    phase,
+                    replace_label(active_labels(phase), key, value),
+                    "lifecycle_desktop_active_identity_invalid",
+                );
+            }
         }
     }
 
@@ -840,7 +851,11 @@ mod tests {
         ] {
             assert_visible_poll_stops_without_wait(
                 DesktopPhase::FinalPrimary,
-                replace_label(active_labels(), "Collector service", state),
+                replace_label(
+                    active_labels(DesktopPhase::FinalPrimary),
+                    "Collector service",
+                    state,
+                ),
                 reason,
             );
         }
@@ -848,18 +863,24 @@ mod tests {
 
     #[test]
     fn visible_poll_retries_missing_and_connecting_no_sample_until_active() {
-        let mut reads = VecDeque::from([Vec::new(), connecting_labels(), active_labels()]);
-        let waits = Cell::new(0);
-        let visible = poll_visible_contract(
+        for phase in [
+            DesktopPhase::BaselinePrimary,
+            DesktopPhase::BaselineSecondInstance,
             DesktopPhase::FinalPrimary,
-            || Ok(reads.pop_front().expect("scripted read")),
-            || false,
-            || waits.set(waits.get() + 1),
-        )
-        .expect("active state becomes ready");
+        ] {
+            let mut reads = VecDeque::from([Vec::new(), connecting_labels(), active_labels(phase)]);
+            let waits = Cell::new(0);
+            let visible = poll_visible_contract(
+                phase,
+                || Ok(reads.pop_front().expect("scripted read")),
+                || false,
+                || waits.set(waits.get() + 1),
+            )
+            .expect("active state becomes ready");
 
-        assert_eq!(visible.collector_state, DesktopCollectorState::Active);
-        assert_eq!(waits.get(), 2);
+            assert_eq!(visible.collector_state, DesktopCollectorState::Active);
+            assert_eq!(waits.get(), 2);
+        }
     }
 
     #[test]
@@ -884,7 +905,7 @@ mod tests {
         let waits = Cell::new(0);
         let result = poll_visible_contract(
             DesktopPhase::FinalMissingService,
-            || Ok(active_labels()),
+            || Ok(active_labels(DesktopPhase::FinalPrimary)),
             || {
                 let checks = deadline_checks.get() + 1;
                 deadline_checks.set(checks);
@@ -909,7 +930,7 @@ mod tests {
         let result = poll_visible_contract(
             DesktopPhase::FinalPrimary,
             || {
-                Ok(active_labels()
+                Ok(active_labels(DesktopPhase::FinalPrimary)
                     .into_iter()
                     .map(|label| {
                         if label.starts_with("Current process:") {
