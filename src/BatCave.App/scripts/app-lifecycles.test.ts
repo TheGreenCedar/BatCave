@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { makeFixtureSnapshot } from "../src/lib/fixtures.ts";
+import {
+  advanceProcessRanking,
+  countWorkloadRows,
+  defaultSortDirection,
+  nextSortDirection,
+  prepareProcessViewRows,
+  processViewRowKey,
+  sortColumnForKey,
+  sortKeyForColumn,
+} from "../src/lib/process.ts";
+import { AcceptedRuntimeControls } from "../src/lib/runtimeControls.ts";
+import {
+  makeDefaultRuntimeQuery,
+  shouldApplyRuntimePublication,
+} from "../src/lib/runtimeSnapshot.ts";
 import { startRuntimePolling, type PollScheduler } from "../src/lib/runtimePolling.ts";
 import { StableUpdateController } from "../src/lib/stableUpdate.ts";
 import {
@@ -9,12 +26,15 @@ import {
   emptyProcessTrendState,
   emptyTrendState,
   initialWorkloadTrend,
+  historyGapPoints,
   nextSystemHistory,
   nextWorkloadTrend,
   processRatesFromSamples,
+  replaySystemHistory,
   trimProcessHistory,
   trimSystemHistory,
 } from "../src/lib/telemetryHistory.ts";
+import type { RuntimeQuery, RuntimeSnapshot, SystemHistoryPoint } from "../src/lib/types.ts";
 import type { InstallableUpdateResource } from "../src/lib/updateLifecycle.ts";
 import {
   decodeRuntimeSnapshot,
@@ -351,4 +371,230 @@ test("history trimming and aligned combined series preserve chart semantics", ()
   ]);
   assert.deepEqual(trimProcessHistory(process, 2).readRate, [2, 3]);
   assert.deepEqual(combineSeries([2], [10, 20]), [10, 22]);
+});
+
+const appSource = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+
+function loadAppFunctions(context: object, names: string[]): void {
+  const functions = names.map((name) => {
+    const match = appSource.match(
+      new RegExp(
+        `  (?:async )?function ${name}\\([\\s\\S]*?(?=\\n  (?:async )?function |\\n</script>)`,
+      ),
+    );
+    assert.ok(match, `App.svelte function ${name} exists`);
+    return match[0];
+  });
+  runInNewContext(stripTypeScriptTypes(functions.join("\n")), context);
+}
+
+function deferred<T>() {
+  let release: (value: T) => void = () => assert.fail("promise resolver was not initialized");
+  const promise = new Promise<T>((resolve) => {
+    release = resolve;
+  });
+  return { promise, resolve: (value: T) => release(value) };
+}
+
+function historySnapshot(seq: number): RuntimeSnapshot {
+  const snapshot = makeFixtureSnapshot(seq);
+  snapshot.sample_seq = seq;
+  snapshot.system.cpu_percent = seq;
+  return snapshot;
+}
+
+function historyBackfillHarness() {
+  const result = deferred<SystemHistoryPoint[]>();
+  const snapshot = historySnapshot(10);
+  const context = {
+    snapshot,
+    history: nextSystemHistory(emptyTrendState(), snapshot, 72),
+    historyPointLimit: 72,
+    historyGeneration: 0,
+    lastHistorySampleSeq: 10,
+    runtimeMode: () => "native",
+    invoke: () => {},
+    readSystemHistory: () => result.promise,
+    historyGapPoints,
+    replaySystemHistory,
+    emptyTrendState,
+    backfillHistoryGap: async (_snapshot: RuntimeSnapshot) => {},
+    resetHistory: () => {},
+  };
+  loadAppFunctions(context, ["backfillHistoryGap", "resetHistory"]);
+  const resolve = () =>
+    result.resolve(
+      [11, 12].map((seq) => ({
+        sample_seq: seq,
+        sampled_at_ms: seq * 1_000,
+        system: historySnapshot(seq).system,
+      })),
+    );
+  return { context, resolve };
+}
+
+test("delayed system history cannot replay behind a newer accepted sample", async () => {
+  const { context, resolve } = historyBackfillHarness();
+  const backfill = context.backfillHistoryGap(historySnapshot(13));
+  context.snapshot = historySnapshot(14);
+  context.history = nextSystemHistory(context.history, context.snapshot, 72);
+  context.lastHistorySampleSeq = 14;
+  resolve();
+  await backfill;
+  assert.deepEqual(context.history.cpu, [10, 14]);
+  assert.equal(context.lastHistorySampleSeq, 14);
+});
+
+test("delayed system history cannot restore points after reset at the same sample", async () => {
+  const { context, resolve } = historyBackfillHarness();
+  const backfill = context.backfillHistoryGap(historySnapshot(13));
+  context.resetHistory();
+  resolve();
+  await backfill;
+  assert.deepEqual(context.history.cpu, []);
+  assert.equal(context.lastHistorySampleSeq, 10);
+});
+
+test("delayed system history only replays points newer than the current cursor", async () => {
+  const { context, resolve } = historyBackfillHarness();
+  const backfill = context.backfillHistoryGap(historySnapshot(13));
+  context.snapshot = historySnapshot(11);
+  context.history = nextSystemHistory(context.history, context.snapshot, 72);
+  context.lastHistorySampleSeq = 11;
+  resolve();
+  await backfill;
+  assert.deepEqual(context.history.cpu, [10, 11, 12]);
+  assert.equal(context.lastHistorySampleSeq, 12);
+});
+
+function queryRankingHarness() {
+  const result = deferred<RuntimeSnapshot>();
+  const initial = makeFixtureSnapshot(8);
+  const rows = initial.process_view_rows.filter((row) => row.kind === "process").slice(0, 2);
+  assert.equal(rows.length, 2);
+  const scheduler = new ManualScheduler();
+  const context = {
+    protocolMismatch: null,
+    runtimeMutationAllowed: () => true,
+    runtimeMode: () => "native",
+    invoke: () => {},
+    setRuntimeProcessQuery: () => result.promise,
+    refreshRuntime: () => result.promise,
+    runtimeQueryRequestSeq: 0,
+    acceptedRuntimeControls: new AcceptedRuntimeControls(makeDefaultRuntimeQuery(), 1000),
+    searchText: "",
+    focusMode: "all",
+    sortKey: "attention",
+    sortDirection: "desc",
+    searchDebounceId: undefined,
+    window: scheduler,
+    commandErrorSurface: "global",
+    commandError: "",
+    runtimeCommandError: () => "query failed",
+    snapshot: { ...initial, process_view_rows: rows },
+    displayProcessRows: rows,
+    pendingProcessRows: null,
+    rankingUpdateAvailable: false,
+    exitedRowKeys: new Set<string>(),
+    selectedWorkloadId: "",
+    matchedWorkloadCount: 2,
+    shouldHoldRanking: () => true,
+    countWorkloadRows,
+    prepareProcessViewRows,
+    advanceProcessRanking,
+    defaultSortDirection,
+    nextSortDirection,
+    sortColumnForKey,
+    sortKeyForColumn,
+    makeDefaultRuntimeQuery,
+    ingest: (snapshot: RuntimeSnapshot) => {
+      if (!shouldApplyRuntimePublication(context.snapshot, snapshot)) return;
+      context.snapshot = snapshot;
+      context.acceptedRuntimeControls.observe(snapshot);
+      context.updateProcessRows(snapshot.process_view_rows);
+    },
+    applyNativeSnapshot: (snapshot: RuntimeSnapshot) => context.ingest(snapshot),
+    updateProcessRows: (_rows: RuntimeSnapshot["process_view_rows"]) => {},
+    applyPendingRanking: () => {},
+    restoreRuntimeQueryControls: (_query: RuntimeQuery) => {},
+    currentRuntimeQuery: makeDefaultRuntimeQuery,
+    syncRuntimeQuery: async (_query?: RuntimeQuery) => {},
+    setSearchText: (_value: string) => {},
+    setSortKey: (_value: string) => {},
+    setFocusMode: (_value: string) => {},
+    refreshNow: async () => {},
+  };
+  loadAppFunctions(context, [
+    "setSearchText",
+    "setSortKey",
+    "setFocusMode",
+    "flushRuntimeQuery",
+    "currentRuntimeQuery",
+    "syncRuntimeQuery",
+    "restoreRuntimeQueryControls",
+    "updateProcessRows",
+    "applyPendingRanking",
+    "refreshNow",
+  ]);
+  const response = {
+    ...initial,
+    publication_seq: initial.publication_seq + 2,
+    process_view_rows: rows.slice(1),
+  };
+  return { context, scheduler, result, rows, response };
+}
+
+test("search adoption survives a poll during debounce and another while the query is pending", async () => {
+  const { context, scheduler, result, rows, response } = queryRankingHarness();
+  context.setSearchText("query");
+  context.ingest({
+    ...response,
+    publication_seq: response.publication_seq - 1,
+    process_view_rows: rows,
+  });
+  const debounce = scheduler.scheduled.shift();
+  assert.ok(debounce);
+  debounce.callback();
+  context.ingest({ ...response, publication_seq: response.publication_seq + 1 });
+  assert.equal(context.displayProcessRows.length, 2, "polling holds rows during interaction");
+  result.resolve(response);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    context.displayProcessRows.map(processViewRowKey),
+    response.process_view_rows.map(processViewRowKey),
+    "the acknowledged query adopts the newer poll even when its own publication is older",
+  );
+  assert.equal(context.rankingUpdateAvailable, false);
+});
+
+test("sort and focus query acknowledgements replace held rows after intervening polls", async () => {
+  for (const change of [
+    (context: ReturnType<typeof queryRankingHarness>["context"]) => context.setSortKey("cpu"),
+    (context: ReturnType<typeof queryRankingHarness>["context"]) =>
+      context.setFocusMode("attention"),
+  ]) {
+    const { context, result, response } = queryRankingHarness();
+    change(context);
+    context.ingest({ ...response, publication_seq: response.publication_seq - 1 });
+    result.resolve(response);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      context.displayProcessRows.map(processViewRowKey),
+      response.process_view_rows.map(processViewRowKey),
+    );
+    assert.equal(context.pendingProcessRows, null);
+  }
+});
+
+test("explicit refresh adopts its accepted ranking while the workload table is held", async () => {
+  const { context, result, response } = queryRankingHarness();
+  const refresh = context.refreshNow();
+  context.ingest({ ...response, publication_seq: response.publication_seq - 1 });
+  result.resolve(response);
+  await refresh;
+  assert.deepEqual(
+    context.displayProcessRows.map(processViewRowKey),
+    response.process_view_rows.map(processViewRowKey),
+  );
+  assert.equal(context.pendingProcessRows, null);
 });

@@ -399,7 +399,7 @@ test("workload detail keeps its dialog and focused control after collapsing to c
   await expectLogicalControlFocused(page, "data-workload-id", workloadId ?? "");
 });
 
-test("system detail stays open after expanding and restores navigation on dismissal", async ({
+test("system detail stays open after expanding and restores its resource control on dismissal", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 760, height: 900 });
@@ -415,10 +415,10 @@ test("system detail stays open after expanding and restores navigation on dismis
   await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Close resource detail" })).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(page.locator('[data-view="explore"]')).toBeFocused();
+  await expect(page.locator('.resource-strip [data-resource-mode="memory"]')).toBeFocused();
 });
 
-test("system detail stays open after collapsing and restores navigation on dismissal", async ({
+test("system detail stays open after collapsing and restores its resource control on dismissal", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -434,7 +434,7 @@ test("system detail stays open after collapsing and restores navigation on dismi
   await expect(page.getByRole("dialog", { name: "Resource detail" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Close resource detail" })).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(page.locator('[data-view="explore"]')).toBeFocused();
+  await expect(page.locator('.resource-strip [data-resource-mode="memory"]')).toBeFocused();
 });
 
 test("view navigation restores visible destinations and preserves search and inspector focus", async ({
@@ -1271,8 +1271,197 @@ test("resource detail remains contained and dismissible at minimum width with 20
   await expectNoAxeViolations(page);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
-  await expect(page.locator('[data-view="explore"]')).toBeFocused();
+  await expect(page.locator('.resource-strip [data-resource-mode="memory"]')).toBeFocused();
 });
+
+for (const viewport of [
+  { width: 1440, textScale: 100, columns: 4 },
+  { width: 1000, textScale: 100, columns: 2 },
+  { width: 720, textScale: 200, columns: 1 },
+  { width: 360, textScale: 200, columns: 1 },
+]) {
+  test(`Explore keeps four usable resource charts and full-width workloads at ${viewport.width}px and ${viewport.textScale}% text`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: viewport.width, height: 900 });
+    await openFixture(page, "overview");
+    await page.addStyleTag({ content: `:root { font-size: ${viewport.textScale}% !important; }` });
+    await page.getByRole("button", { name: "Explore", exact: true }).click();
+    const strip = page.getByRole("complementary", { name: "System resources" });
+    await expect(strip).toBeVisible();
+    await expect(strip.locator("canvas")).toHaveCount(4);
+    const columns = await strip
+      .locator(".resource-strip-list")
+      .evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
+    expect(columns).toBe(viewport.columns);
+    const search = page.getByRole("textbox", { name: "Search apps and processes" });
+    await search.fill("BatCave");
+    const queue = page.locator(".explore-queue");
+    const workspace = page.locator(".explore-workspace");
+    for (const mode of ["cpu", "memory", "disk", "network"]) {
+      const control = strip.locator(`[data-resource-mode="${mode}"]`);
+      await control.scrollIntoViewIfNeeded();
+      const geometry = await control.evaluate(async (element) => {
+        const host = element.querySelector(".chart-host");
+        const canvas = element.querySelector("canvas");
+        const readings = element.querySelector(".resource-strip-supporting");
+        const quality = element.querySelector(".resource-heading small");
+        if (!host || !canvas || !readings || !quality) throw new Error("Expected resource chart");
+        const originalQuality = quality.textContent;
+        const originalHeight = element.getBoundingClientRect().height;
+        quality.textContent = `Unavailable: ${"CollectorReasonWithoutSpaces".repeat(12)}`;
+        for (let frame = 0; frame < 4; frame += 1) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        const wrappedWidth = element.scrollWidth;
+        const qualityBounds = quality.getBoundingClientRect();
+        const cardBounds = element.getBoundingClientRect();
+        const wrappedQualityContained =
+          qualityBounds.left >= cardBounds.left &&
+          qualityBounds.right <= cardBounds.right &&
+          qualityBounds.bottom <= cardBounds.bottom;
+        quality.textContent = originalQuality;
+        for (let frame = 0; frame < 4; frame += 1) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        return {
+          width: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          hostWidth: host.getBoundingClientRect().width,
+          hostHeight: host.getBoundingClientRect().height,
+          canvasWidth: canvas.getBoundingClientRect().width,
+          canvasHeight: canvas.getBoundingClientRect().height,
+          cardTop: element.getBoundingClientRect().top,
+          cardBottom: element.getBoundingClientRect().bottom,
+          hostTop: host.getBoundingClientRect().top,
+          hostBottom: host.getBoundingClientRect().bottom,
+          readingsBottom: readings.getBoundingClientRect().bottom,
+          originalHeight,
+          restoredHeight: element.getBoundingClientRect().height,
+          wrappedWidth,
+          wrappedQualityContained,
+        };
+      });
+      expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width + 1);
+      expect(geometry.hostWidth).toBeGreaterThan(0);
+      expect(geometry.hostHeight).toBe(64);
+      expect(geometry.canvasWidth).toBeGreaterThan(0);
+      expect(geometry.canvasHeight).toBe(64);
+      expect(geometry.hostTop).toBeGreaterThanOrEqual(geometry.cardTop);
+      expect(geometry.hostBottom).toBeLessThanOrEqual(geometry.cardBottom);
+      expect(geometry.readingsBottom).toBeLessThanOrEqual(geometry.cardBottom);
+      expect(geometry.wrappedWidth).toBeLessThanOrEqual(geometry.width + 1);
+      expect(geometry.wrappedQualityContained).toBe(true);
+      expect(geometry.restoredHeight).toBe(geometry.originalHeight);
+      expect(await control.getAttribute("aria-label")).toContain(
+        await control.locator(".resource-strip-value").innerText(),
+      );
+      expect(await control.getAttribute("aria-label")).toContain(
+        `Inspect ${await control.locator(".resource-heading > span").innerText()}.`,
+      );
+      await control.focus();
+      await control.press("Enter");
+      const dialog = page.getByRole("dialog", { name: "Resource detail" });
+      await expect(dialog).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await expect(control).toBeFocused();
+      await expect(search).toHaveValue("BatCave");
+    }
+    await queue.locator("button[data-workload-id]").first().scrollIntoViewIfNeeded();
+    const queueBox = await queue.boundingBox();
+    const workspaceBox = await workspace.boundingBox();
+    expect(queueBox).not.toBeNull();
+    expect(workspaceBox).not.toBeNull();
+    expect(queueBox!.width).toBeCloseTo(workspaceBox!.width, 0);
+    expect(queueBox!.height).toBeGreaterThanOrEqual(280);
+    const stripBox = await strip.boundingBox();
+    const toolbarBox = await page.locator(".explore-toolbar").boundingBox();
+    expect(stripBox).not.toBeNull();
+    expect(toolbarBox).not.toBeNull();
+    expect(stripBox!.y + stripBox!.height).toBeLessThanOrEqual(toolbarBox!.y + 1);
+    await expect(page.locator("html")).toHaveJSProperty("scrollWidth", viewport.width);
+    await expectNoAxeViolations(page);
+  });
+}
+
+for (const viewport of [
+  { width: 1440, textScale: 100 },
+  { width: 720, textScale: 200 },
+]) {
+  for (const resource of ["memory", "disk", "network"]) {
+    test(`${resource} chart cards settle after repeated label wraps at ${viewport.width}px and ${viewport.textScale}% text`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: viewport.width, height: 900 });
+      await openFixture(page, "overview");
+      await page.addStyleTag({
+        content: `:root { font-size: ${viewport.textScale}% !important; }`,
+      });
+      await page.locator(`.overview-resource-card[data-resource-mode="${resource}"]`).click();
+      await page.getByRole("button", { name: "Inspect resource", exact: true }).click();
+      const card = page.locator(".detail-chart-card").first();
+      await expect(card.locator(".chart-host canvas")).toBeVisible();
+      const geometries = await card.evaluate(async (element) => {
+        const label = element.querySelector("span");
+        const value = element.querySelector("strong");
+        const host = element.querySelector(".chart-host");
+        const plot = element.querySelector(".uplot");
+        if (!label || !value || !host || !plot) throw new Error("Expected a labeled chart");
+        const frames = async () => {
+          const measurements = [];
+          for (let frame = 0; frame < 8; frame += 1) {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+            measurements.push({
+              card: element.getBoundingClientRect().height,
+              host: host.getBoundingClientRect().height,
+              plot: plot.getBoundingClientRect().height,
+            });
+          }
+          return measurements.slice(-4);
+        };
+        const originalLabel = label.textContent;
+        const originalValue = value.textContent;
+        const baseline = await frames();
+        const cycles = [];
+        for (let cycle = 0; cycle < 3; cycle += 1) {
+          label.textContent =
+            "Resource throughput measured for every active device and every application using this resource";
+          value.textContent = "987.65 MB/s";
+          const wrapped = await frames();
+          const readable = {
+            labelWidth: label.clientWidth,
+            labelScrollWidth: label.scrollWidth,
+            labelHeight: label.clientHeight,
+            labelScrollHeight: label.scrollHeight,
+            valueWidth: value.clientWidth,
+            valueScrollWidth: value.scrollWidth,
+            cardWidth: element.clientWidth,
+            cardScrollWidth: element.scrollWidth,
+          };
+          label.textContent = originalLabel;
+          value.textContent = originalValue;
+          cycles.push({ wrapped, readable, restored: await frames() });
+        }
+        return { baseline, cycles };
+      });
+      const baseline = geometries.baseline[0];
+      for (const { wrapped, readable, restored } of geometries.cycles) {
+        expect(wrapped, "Wrapped labels must settle without canvas-driven growth").toEqual(
+          wrapped.map(() => wrapped[0]),
+        );
+        expect(restored, "Unwrapping must restore the original chart and card geometry").toEqual(
+          restored.map(() => baseline),
+        );
+        expect(readable.labelScrollWidth).toBeLessThanOrEqual(readable.labelWidth + 1);
+        expect(readable.labelScrollHeight).toBeLessThanOrEqual(readable.labelHeight + 1);
+        expect(readable.valueScrollWidth).toBeLessThanOrEqual(readable.valueWidth + 1);
+        expect(readable.cardScrollWidth).toBeLessThanOrEqual(readable.cardWidth + 1);
+        expect(wrapped[0].host).toBeGreaterThanOrEqual(90);
+      }
+    });
+  }
+}
 
 for (const viewport of [
   { width: 1440, textScale: 100 },

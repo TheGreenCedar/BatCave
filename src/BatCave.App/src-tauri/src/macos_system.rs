@@ -198,6 +198,7 @@ impl MacosSystemCollector {
                 }
             }
             Err(error) => {
+                self.last_network = None;
                 warnings.push(format!("macos_interface_totals_failed:{error}"));
                 MetricQualityInfo::new(MetricQuality::Unavailable, MetricSource::InterfaceAggregate)
                     .with_limitation(
@@ -291,14 +292,19 @@ impl MacosSystemCollector {
 /// The 64-bit counters come from IFMIB_IFDATA; the RTM_IFINFO2 `ifm_data`
 /// counters are 32-bit-capped for unprivileged callers (sysinfo issue #1378).
 pub(crate) fn interface_byte_totals() -> io::Result<(u64, u64)> {
+    interface_byte_totals_with_reader(route_interface_indices()?, interface_counters)
+}
+
+fn interface_byte_totals_with_reader(
+    indices: impl IntoIterator<Item = u16>,
+    mut read_counters: impl FnMut(u16) -> io::Result<(u64, u64)>,
+) -> io::Result<(u64, u64)> {
     let mut received = 0_u64;
     let mut transmitted = 0_u64;
-    for index in route_interface_indices()? {
-        // An interface whose IFMIB read fails contributes 0, matching sysinfo.
-        if let Ok((rx, tx)) = interface_counters(index) {
-            received = received.saturating_add(rx);
-            transmitted = transmitted.saturating_add(tx);
-        }
+    for index in indices {
+        let (rx, tx) = read_counters(index)?;
+        received = received.saturating_add(rx);
+        transmitted = transmitted.saturating_add(tx);
     }
     Ok((received, transmitted))
 }
@@ -879,6 +885,67 @@ mod tests {
         assert_eq!(
             second_network.source,
             Some(MetricSource::InterfaceAggregate)
+        );
+    }
+
+    #[test]
+    fn interface_totals_reject_partial_reads_and_rebaseline_after_recovery() {
+        let complete = interface_byte_totals_with_reader([1, 2], |index| {
+            Ok((u64::from(index) * 100, u64::from(index) * 50))
+        });
+        assert_eq!(complete.unwrap(), (300, 150));
+
+        let incomplete = interface_byte_totals_with_reader([1, 2], |index| {
+            if index == 2 {
+                Err(io::Error::other("IFMIB fixture failure"))
+            } else {
+                Ok((100, 50))
+            }
+        });
+        assert!(incomplete.is_err());
+
+        let mut collector = MacosSystemCollector::new();
+        let mut snapshot = system();
+        let t0 = Instant::now();
+        collector.apply_interface_totals(&mut snapshot, Ok((300, 150)), t0, &mut Vec::new());
+        let mut warnings = Vec::new();
+        collector.apply_interface_totals(
+            &mut snapshot,
+            incomplete,
+            t0 + std::time::Duration::from_secs(1),
+            &mut warnings,
+        );
+        assert_eq!(
+            snapshot
+                .quality
+                .as_ref()
+                .unwrap()
+                .network
+                .as_ref()
+                .unwrap()
+                .quality,
+            MetricQuality::Unavailable
+        );
+        assert!(warnings[0].contains("IFMIB fixture failure"));
+
+        collector.apply_interface_totals(
+            &mut snapshot,
+            Ok((30_000, 15_000)),
+            t0 + std::time::Duration::from_secs(2),
+            &mut Vec::new(),
+        );
+        assert_eq!(snapshot.network_received_bps, 0);
+        assert_eq!(snapshot.network_transmitted_bps, 0);
+        assert_eq!(
+            snapshot
+                .quality
+                .as_ref()
+                .unwrap()
+                .network
+                .as_ref()
+                .unwrap()
+                .quality,
+            MetricQuality::Held
         );
     }
 

@@ -110,16 +110,7 @@ impl ClientTrustPolicy {
         if evidence.executable_release != self.expected_release_evidence {
             return Err(unauthorized("collector_service_peer_release_mismatch"));
         }
-        let executable_path = normalize_absolute_windows_path(&evidence.executable_path)
-            .ok_or_else(|| unauthorized("collector_service_peer_path_invalid"))?;
-        let (parent, name) = executable_path
-            .rsplit_once('\\')
-            .ok_or_else(|| unauthorized("collector_service_peer_path_invalid"))?;
-        if parent != self.service_directory || !name.eq_ignore_ascii_case(DESKTOP_EXECUTABLE_NAME) {
-            return Err(unauthorized(
-                "collector_service_peer_executable_unauthorized",
-            ));
-        }
+        self.verify_executable_path(&evidence.executable_path)?;
 
         VerifiedPeer::from_transport_verification(
             evidence.process_id,
@@ -130,6 +121,24 @@ impl ClientTrustPolicy {
             self.expected_release.clone(),
             VerifiedPeerAuthorization::CollectorClient,
         )
+    }
+
+    pub(crate) fn verify_executable_path(
+        &self,
+        executable_path: &str,
+    ) -> Result<(), ContractFailure> {
+        let executable_path = normalize_absolute_windows_path(executable_path)
+            .ok_or_else(|| unauthorized("collector_service_peer_path_invalid"))?;
+        let (parent, name) = executable_path
+            .rsplit_once('\\')
+            .ok_or_else(|| unauthorized("collector_service_peer_path_invalid"))?;
+        if parent != self.service_directory || !name.eq_ignore_ascii_case(DESKTOP_EXECUTABLE_NAME) {
+            return Err(unauthorized(
+                "collector_service_peer_executable_unauthorized",
+            ));
+        }
+
+        Ok(())
     }
 }
 

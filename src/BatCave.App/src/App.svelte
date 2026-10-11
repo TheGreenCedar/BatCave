@@ -7,6 +7,7 @@
   import { onMount, tick } from "svelte";
   import fixtureProcessIcon from "../src-tauri/icons/64x64.png";
   import DetailPane from "./lib/components/context/DetailPane.svelte";
+  import ResourceRail from "./lib/components/metrics/ResourceRail.svelte";
   import type { DetailMode, ResourceSummaryOption } from "./lib/components/metrics/types";
   import Overview from "./lib/components/overview/Overview.svelte";
   import AttentionQueue from "./lib/components/processes/AttentionQueue.svelte";
@@ -235,6 +236,7 @@
   let historyPointLimit: HistoryPointLimit = 72;
   let history = emptyTrendState();
   let lastHistorySampleSeq = 0;
+  let historyGeneration = 0;
   let inspection: WorkloadInspection | null = null;
   let inspectionLoading = false;
   let inspectionError = "";
@@ -258,7 +260,6 @@
   let viewNavigationPending = false;
   let healthTone: "healthy" | "warning" | "danger" = "healthy";
   let collectionState: CollectionState = "live";
-  let forceRankingRefresh = false;
   let runtimeQueryRequestSeq = 0;
   let runtimeCadenceRequestSeq = 0;
   let pendingCadenceRequestSeq = 0;
@@ -1261,6 +1262,7 @@
     if (mode === "fixture") {
       fixtureTick += 1;
       ingest(makeFixtureSnapshot(fixtureTick, currentRuntimeQuery(), browserFixturePlatform, accessibilityFixtureState ? "compact" : "dense"));
+      applyPendingRanking();
       return;
     }
     if (mode === "unavailable") {
@@ -1271,6 +1273,7 @@
     try {
       const next = await refreshRuntime(invoke);
       applyNativeSnapshot(next);
+      applyPendingRanking();
     } catch (error) {
       commandErrorSurface = "global";
       commandError = runtimeCommandError(error, "Unable to refresh runtime.");
@@ -1318,7 +1321,6 @@
   function setSortKey(key: SortKey): void {
     sortKey = key;
     sortDirection = defaultSortDirection(key);
-    forceRankingRefresh = true;
     flushRuntimeQuery();
   }
 
@@ -1330,19 +1332,16 @@
       sortDirection = defaultSortDirection(key);
     }
 
-    forceRankingRefresh = true;
     flushRuntimeQuery();
   }
 
   function toggleSortDirection(): void {
     sortDirection = nextSortDirection(sortDirection);
-    forceRankingRefresh = true;
     flushRuntimeQuery();
   }
 
   function setSearchText(value: string): void {
     searchText = value;
-    forceRankingRefresh = true;
     if (searchDebounceId !== undefined) {
       window.clearTimeout(searchDebounceId);
     }
@@ -1354,7 +1353,6 @@
 
   function setFocusMode(mode: FocusMode): void {
     focusMode = mode;
-    forceRankingRefresh = true;
     flushRuntimeQuery();
   }
 
@@ -1388,6 +1386,7 @@
       runtimeQueryRequestSeq += 1;
       ingest(makeFixtureSnapshot(fixtureTick, query, browserFixturePlatform, accessibilityFixtureState ? "compact" : "dense"));
       onApplied?.();
+      applyPendingRanking();
       return;
     }
     if (mode === "unavailable") return;
@@ -1401,6 +1400,7 @@
       }
       onApplied?.();
       applyNativeSnapshot(next);
+      applyPendingRanking();
     } catch (error) {
       if (requestSeq !== runtimeQueryRequestSeq) {
         return;
@@ -1416,7 +1416,7 @@
     focusMode = query.focus_mode;
     sortKey = sortKeyForColumn(query.sort_column);
     sortDirection = query.sort_direction;
-    forceRankingRefresh = true;
+    applyPendingRanking();
   }
 
   function runtimeCommandError(error: unknown, fallback: string): string {
@@ -1434,7 +1434,9 @@
     snapshot = emptySnapshot;
     selectedWorkloadId = "";
     hasAutoSelectedWorkload = false;
+    historyGeneration += 1;
     history = emptyTrendState();
+    lastHistorySampleSeq = emptySnapshot.sample_seq;
     inspection = null;
     inspectionGate.clear();
     resourceSummaries = [];
@@ -1513,9 +1515,11 @@
     if (runtimeMode() !== "native") return;
     const last = lastHistorySampleSeq;
     if (last <= 0 || next.sample_seq <= last + 1) return;
+    const generation = historyGeneration;
     try {
       const points = await readSystemHistory(invoke, last);
-      const retained = historyGapPoints(points, last, next.sample_seq);
+      if (generation !== historyGeneration) return;
+      const retained = historyGapPoints(points, lastHistorySampleSeq, next.sample_seq);
       if (!retained.length) return;
       history = replaySystemHistory(history, retained, historyPointLimit);
       lastHistorySampleSeq = Math.max(
@@ -1579,7 +1583,6 @@
             "runtime_only",
             () => {
               focusMode = focusHydration.desired;
-              forceRankingRefresh = true;
             },
           ),
       },
@@ -1829,7 +1832,7 @@
     const prepared = prepareProcessViewRows(incoming, selectedWorkloadId, 180);
     incoming = prepared.rows;
 
-    const hold = !forceRankingRefresh && shouldHoldRanking();
+    const hold = shouldHoldRanking();
     if (hold) {
       const ranking = advanceProcessRanking(displayProcessRows, incoming, true);
       displayProcessRows = ranking.rows;
@@ -1843,7 +1846,6 @@
       pendingProcessRows = null;
       exitedRowKeys = new Set();
     }
-    forceRankingRefresh = false;
   }
 
   function shouldHoldRanking(): boolean {
@@ -1873,6 +1875,7 @@
   }
 
   function resetHistory(): void {
+    historyGeneration += 1;
     history = emptyTrendState();
     // Keep tracking the newest accepted sample so the next poll does not
     // backfill points the user just cleared.
@@ -2098,6 +2101,12 @@
           Back to Overview
         </button>
       </header>
+      <ResourceRail
+        resources={resourceSummaries}
+        activeMode={detailMode}
+        {detailOpen}
+        onSelect={selectDetailMode}
+      />
       <div class="explore-toolbar">
         <label class="explore-search" for="process-search">
           <MagnifyingGlass size={19} weight="regular" aria-hidden="true" />

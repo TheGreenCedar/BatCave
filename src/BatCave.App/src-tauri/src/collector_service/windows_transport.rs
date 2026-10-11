@@ -291,9 +291,11 @@ fn verify_pipe_peer(
             .ok_or_else(last_error("collector_service_peer_process_open_failed"))?;
     let process_started_at = process_started_at(process.raw())?;
     let executable_path = process_image_path(process.raw())?;
-    let canonical_path = PathBuf::from(&executable_path)
-        .canonicalize()
-        .map_err(|error| format!("collector_service_peer_path_canonicalize_failed:{error}"))?;
+    let canonical_path = canonicalize_client_image(policy, &executable_path, |path| {
+        PathBuf::from(path)
+            .canonicalize()
+            .map_err(|error| format!("collector_service_peer_path_canonicalize_failed:{error}"))
+    })?;
     let canonical_path_wide = wide(&canonical_path.to_string_lossy());
     let executable = OwnedHandle::new(unsafe {
         CreateFileW(
@@ -342,6 +344,21 @@ fn verify_pipe_peer(
             executable_release,
         })
         .map_err(|error| error.to_string())
+}
+
+fn canonicalize_client_image(
+    policy: &ClientTrustPolicy,
+    executable_path: &str,
+    canonicalize: impl FnOnce(&str) -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    policy
+        .verify_executable_path(executable_path)
+        .map_err(|error| error.to_string())?;
+    let canonical_path = canonicalize(executable_path)?;
+    policy
+        .verify_executable_path(&canonical_path.to_string_lossy())
+        .map_err(|error| error.to_string())?;
+    Ok(canonical_path)
 }
 
 pub(crate) struct TokenEvidence {
@@ -919,6 +936,46 @@ pub(super) fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unapproved_client_images_are_rejected_before_filesystem_access() {
+        let policy = ClientTrustPolicy::new(r"C:\Program Files\BatCave Monitor").unwrap();
+        for path in [
+            r"\\server\share\batcave-monitor.exe",
+            r"\\?\UNC\server\share\batcave-monitor.exe",
+            r"C:\Users\Public\batcave-monitor.exe",
+            r"C:\Program Files\BatCave Monitor\..\batcave-monitor.exe",
+            r"C:\Program Files\BatCave Monitor\unrelated.exe",
+        ] {
+            let mut read_called = false;
+            assert!(canonicalize_client_image(&policy, path, |_| {
+                read_called = true;
+                Ok(PathBuf::from(path))
+            })
+            .is_err());
+            assert!(!read_called, "unapproved path reached filesystem: {path}");
+        }
+    }
+
+    #[test]
+    fn approved_client_images_require_an_approved_canonical_path() {
+        let policy = ClientTrustPolicy::new(r"C:\Program Files\BatCave Monitor").unwrap();
+        let path = r"C:\Program Files\BatCave Monitor\batcave-monitor.exe";
+        let canonical = PathBuf::from(r"\\?\C:\Program Files\BatCave Monitor\batcave-monitor.exe");
+        assert_eq!(
+            canonicalize_client_image(&policy, path, |_| Ok(canonical.clone())).unwrap(),
+            canonical
+        );
+        for redirected in [
+            r"\\server\share\batcave-monitor.exe",
+            r"C:\Users\Public\batcave-monitor.exe",
+        ] {
+            assert!(
+                canonicalize_client_image(&policy, path, |_| Ok(PathBuf::from(redirected)))
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn client_restricted_pipe_security_descriptor_is_accepted_by_windows() {

@@ -53,6 +53,8 @@ The first create, permission, load, write, synchronization, replacement, rotatio
 
 Current packaging defines no hook that deletes the current-user root. The retention policy is therefore:
 
+The Windows uninstaller offers no **Delete app data** checkbox. It preserves the runtime root, WebView local storage, and current-user installer preferences; reinstall can encounter that retained state. Use the manual reset procedure below when you intend to remove the runtime files.
+
 | Action       | Current-user state policy                                                                                                                                                                                                                                                                                      |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Upgrade      | Preserve settings, warm cache, diagnostics, and current recovery state. Supported settings migration and the bounded retired-helper artifact cleanup run after the upgraded app starts.                                                                                                                         |
