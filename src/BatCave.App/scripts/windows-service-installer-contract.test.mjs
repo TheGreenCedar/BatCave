@@ -339,7 +339,7 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   const installerTemplate = await text("windows/installer-template.nsi");
   const header = [
     "; Pinned from Tauri CLI 2.11.4 (tauri-bundler 2.9.4, commit 8909f221d1515955fc843808032bdc5d62209c96).",
-    "; BatCave deltas are limited to shortcut suppression in install, finish, and uninstall paths.",
+    "; BatCave deltas cover shortcut suppression, lifecycle-proof export, and current-user data retention.",
     "",
   ].join("\n");
   const uninstallerExport = [
@@ -370,6 +370,70 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   const uninstallGuardComment =
     "    ; BatCave's native PREUNINSTALL authority already retired both exact shared links.";
   const uninstallGuardStart = "    ${If} $NoShortcutMode <> 1";
+  const dataControlOmission =
+    "; BatCave preserves current-user data, so omit the stock app-data deletion promise.\n";
+  const upstreamDataControl = [
+    "Var DeleteAppDataCheckbox",
+    "Var DeleteAppDataCheckboxState",
+    "!define /ifndef WS_EX_LAYOUTRTL         0x00400000",
+    "!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow",
+    "Function un.ConfirmShow ; Add add a `Delete app data` check box",
+    "  ; $1 inner dialog HWND",
+    "  ; $2 window DPI",
+    "  ; $3 style",
+    "  ; $4 x",
+    "  ; $5 y",
+    "  ; $6 width",
+    "  ; $7 height",
+    '  FindWindow $1 "#32770" "" $HWNDPARENT ; Find inner dialog',
+    '  System::Call "user32::GetDpiForWindow(p r1) i .r2"',
+    "  ${If} $(^RTL) = 1",
+    '    StrCpy $3 "${__NSD_CheckBox_EXSTYLE} | ${WS_EX_LAYOUTRTL}"',
+    "    IntOp $4 50 * $2",
+    "  ${Else}",
+    '    StrCpy $3 "${__NSD_CheckBox_EXSTYLE}"',
+    "    IntOp $4 0 * $2",
+    "  ${EndIf}",
+    "  IntOp $5 100 * $2",
+    "  IntOp $6 400 * $2",
+    "  IntOp $7 25 * $2",
+    "  IntOp $4 $4 / 96",
+    "  IntOp $5 $5 / 96",
+    "  IntOp $6 $6 / 96",
+    "  IntOp $7 $7 / 96",
+    '  System::Call \'user32::CreateWindowEx(i r3, w "${__NSD_CheckBox_CLASS}", w "$(deleteAppData)", i ${__NSD_CheckBox_STYLE}, i r4, i r5, i r6, i r7, p r1, i0, i0, i0) i .s\'',
+    "  Pop $DeleteAppDataCheckbox",
+    "  SendMessage $HWNDPARENT ${WM_GETFONT} 0 0 $1",
+    "  SendMessage $DeleteAppDataCheckbox ${WM_SETFONT} $1 1",
+    "FunctionEnd",
+    "!define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave",
+    "Function un.ConfirmLeave",
+    "  SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState",
+    "FunctionEnd",
+    "",
+  ].join("\n");
+  const dataCleanupOmission =
+    "  ; BatCave preserves current-user data and installer preferences across uninstall.\n";
+  const upstreamDataCleanup = [
+    "  ; Delete app data if the checkbox is selected",
+    "  ; and if not updating",
+    "  ${If} $DeleteAppDataCheckboxState = 1",
+    "  ${AndIf} $UpdateMode <> 1",
+    "    ; Clear the install location $INSTDIR from registry",
+    '    DeleteRegKey SHCTX "${MANUPRODUCTKEY}"',
+    '    DeleteRegKey /ifempty SHCTX "${MANUKEY}"',
+    "",
+    "    ; Clear the install language from registry",
+    '    DeleteRegValue HKCU "${MANUPRODUCTKEY}" "Installer Language"',
+    '    DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"',
+    '    DeleteRegKey /ifempty HKCU "${MANUKEY}"',
+    "",
+    "    SetShellVarContext current",
+    '    RmDir /r "$APPDATA\\${BUNDLEID}"',
+    '    RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"',
+    "  ${EndIf}",
+    "",
+  ].join("\n");
 
   assert.ok(installerTemplate.startsWith(header));
   assert.equal(installerTemplate.split(guard).length - 1, 2);
@@ -377,6 +441,14 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   assert.equal(installerTemplate.split(uninstallGuardComment).length - 1, 1);
   assert.equal(installerTemplate.split(uninstallGuardStart).length - 1, 1);
   assert.equal(installerTemplate.split(uninstallerExport).length - 1, 1);
+  assert.equal(installerTemplate.split(dataControlOmission).length - 1, 1);
+  assert.equal(installerTemplate.split(dataCleanupOmission).length - 1, 1);
+  assert.doesNotMatch(installerTemplate, /DeleteAppDataCheckbox|\$\(deleteAppData\)/u);
+  assert.doesNotMatch(
+    between(installerTemplate, "Section Uninstall", "SectionEnd"),
+    /RmDir\s+\/r\s+"\$(?:LOCAL)?APPDATA\\/iu,
+    "uninstall must preserve current-user data rather than promise broad deletion",
+  );
   assert.ok(
     installerTemplate.indexOf(uninstallerExport) >
       installerTemplate.indexOf("!uninstfinalize '${UNINSTALLERSIGNCOMMAND}'"),
@@ -407,6 +479,8 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
     .replace(uninstallerExport, "")
     .replaceAll(guard, "")
     .replace(finishControlOmission, upstreamFinishControl)
+    .replace(dataControlOmission, upstreamDataControl)
+    .replace(dataCleanupOmission, upstreamDataCleanup)
     .replace(shortcutRemoval, upstreamShortcutRemoval);
   assert.equal(
     createHash("sha256").update(upstream).digest("hex"),

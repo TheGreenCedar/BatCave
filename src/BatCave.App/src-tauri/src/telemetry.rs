@@ -191,7 +191,8 @@ impl TelemetryCollector {
         // and the generic fallback.
         #[cfg(target_os = "macos")]
         let mut processes = {
-            let (processes, collection) = self.macos_processes.collect(process_sample_started_ms);
+            let (processes, collection) =
+                self.macos_processes.collect(process_sample_started_ms)?;
             let process_count = processes.len();
             if process_count > 0
                 && collection
@@ -950,7 +951,14 @@ fn system_quality(
 
     SystemMetricQuality {
         cpu: Some(cpu.clone()),
-        kernel_cpu: Some(cpu),
+        kernel_cpu: Some(if has_native_cpu {
+            cpu
+        } else {
+            MetricQualityInfo::new(MetricQuality::Held, MetricSource::DirectApi).with_limitation(
+                MetricLimitationCode::PendingBaseline,
+                "Waiting for native Windows CPU counters before kernel CPU is available.",
+            )
+        }),
         logical_cpu: Some(MetricQualityInfo::new(
             MetricQuality::Estimated,
             MetricSource::Sysinfo,
@@ -1142,6 +1150,71 @@ mod tests {
         NetworkAttributionSample, ObservedProcessGeneration, ProcessNetworkRates,
     };
     use std::collections::HashMap;
+
+    #[cfg(windows)]
+    #[test]
+    fn kernel_cpu_without_native_counters_encodes_as_pending_instead_of_zero() {
+        use crate::protocol::types::{
+            LimitationCode, MetricQualityV4, MetricSemantic, ProtocolEvent,
+        };
+
+        for has_native_cpu in [false, true] {
+            let mut snapshot = crate::protocol::test_runtime_snapshot();
+            snapshot.system.kernel_cpu_percent = 0.0;
+            snapshot.system.quality = Some(system_quality(
+                has_native_cpu,
+                DiskQualityState::Native,
+                MetricQualityInfo::new(MetricQuality::Native, MetricSource::InterfaceAggregate),
+            ));
+            let cpu = snapshot
+                .system
+                .quality
+                .as_ref()
+                .unwrap()
+                .cpu
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                cpu.quality,
+                if has_native_cpu {
+                    MetricQuality::Native
+                } else {
+                    MetricQuality::Estimated
+                }
+            );
+            let envelope =
+                crate::protocol::encode_snapshot(snapshot).expect("kernel CPU snapshot encodes");
+            let ProtocolEvent::RuntimeSnapshot(payload) = envelope.event else {
+                panic!("snapshot event expected");
+            };
+            let descriptor = payload
+                .descriptors
+                .iter()
+                .find(|descriptor| descriptor.semantic == MetricSemantic::KernelCpuUsage)
+                .expect("kernel CPU descriptor");
+            let observation = payload
+                .system
+                .metrics
+                .iter()
+                .find(|observation| observation.0 == descriptor.id)
+                .expect("kernel CPU observation");
+            if has_native_cpu {
+                assert_eq!(observation.1, Some(0.0));
+                assert_eq!(
+                    payload.quality_codes[usize::from(observation.2)],
+                    MetricQualityV4::Native
+                );
+            } else {
+                assert_eq!(observation.1, None);
+                assert_eq!(
+                    payload.quality_codes[usize::from(observation.2)],
+                    MetricQualityV4::Held
+                );
+                let limitation = &payload.limitations[usize::from(observation.4.unwrap())];
+                assert_eq!(limitation.code, LimitationCode::PendingBaseline);
+            }
+        }
+    }
 
     #[test]
     fn collector_health_separates_expected_coverage_gaps_from_failures() {

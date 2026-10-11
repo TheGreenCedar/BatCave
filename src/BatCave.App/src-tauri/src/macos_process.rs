@@ -376,7 +376,7 @@ impl MacosProcessCollector {
     pub fn collect(
         &mut self,
         sample_started_ms: u64,
-    ) -> (Vec<ProcessSample>, MacosProcessCollection) {
+    ) -> Result<(Vec<ProcessSample>, MacosProcessCollection), String> {
         self.collect_with_probes(&NativeMacosProcessProbes, sample_started_ms, &Instant::now)
     }
 
@@ -385,11 +385,11 @@ impl MacosProcessCollector {
         probes: &impl MacosProcessProbes,
         sample_started_ms: u64,
         clock: &dyn Fn() -> Instant,
-    ) -> (Vec<ProcessSample>, MacosProcessCollection) {
+    ) -> Result<(Vec<ProcessSample>, MacosProcessCollection), String> {
         let mut collection = MacosProcessCollection::default();
-        let Ok(identities) = probes.list_processes() else {
-            return (Vec::new(), collection);
-        };
+        let identities = probes
+            .list_processes()
+            .map_err(|failure| format!("macos_process_enumeration_failed:{failure:?}"))?;
         let previous_sample_started_ms = self.previous_sample_started_ms.replace(sample_started_ms);
         // A zero start timestamp disables the "born after sampling began" filter.
         let cutoff = if sample_started_ms == 0 {
@@ -415,7 +415,7 @@ impl MacosProcessCollector {
         }
         self.exe_cache.retain(|key, _| seen.contains(key));
         self.cpu_baselines.retain(|key, _| seen.contains(key));
-        (processes, collection)
+        Ok((processes, collection))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1050,6 +1050,7 @@ mod tests {
     #[derive(Clone)]
     struct FixtureProbes {
         identities: Vec<ProcessIdentity>,
+        enumeration_failure: Option<ProcessProbeFailure>,
         recheck: Option<ProcessProbeResult<ProcessIdentity>>,
         task: ProcessProbeResult<ProcTaskInfo>,
         rusage: ProcessProbeResult<RusageInfoV2>,
@@ -1063,6 +1064,7 @@ mod tests {
         fn full() -> Self {
             Self {
                 identities: vec![identity(42)],
+                enumeration_failure: None,
                 recheck: None,
                 task: Ok(ProcTaskInfo {
                     virtual_size: 8_192,
@@ -1087,6 +1089,9 @@ mod tests {
 
     impl MacosProcessProbes for FixtureProbes {
         fn list_processes(&self) -> ProcessProbeResult<Vec<ProcessIdentity>> {
+            if let Some(failure) = self.enumeration_failure {
+                return Err(failure);
+            }
             Ok(self.identities.clone())
         }
 
@@ -1136,11 +1141,49 @@ mod tests {
     }
 
     #[test]
+    fn process_enumeration_failure_preserves_state_and_differs_from_empty_success() {
+        let mut collector = collector();
+        let mut probes = FixtureProbes::full();
+        let t0 = Instant::now();
+        collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0))
+            .unwrap();
+        for failure in [
+            ProcessProbeFailure::Denied,
+            ProcessProbeFailure::Failed(libc::EIO),
+        ] {
+            probes.enumeration_failure = Some(failure);
+            let error = collector
+                .collect_with_probes(&probes, 3_000, &clock_at(t0 + Duration::from_secs(1)))
+                .unwrap_err();
+            assert_eq!(
+                error,
+                format!("macos_process_enumeration_failed:{failure:?}")
+            );
+            assert_eq!(collector.previous_sample_started_ms, Some(2_000));
+            assert_eq!(collector.cpu_baselines.len(), 1);
+            assert_eq!(collector.exe_cache.len(), 1);
+        }
+
+        probes.enumeration_failure = None;
+        probes.identities.clear();
+        let (processes, collection) = collector
+            .collect_with_probes(&probes, 4_000, &clock_at(t0 + Duration::from_secs(2)))
+            .unwrap();
+        assert!(processes.is_empty());
+        assert_eq!(collection, MacosProcessCollection::default());
+        assert_eq!(collector.previous_sample_started_ms, Some(4_000));
+        assert!(collector.cpu_baselines.is_empty());
+        assert!(collector.exe_cache.is_empty());
+    }
+
+    #[test]
     fn first_sample_holds_cpu_until_a_baseline_exists() {
         let mut collector = collector();
         let probes = FixtureProbes::full();
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.exited_count, 0);
         assert_eq!(processes.len(), 1);
         let process = &processes[0];
@@ -1168,7 +1211,9 @@ mod tests {
         let mut probes = FixtureProbes::full();
         // First collection sees no processes but establishes the previous tick.
         probes.identities = Vec::new();
-        collector.collect_with_probes(&probes, 10_000, &clock_at(Instant::now()));
+        collector
+            .collect_with_probes(&probes, 10_000, &clock_at(Instant::now()))
+            .unwrap();
 
         // Born at 10_500, sampled at 11_000: 500 ms old.
         // 6_000_000 mach units * (125/3) = 250_000_000 ns = 50% of one core over 500 ms.
@@ -1178,8 +1223,9 @@ mod tests {
             thread_count: 4,
             ..ProcTaskInfo::default()
         });
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 11_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 11_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].cpu_percent, 50.0);
         let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
@@ -1192,12 +1238,15 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         probes.identities = Vec::new();
-        collector.collect_with_probes(&probes, 10_000, &clock_at(Instant::now()));
+        collector
+            .collect_with_probes(&probes, 10_000, &clock_at(Instant::now()))
+            .unwrap();
 
         // Born at 10_900, sampled at 11_000: only 100 ms old.
         probes.identities = vec![born_identity(42, 10, 900_000)];
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 11_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 11_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].cpu_percent, 0.0);
         let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
@@ -1213,8 +1262,9 @@ mod tests {
         let mut collector = collector();
         let probes = FixtureProbes::full();
         // Identity fixture starts at 1_123 ms, well before the first sample.
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 10_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 10_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(processes.len(), 1);
         let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
         assert_eq!(cpu.quality, MetricQuality::Held);
@@ -1231,7 +1281,9 @@ mod tests {
             ..ProcTaskInfo::default()
         });
         let t0 = Instant::now();
-        collector.collect_with_probes(&probes, 2_000, &clock_at(t0));
+        collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0))
+            .unwrap();
         // +24_000_000 mach units * (125/3) ns/unit = 1_000_000_000 ns = 100% of one core.
         probes.task = Ok(ProcTaskInfo {
             total_user: 3_000 + 24_000_000,
@@ -1239,8 +1291,9 @@ mod tests {
             thread_count: 4,
             ..ProcTaskInfo::default()
         });
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(1)));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(1)))
+            .unwrap();
         assert_eq!(processes[0].cpu_percent, 100.0);
         let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
         assert_eq!(cpu.quality, MetricQuality::Native);
@@ -1252,8 +1305,12 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         let t0 = Instant::now();
-        collector.collect_with_probes(&probes, 2_000, &clock_at(t0));
-        collector.collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(1)));
+        collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0))
+            .unwrap();
+        collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(1)))
+            .unwrap();
         assert_eq!(probes.exe_calls.get(), 1);
 
         // Same pid, new generation (later start time still before the sample cutoff).
@@ -1261,8 +1318,9 @@ mod tests {
             microseconds: 500_000,
             ..identity(42)
         }];
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(2)));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(2)))
+            .unwrap();
         assert_eq!(probes.exe_calls.get(), 2);
         let cpu = processes[0].quality.as_ref().unwrap().cpu.as_ref().unwrap();
         assert_eq!(cpu.quality, MetricQuality::Held);
@@ -1277,8 +1335,9 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         probes.rusage = Err(ProcessProbeFailure::Exited);
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.exited_count, 1);
         assert_eq!(summary.denied_count, 0);
         assert!(processes.is_empty());
@@ -1292,8 +1351,9 @@ mod tests {
             microseconds: 124_000,
             ..identity(42)
         }));
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.exited_count, 1);
         assert!(processes.is_empty());
     }
@@ -1303,8 +1363,9 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         probes.recheck = Some(Err(ProcessProbeFailure::Exited));
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.exited_count, 1);
         assert!(processes.is_empty());
     }
@@ -1313,8 +1374,9 @@ mod tests {
     fn birth_after_sample_start_is_dropped() {
         let mut collector = collector();
         let probes = FixtureProbes::full(); // born at 1123 ms
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 1_122, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 1_122, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.exited_count, 1);
         assert!(processes.is_empty());
     }
@@ -1328,8 +1390,9 @@ mod tests {
             descriptor_count: Err(ProcessProbeFailure::Denied),
             ..FixtureProbes::full()
         };
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.denied_count, 1);
         assert_eq!(summary.exited_count, 0);
         assert_eq!(processes[0].access_state, AccessState::Denied);
@@ -1357,8 +1420,9 @@ mod tests {
             descriptor_count: Err(ProcessProbeFailure::Unsupported),
             ..FixtureProbes::full()
         };
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.denied_count, 0);
         assert_eq!(summary.partial_count, 1);
         assert_eq!(processes[0].access_state, AccessState::Partial);
@@ -1369,8 +1433,9 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         probes.exe = Err(ProcessProbeFailure::Denied);
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.exited_count, 0);
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].name, "test");
@@ -1386,8 +1451,9 @@ mod tests {
             descriptor_count: Ok(12),
             ..FixtureProbes::full()
         };
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         let memory = processes[0]
             .quality
             .as_ref()
@@ -1408,8 +1474,9 @@ mod tests {
             rusage: Err(ProcessProbeFailure::Denied),
             ..FixtureProbes::full()
         };
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         let memory = processes[0]
             .quality
             .as_ref()
@@ -1425,10 +1492,14 @@ mod tests {
         let mut collector = collector();
         let probes = FixtureProbes::full();
         let t0 = Instant::now();
-        let (processes, _) = collector.collect_with_probes(&probes, 2_000, &clock_at(t0));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0))
+            .unwrap();
         assert_eq!(processes[0].name, "test");
         assert_eq!(processes[0].exe, "/usr/bin/test");
-        collector.collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(1)));
+        collector
+            .collect_with_probes(&probes, 2_000, &clock_at(t0 + Duration::from_secs(1)))
+            .unwrap();
         assert_eq!(probes.exe_calls.get(), 1);
     }
 
@@ -1436,12 +1507,15 @@ mod tests {
     fn caches_evict_generations_that_vanished() {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
-        collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(collector.exe_cache.len(), 1);
         assert_eq!(collector.cpu_baselines.len(), 1);
         probes.identities = Vec::new();
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert!(processes.is_empty());
         assert!(collector.exe_cache.is_empty());
         assert!(collector.cpu_baselines.is_empty());
@@ -1452,8 +1526,9 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         probes.thread = Err(ProcessProbeFailure::Denied);
-        let (processes, _) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, _) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(processes[0].status, "Run");
         // thread_status failure never degrades the access state.
         assert_eq!(processes[0].access_state, AccessState::Full);
@@ -1489,8 +1564,9 @@ mod tests {
         let mut collector = collector();
         let mut probes = FixtureProbes::full();
         probes.recheck = Some(Err(ProcessProbeFailure::Denied));
-        let (processes, summary) =
-            collector.collect_with_probes(&probes, 2_000, &clock_at(Instant::now()));
+        let (processes, summary) = collector
+            .collect_with_probes(&probes, 2_000, &clock_at(Instant::now()))
+            .unwrap();
         assert_eq!(summary.partial_count, 1);
         assert_eq!(summary.exited_count, 0);
         assert_eq!(processes[0].access_state, AccessState::Partial);
@@ -1536,7 +1612,7 @@ mod tests {
     #[test]
     fn current_process_collects_native_metrics() {
         let mut collector = MacosProcessCollector::new();
-        let (processes, _summary) = collector.collect(now_ms_for_test());
+        let (processes, _summary) = collector.collect(now_ms_for_test()).unwrap();
         let pid = std::process::id().to_string();
         let current = processes
             .iter()
@@ -1586,9 +1662,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
 
         let mut collector = MacosProcessCollector::new();
-        let _ = collector.collect(crate::telemetry::now_ms());
+        let _ = collector.collect(crate::telemetry::now_ms()).unwrap();
         std::thread::sleep(Duration::from_secs(1));
-        let (processes, _summary) = collector.collect(crate::telemetry::now_ms());
+        let (processes, _summary) = collector.collect(crate::telemetry::now_ms()).unwrap();
 
         let yes = processes
             .iter()

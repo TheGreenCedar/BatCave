@@ -83,6 +83,16 @@ assert.equal(
 );
 
 const uninstall = section(generated, "Section Uninstall", "SectionEnd");
+assert.doesNotMatch(
+  generated,
+  /DeleteAppDataCheckbox|Function un\.Confirm(?:Show|Leave)|\$\(deleteAppData\)/u,
+  "generated uninstaller must omit the app-data deletion promise because user data is retained",
+);
+assert.doesNotMatch(
+  uninstall,
+  /RmDir\s+\/r\s+"\$(?:LOCAL)?APPDATA\\/iu,
+  "generated uninstaller must preserve current-user data",
+);
 const preuninstall = uninstall.indexOf("!insertmacro NSIS_HOOK_PREUNINSTALL");
 const shortcutRemoval = section(
   uninstall,

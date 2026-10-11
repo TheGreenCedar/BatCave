@@ -390,7 +390,8 @@ fn parse_cpu_snapshot(content: &str) -> Result<CpuSnapshot, String> {
         if let Some(rest) = line.strip_prefix("cpu ") {
             let mut parsed_any = false;
             let mut total = 0_u64;
-            for value in rest.split_whitespace() {
+            // Guest and guest_nice are already included in user and nice ticks.
+            for value in rest.split_whitespace().take(8) {
                 parsed_any = true;
                 total =
                     total.saturating_add(value.parse::<u64>().map_err(|error| {
@@ -674,6 +675,25 @@ mod tests {
             parse_cpu_snapshot("intr 1\n").unwrap_err(),
             "linux_proc_stat_missing_cpu_total"
         );
+    }
+
+    #[test]
+    fn guest_cpu_ticks_do_not_reduce_process_cpu_percent() {
+        let previous = parse_cpu_snapshot("cpu  100 50 0 0 0 0 0 0 100 50\ncpu0 0\n")
+            .expect("previous CPU snapshot");
+        let current = parse_cpu_snapshot("cpu  160 90 0 0 0 0 0 0 160 90\ncpu0 0\n")
+            .expect("current CPU snapshot");
+
+        assert_eq!(previous.total_ticks, 150);
+        assert_eq!(current.total_ticks, 250);
+        let total_delta = current.total_ticks - previous.total_ticks;
+        let process_delta = 100_u64;
+        let process_cpu = round1(
+            process_delta as f64 / total_delta as f64
+                * current.logical_cpu_count.max(1) as f64
+                * 100.0,
+        );
+        assert_eq!(process_cpu, 100.0);
     }
 
     #[test]

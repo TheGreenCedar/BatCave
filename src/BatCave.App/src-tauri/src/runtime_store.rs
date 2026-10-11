@@ -1677,6 +1677,10 @@ impl RuntimeStore {
         for process in processes {
             let key = (process.pid.clone(), process.start_time_ms);
             seen.insert(key.clone());
+            if process.start_time_ms == 0 {
+                self.ranking_history.remove(&key);
+                self.attention_members.remove(&key);
+            }
             let ring = self.ranking_history.entry(key).or_default();
             ring.cpu_percent.push_back(
                 if contributor_quality_is_publishable(cpu_quality(process)) {
@@ -1687,15 +1691,18 @@ impl RuntimeStore {
             );
             ring.io_bps
                 .push_back(if contributor_quality_is_publishable(io_quality(process)) {
-                    process_io_rate(process)
+                    (process.io_read_bps, process.io_write_bps)
                 } else {
-                    0
+                    (0, 0)
                 });
             ring.network_bps.push_back(
                 if contributor_quality_is_publishable(network_quality(process)) {
-                    process_network_rate(process)
+                    (
+                        process.network_received_bps.unwrap_or(0),
+                        process.network_transmitted_bps.unwrap_or(0),
+                    )
                 } else {
-                    0
+                    (0, 0)
                 },
             );
             while ring.cpu_percent.len() > RANKING_WINDOW_SAMPLES {
@@ -3032,15 +3039,17 @@ const RANKING_MIN_SAMPLES: usize = 3;
 struct ProcessRankingValues {
     cpu_percent: f64,
     io_bps: u64,
+    io_read_bps: u64,
     network_bps: u64,
+    network_received_bps: u64,
     established: bool,
 }
 
 #[derive(Debug, Default)]
 struct RankingRing {
     cpu_percent: VecDeque<f64>,
-    io_bps: VecDeque<u64>,
-    network_bps: VecDeque<u64>,
+    io_bps: VecDeque<(u64, u64)>,
+    network_bps: VecDeque<(u64, u64)>,
 }
 
 impl RankingRing {
@@ -3062,7 +3071,11 @@ impl RankingRing {
         if len == 0 {
             0
         } else {
-            self.io_bps.iter().sum::<u64>() / len as u64
+            self.io_bps
+                .iter()
+                .map(|(read, write)| read.saturating_add(*write))
+                .sum::<u64>()
+                / len as u64
         }
     }
 
@@ -3071,27 +3084,47 @@ impl RankingRing {
         if len == 0 {
             0
         } else {
-            self.network_bps.iter().sum::<u64>() / len as u64
+            self.network_bps
+                .iter()
+                .map(|(received, transmitted)| received.saturating_add(*transmitted))
+                .sum::<u64>()
+                / len as u64
         }
     }
 
     /// Full-window average: earlier missing samples count as zero.
     fn window_values(&self) -> ProcessRankingValues {
-        ProcessRankingValues {
-            cpu_percent: self.cpu_percent.iter().sum::<f64>() / RANKING_WINDOW_SAMPLES as f64,
-            io_bps: self.io_bps.iter().sum::<u64>() / RANKING_WINDOW_SAMPLES as u64,
-            network_bps: self.network_bps.iter().sum::<u64>() / RANKING_WINDOW_SAMPLES as u64,
-            established: self.is_established(),
-        }
+        self.values(RANKING_WINDOW_SAMPLES)
     }
 
     /// Mean over the samples retained so far; used to display young
     /// generations so they do not show a fake zero before joining the ranking.
     fn observed_values(&self) -> ProcessRankingValues {
+        self.values(self.cpu_percent.len().max(1))
+    }
+
+    fn values(&self, divisor: usize) -> ProcessRankingValues {
         ProcessRankingValues {
-            cpu_percent: self.cpu_average(),
-            io_bps: self.io_average(),
-            network_bps: self.network_average(),
+            cpu_percent: self.cpu_percent.iter().sum::<f64>() / divisor as f64,
+            io_bps: self
+                .io_bps
+                .iter()
+                .map(|(read, write)| read.saturating_add(*write))
+                .sum::<u64>()
+                / divisor as u64,
+            io_read_bps: self.io_bps.iter().map(|(read, _)| *read).sum::<u64>() / divisor as u64,
+            network_bps: self
+                .network_bps
+                .iter()
+                .map(|(received, transmitted)| received.saturating_add(*transmitted))
+                .sum::<u64>()
+                / divisor as u64,
+            network_received_bps: self
+                .network_bps
+                .iter()
+                .map(|(received, _)| *received)
+                .sum::<u64>()
+                / divisor as u64,
             established: self.is_established(),
         }
     }
@@ -3104,7 +3137,9 @@ fn ranking_values_for(history: &RankingHistory, process: &ProcessSample) -> Proc
         return ProcessRankingValues {
             cpu_percent: process.cpu_percent,
             io_bps: process_io_rate(process),
+            io_read_bps: process.io_read_bps,
             network_bps: process_network_rate(process),
+            network_received_bps: process.network_received_bps.unwrap_or(0),
             established: true,
         };
     };
@@ -3153,8 +3188,8 @@ fn display_by_workload(groups: &[ProcessAppGroup]) -> HashMap<String, ProcessRan
 ///
 /// The wire protocol carries only the read/write and receive/transmit rates
 /// for process rows — the frontend derives the totals by summing them — so the
-/// splits are scaled proportionally to keep their sum equal to the smoothed
-/// total while preserving each side's share.
+/// each direction uses its retained average, with rounding assigned to the
+/// second direction so the pair still sums to the displayed total.
 fn apply_display_values(
     rows: &mut [ProcessViewRow],
     display: &HashMap<String, ProcessRankingValues>,
@@ -3166,17 +3201,15 @@ fn apply_display_values(
                     detail.process.cpu_percent = round1(values.cpu_percent);
                     detail.io_bps = values.io_bps;
                     detail.network_bps = values.network_bps;
-                    scale_rate_pair(
-                        &mut detail.process.io_read_bps,
-                        &mut detail.process.io_write_bps,
-                        values.io_bps,
-                    );
+                    detail.process.io_read_bps = values.io_read_bps.min(values.io_bps);
+                    detail.process.io_write_bps = values.io_bps - detail.process.io_read_bps;
                     match (
                         &mut detail.process.network_received_bps,
                         &mut detail.process.network_transmitted_bps,
                     ) {
                         (Some(received), Some(transmitted)) => {
-                            scale_rate_pair(received, transmitted, values.network_bps)
+                            *received = values.network_received_bps.min(values.network_bps);
+                            *transmitted = values.network_bps - *received;
                         }
                         (Some(received), None) => *received = values.network_bps,
                         (None, Some(transmitted)) => *transmitted = values.network_bps,
@@ -3193,18 +3226,6 @@ fn apply_display_values(
             }
         }
     }
-}
-
-/// Rescales a rate pair so its sum equals `total`, preserving the existing
-/// share of each side. A zero pair stays zero (there is no direction to infer).
-fn scale_rate_pair(first: &mut u64, second: &mut u64, total: u64) {
-    let current = first.saturating_add(*second);
-    if current == 0 {
-        return;
-    }
-    let scaled_first = (total as f64 * (*first as f64 / current as f64)).round() as u64;
-    *first = scaled_first.min(total);
-    *second = total - *first;
 }
 
 #[derive(Debug, Clone)]
@@ -7828,6 +7849,65 @@ mod tests {
     }
 
     #[test]
+    fn idle_rows_retain_directional_averages_and_displayed_totals() {
+        let mut store = RuntimeStore::new();
+        let mut process = sample("10", "Transfer", 0.0);
+        process.io_read_bps = 100;
+        process.io_write_bps = 300;
+        process.network_received_bps = Some(1_000);
+        process.network_transmitted_bps = Some(2_000);
+        for _ in 0..RANKING_WINDOW_SAMPLES {
+            store.update_ranking_history(&[process.clone()]);
+        }
+        process.io_read_bps = 300;
+        process.io_write_bps = 100;
+        process.network_received_bps = Some(2_000);
+        process.network_transmitted_bps = Some(1_000);
+        store.update_ranking_history(&[process.clone()]);
+        process.io_read_bps = 0;
+        process.io_write_bps = 0;
+        process.network_received_bps = Some(0);
+        process.network_transmitted_bps = Some(0);
+        store.update_ranking_history(&[process.clone()]);
+
+        let rows =
+            shape_process_view_with_history(&[process], &store.ranking_history, &full_view_query());
+        let ProcessViewRow::Process { detail, .. } = &rows[0] else {
+            panic!("expected process row");
+        };
+        assert_eq!(detail.process.io_read_bps, 120);
+        assert_eq!(detail.process.io_write_bps, 200);
+        assert_eq!(detail.io_bps, 320);
+        assert_eq!(detail.process.network_received_bps, Some(1_000));
+        assert_eq!(detail.process.network_transmitted_bps, Some(1_400));
+        assert_eq!(detail.network_bps, 2_400);
+    }
+
+    #[test]
+    fn unknown_start_time_does_not_retain_ranking_or_attention_history() {
+        let mut store = RuntimeStore::new();
+        let mut process = sample("10", "Unknown", 100.0);
+        process.start_time_ms = 0;
+        for _ in 0..RANKING_WINDOW_SAMPLES {
+            store.update_ranking_history(&[process.clone()]);
+        }
+        assert!(!ranking_values_for(&store.ranking_history, &process).established);
+        assert!(store.attention_members.is_empty());
+        process.name = "Reused PID".into();
+        process.cpu_percent = 0.0;
+        store.update_ranking_history(&[process.clone()]);
+        assert_eq!(
+            display_values_for(&store.ranking_history, &process).cpu_percent,
+            0.0
+        );
+        assert_eq!(
+            store.ranking_history[&(process.pid, 0)].cpu_percent.len(),
+            1
+        );
+        assert!(store.attention_members.is_empty());
+    }
+
+    #[test]
     fn young_processes_display_their_available_sample_mean() {
         let mut store = RuntimeStore::new();
         feed_processes(&mut store, vec![sample("10", "Young", 40.0)], 0);
@@ -7849,8 +7929,8 @@ mod tests {
 
         let ring = |cpu: f64| RankingRing {
             cpu_percent: VecDeque::from(vec![cpu; RANKING_MIN_SAMPLES]),
-            io_bps: VecDeque::from(vec![0; RANKING_MIN_SAMPLES]),
-            network_bps: VecDeque::from(vec![0; RANKING_MIN_SAMPLES]),
+            io_bps: VecDeque::from(vec![(0, 0); RANKING_MIN_SAMPLES]),
+            network_bps: VecDeque::from(vec![(0, 0); RANKING_MIN_SAMPLES]),
         };
         let mut history = RankingHistory::new();
         history.insert((parent.pid.clone(), parent.start_time_ms), ring(10.0));
@@ -8371,8 +8451,8 @@ mod tests {
         };
         let ring = |cpu: f64, samples: usize| RankingRing {
             cpu_percent: VecDeque::from(vec![cpu; samples]),
-            io_bps: VecDeque::from(vec![0; samples]),
-            network_bps: VecDeque::from(vec![0; samples]),
+            io_bps: VecDeque::from(vec![(0, 0); samples]),
+            network_bps: VecDeque::from(vec![(0, 0); samples]),
         };
         let seed_ring = |history: &mut RankingHistory, process: &ProcessSample, cpu: f64| {
             history.insert(
@@ -8432,8 +8512,8 @@ mod tests {
         };
         let ring = |cpu: f64, samples: usize| RankingRing {
             cpu_percent: VecDeque::from(vec![cpu; samples]),
-            io_bps: VecDeque::from(vec![0; samples]),
-            network_bps: VecDeque::from(vec![0; samples]),
+            io_bps: VecDeque::from(vec![(0, 0); samples]),
+            network_bps: VecDeque::from(vec![(0, 0); samples]),
         };
         let names = |rows: &[ProcessViewRow]| {
             rows.iter()

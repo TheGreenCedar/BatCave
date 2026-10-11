@@ -214,6 +214,10 @@ impl WorkloadArchive {
         // Encode one disjoint family at a time; never materialize a second complete workload catalog.
         let mut members: HashMap<&str, Vec<usize>> = HashMap::new();
         for (index, row) in rows.iter().enumerate() {
+            // Budget enforcement must see the whole sample's live membership before any family inserts.
+            if let Some(entry) = self.entries.get_mut(&row_id(row, snapshot.sample_seq)) {
+                entry.last_sample_seq = snapshot.sample_seq;
+            }
             if let ProcessViewRow::Process {
                 group_key,
                 is_grouped: true,
@@ -1384,6 +1388,52 @@ mod tests {
             !archive.evicted.is_empty(),
             "the fixture must reach actual eviction pressure"
         );
+        assert!(archive.retained_bytes() + archive.budget / 8 <= archive.budget);
+    }
+    #[test]
+    fn sample_ingestion_trims_all_live_histories_before_releasing_an_identity() {
+        let mut snapshot = fixture();
+        let processes = (0..32)
+            .map(|index| {
+                let mut process = snapshot.processes[0].clone();
+                process.pid = (90_000 + index).to_string();
+                process.parent_pid = None;
+                process.start_time_ms = 1_000 + index;
+                process.name = format!("worker-{index}");
+                process.exe = format!("/usr/bin/worker-{index}");
+                process
+            })
+            .collect::<Vec<_>>();
+        let mut archive = WorkloadArchive::with_budget(2 * 1024 * 1024);
+        let mut trimmed = false;
+        for count in 1..=140 {
+            snapshot.sample_seq += 1;
+            snapshot.publication_seq += 1;
+            snapshot.sampled_at_ms = snapshot.sampled_at_ms.map(|time| time + 1_000);
+            snapshot.published_at_ms = snapshot.sampled_at_ms.unwrap();
+            archive.begin_ingress(&processes).unwrap();
+            let rows = crate::runtime_store::shape_full_process_view(&processes);
+            archive.observe(&snapshot, &rows, true).unwrap();
+            assert!(
+                archive.retained_bytes() + archive.ingress_reserved + archive.budget / 8
+                    <= archive.budget
+            );
+            assert_eq!(archive.entries.len(), processes.len());
+            for row in &rows {
+                let entry = &archive.entries[&row_id(row, snapshot.sample_seq)];
+                assert_eq!(entry.last_sample_seq, snapshot.sample_seq);
+                assert_eq!(
+                    entry.history.back().unwrap().sample_seq,
+                    snapshot.sample_seq
+                );
+                assert!(entry.history.len() >= count.min(MIN_TRIMMED_POINTS));
+                trimmed |= entry.truncated;
+            }
+            drop(rows);
+            archive.end_ingress();
+        }
+        assert!(trimmed, "the fixture must reach actual trimming pressure");
+        assert!(archive.evicted.is_empty(), "live identities must survive");
         assert!(archive.retained_bytes() + archive.budget / 8 <= archive.budget);
     }
     #[test]

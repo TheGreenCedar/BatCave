@@ -385,11 +385,11 @@
       <section class="settings-section">
         <div class="settings-section-heading">
           <h3>Reset</h3>
-          <p>Clears retained chart history. Live values are not affected.</p>
+          <p>Clears system chart history. Live values and workload inspection history are retained.</p>
         </div>
         <div class="history-reset-actions">
           <button class="danger-outline" type="button" onclick={requestReset}>
-            {resetConfirm ? "Confirm reset history" : "Reset chart history"}
+            {resetConfirm ? "Confirm system history reset" : "Reset system chart history"}
           </button>
           {#if resetConfirm}
             <button class="text-action" type="button" onclick={() => (resetConfirm = false)}>Cancel</button>
