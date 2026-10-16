@@ -339,7 +339,15 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   const installerTemplate = await text("windows/installer-template.nsi");
   const header = [
     "; Pinned from Tauri CLI 2.11.4 (tauri-bundler 2.9.4, commit 8909f221d1515955fc843808032bdc5d62209c96).",
-    "; BatCave deltas are limited to shortcut suppression in install, finish, and uninstall paths.",
+    "; BatCave deltas cover shortcut suppression and exact signed payload exports.",
+    "",
+  ].join("\n");
+  const guiExport = [
+    "; Preserve the signed package GUI before Tauri restores the build output.",
+    '!if "$%BATCAVE_SIGNED_GUI_EXPORT_PATH%" != ""',
+    '  !system \'"$%ComSpec%" /D /C copy /Y "${MAINBINARYSRCPATH}" "$%BATCAVE_SIGNED_GUI_EXPORT_PATH%"\' = 0',
+    "!endif",
+    "",
     "",
   ].join("\n");
   const uninstallerExport = [
@@ -376,6 +384,13 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   assert.equal(installerTemplate.split(finishControlOmission).length - 1, 1);
   assert.equal(installerTemplate.split(uninstallGuardComment).length - 1, 1);
   assert.equal(installerTemplate.split(uninstallGuardStart).length - 1, 1);
+  assert.equal(installerTemplate.split(guiExport).length - 1, 1);
+  assert.ok(
+    installerTemplate.indexOf(guiExport) > installerTemplate.indexOf("!define MAINBINARYSRCPATH"),
+  );
+  assert.ok(
+    installerTemplate.indexOf(guiExport) < installerTemplate.indexOf('File "${MAINBINARYSRCPATH}"'),
+  );
   assert.equal(installerTemplate.split(uninstallerExport).length - 1, 1);
   assert.ok(
     installerTemplate.indexOf(uninstallerExport) >
@@ -404,6 +419,7 @@ test("pinned NSIS template differs from Tauri 2.11.4 only by audited BatCave del
   ].join("\n");
   const upstream = installerTemplate
     .slice(header.length)
+    .replace(guiExport, "")
     .replace(uninstallerExport, "")
     .replaceAll(guard, "")
     .replace(finishControlOmission, upstreamFinishControl)

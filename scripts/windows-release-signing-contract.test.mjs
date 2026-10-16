@@ -18,6 +18,134 @@ const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 const json = (file) => JSON.parse(read(file));
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
 
+test("production builder preserves Tauri's packaged signed GUI after Tauri restores its original", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-builder-order-"));
+  try {
+    const run = (missingExport) => {
+      const fixture = path.join(root, missingExport ? "missing-export" : "complete");
+      const scripts = path.join(fixture, "scripts");
+      const tauri = path.join(fixture, "src/BatCave.App/src-tauri");
+      const target = path.join(tauri, "target/release");
+      for (const directory of [path.join(scripts, "windows-signing"), path.join(tauri, "windows"), path.join(target, "bundle/nsis"), path.join(tauri, ".generated/foundry-native")]) {
+        fs.mkdirSync(directory, { recursive: true });
+      }
+      fs.copyFileSync(path.join(ROOT, "scripts/build-signed-windows-release.ps1"), path.join(scripts, "build-signed-windows-release.ps1"));
+      const contract = json("scripts/windows-signing/artifact-signing-contract.v1.json");
+      contract.third_party_resigned_files[0].source_sha256 = crypto.createHash("sha256").update("unsigned Core").digest("hex");
+      fs.writeFileSync(path.join(scripts, "windows-signing/artifact-signing-contract.v1.json"), JSON.stringify(contract));
+      for (const name of ["batcave-monitor.exe", "batcave-monitor-cli.exe", "batcave-collector-service.exe"]) {
+        fs.writeFileSync(path.join(target, name), `unsigned ${name}`);
+      }
+      for (const name of ["Microsoft.AI.Foundry.Local.Core.dll", "onnxruntime.dll", "onnxruntime-genai.dll"]) {
+        fs.writeFileSync(path.join(tauri, ".generated/foundry-native", name), name.startsWith("Microsoft") ? "unsigned Core" : "upstream signed");
+      }
+      fs.copyFileSync(path.join(ROOT, "src/BatCave.App/src-tauri/windows/sign-artifact.ps1"), path.join(tauri, "windows/sign-artifact.ps1"));
+      fs.writeFileSync(path.join(scripts, "write-windows-signature-inventory.ps1"), `
+param([string]$Phase, [string[]]$Path, [string]$OutputPath, [string]$GeneratedInstallerScript)
+Add-Content -LiteralPath $env:TEST_EVENTS -Value ($Phase + '-inventory')
+$files = @($Path | ForEach-Object {
+    @{ name = [IO.Path]::GetFileName($_); sha256 = 'sha256:' + (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
+})
+@{ files = $files } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $OutputPath
+`);
+      const signTool = path.join(fixture, "signtool.ps1");
+      fs.writeFileSync(signTool, `
+if ($args[0] -eq 'sign') {
+    $file = $args[-1]
+    [IO.File]::AppendAllText($file, '|signed')
+    (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash | Set-Content -LiteralPath ($file + '.signature-hash')
+    $global:LASTEXITCODE = 0
+} else { $global:LASTEXITCODE = 1 }
+`);
+      const harness = path.join(fixture, "run.ps1");
+      fs.writeFileSync(harness, `
+$ErrorActionPreference = 'Stop'
+Set-Variable IsWindows $true -Force
+if (-not ('System.Management.Automation.SignatureStatus' -as [type])) {
+    Add-Type 'namespace System.Management.Automation { public enum SignatureStatus { Valid, NotSigned, HashMismatch } }'
+}
+function Get-AuthenticodeSignature([string]$LiteralPath) {
+    $status = [System.Management.Automation.SignatureStatus]::NotSigned
+    if (Test-Path -LiteralPath ($LiteralPath + '.signature-hash')) {
+        $hash = (Get-FileHash -LiteralPath $LiteralPath -Algorithm SHA256).Hash
+        $signedHash = (Get-Content -LiteralPath ($LiteralPath + '.signature-hash') -Raw).Trim()
+        $status = if ($hash -eq $signedHash) { [System.Management.Automation.SignatureStatus]::Valid } else { [System.Management.Automation.SignatureStatus]::HashMismatch }
+    }
+    [pscustomobject]@{ Status = $status; SignerCertificate = [pscustomobject]@{ Subject = 'CN=Albert Najjar' }; TimeStamperCertificate = [pscustomobject]@{} }
+}
+function npm {
+    $tauri = Join-Path $env:TEST_FIXTURE 'src/BatCave.App/src-tauri'
+    $target = Join-Path $tauri 'target/release'
+    $installer = Join-Path $target 'bundle/nsis/BatCave Monitor_0.2.1-rc.1_x64-setup.exe'
+    if ($args -contains 'bundle') {
+        Add-Content -LiteralPath $env:TEST_EVENTS -Value 'bundle'
+        $gui = Join-Path $target 'batcave-monitor.exe'
+        $original = [IO.File]::ReadAllText($gui)
+        [IO.File]::WriteAllText($gui, $original.Replace('unsigned', 'nsis-patched'))
+        & (Join-Path $tauri 'windows/sign-artifact.ps1') -Path $gui
+        Copy-Item -LiteralPath $gui -Destination (Join-Path $env:TEST_FIXTURE 'packaged-gui.exe')
+        if ($env:TEST_MISSING_EXPORT -ne 'true' -and $env:BATCAVE_SIGNED_GUI_EXPORT_PATH) {
+            Copy-Item -LiteralPath $gui -Destination $env:BATCAVE_SIGNED_GUI_EXPORT_PATH
+            Copy-Item -LiteralPath $env:BATCAVE_SIGNED_GUI_EXPORT_PATH -Destination (Join-Path $env:TEST_FIXTURE 'exported-gui.exe')
+        }
+        [IO.File]::WriteAllText($gui, $original)
+        [IO.File]::WriteAllText($env:BATCAVE_UNINSTALLER_EXPORT_PATH, 'signed uninstaller')
+        [IO.File]::WriteAllText($installer, 'signed installer with packaged GUI')
+    } elseif ($args -contains 'signer') {
+        Add-Content -LiteralPath $env:TEST_EVENTS -Value 'updater-sign'
+        [IO.File]::WriteAllText($installer + '.sig', 'updater signature')
+    }
+    $global:LASTEXITCODE = 0
+}
+function cargo {
+    if ($args -contains 'batcave-verify-updater-signature') { Copy-Item -LiteralPath $args[-4] -Destination $args[-1] }
+    $global:LASTEXITCODE = 0
+}
+try {
+    & (Join-Path $env:TEST_FIXTURE 'scripts/build-signed-windows-release.ps1') -EvidenceDirectory (Join-Path $env:TEST_FIXTURE 'evidence')
+} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+`);
+      const result = spawnSync(process.env.PWSH_PATH || "pwsh", ["-NoProfile", "-NonInteractive", "-File", harness], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          TEST_FIXTURE: fixture,
+          TEST_EVENTS: path.join(fixture, "events.txt"),
+          TEST_MISSING_EXPORT: String(missingExport),
+          BATCAVE_WINDOWS_SIGNING_PROFILE: "production",
+          BATCAVE_SOURCE_COMMIT_SHA: sourceSha,
+          BATCAVE_ARTIFACT_SIGNING_DLIB: signTool,
+          BATCAVE_ARTIFACT_SIGNING_METADATA: signTool,
+          BATCAVE_SIGNTOOL_PATH: signTool,
+          BATCAVE_SIGNED_GUI_EXPORT_PATH: "",
+          TAURI_SIGNING_PRIVATE_KEY: "fixture",
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "fixture",
+        },
+      });
+      const eventsFile = path.join(fixture, "events.txt");
+      const events = fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, "utf8").trim().split(/\r?\n/u) : [];
+      return { result, fixture, target, events };
+    };
+    const complete = run(false);
+    assert.equal(complete.result.status, 0, complete.result.stderr || complete.result.error?.message);
+    const packaged = fs.readFileSync(path.join(complete.fixture, "packaged-gui.exe"));
+    assert.equal(packaged.toString(), "nsis-patched batcave-monitor.exe|signed");
+    assert.deepEqual(fs.readFileSync(path.join(complete.fixture, "exported-gui.exe")), packaged);
+    assert.deepEqual(fs.readFileSync(path.join(complete.target, "batcave-monitor.exe")), packaged);
+    const expectedDigest = `sha256:${crypto.createHash("sha256").update(packaged).digest("hex")}`;
+    for (const phase of ["inner", "final"]) {
+      const inventory = JSON.parse(fs.readFileSync(path.join(complete.fixture, `evidence/windows-signatures-${phase}.json`), "utf8"));
+      assert.equal(inventory.files.find(({ name }) => name === "batcave-monitor.exe").sha256, expectedDigest);
+    }
+    assert.deepEqual(complete.events, ["bundle", "inner-inventory", "updater-sign", "final-inventory"]);
+    const missing = run(true);
+    assert.equal(missing.result.status, 1, missing.result.stderr);
+    assert.deepEqual(missing.events, ["bundle"], "missing GUI export must fail before inventory or updater signing");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("production inventory binds the raw spaced NSIS installer to its canonical release name", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-signature-inventory-"));
   try {
@@ -25,15 +153,18 @@ test("production inventory binds the raw spaced NSIS installer to its canonical 
     const rawInstallerName = "BatCave Monitor_0.2.1-rc.1_x64-setup.exe";
     const installerName = "BatCave.Monitor_0.2.1-rc.1_x64-setup.exe";
     const contract = json("scripts/windows-signing/artifact-signing-contract.v1.json");
+    const rawWebViewName = "MicrosoftEdgeWebView2RuntimeInstallerX64.exe";
     const names = [
       ...contract.batcave_owned_files,
-      ...contract.upstream_files,
+      ...contract.upstream_files.map((name) => name === "MicrosoftEdgeWebView2RuntimeInstaller.exe" ? rawWebViewName : name),
       ...contract.third_party_resigned_files.map(({ name }) => name),
       rawInstallerName,
     ];
     for (const name of names) fs.writeFileSync(path.join(root, name), `fixture bytes for ${name}`);
     const inputs = path.join(root, "inputs.json");
-    fs.writeFileSync(inputs, JSON.stringify(names.map((name) => path.join(root, name))));
+    fs.writeFileSync(inputs, JSON.stringify(names.filter((name) => name !== rawWebViewName).map((name) => path.join(root, name))));
+    const generatedInstaller = path.join(root, "installer.nsi");
+    fs.writeFileSync(generatedInstaller, `File "/oname=$TEMP\\MicrosoftEdgeWebView2RuntimeInstaller.exe" "${path.join(root, rawWebViewName)}"\n`);
     const tool = path.join(root, "signtool.ps1");
     fs.writeFileSync(tool, `
 [IO.File]::AppendAllLines($env:TEST_TOOL_CALLS, [string[]]@($args[-1]))
@@ -59,7 +190,7 @@ $microsoft = New-TestCertificate 'CN=Microsoft Corporation'
 function Get-AuthenticodeSignature([string]$LiteralPath) {
     [IO.File]::AppendAllLines($env:TEST_SIGNATURE_CALLS, [string[]]@($LiteralPath))
     $name = [IO.Path]::GetFileName($LiteralPath)
-    $upstream = $name -in @('onnxruntime.dll', 'onnxruntime-genai.dll', 'MicrosoftEdgeWebView2RuntimeInstaller.exe')
+    $upstream = $name -in @('onnxruntime.dll', 'onnxruntime-genai.dll', 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe')
     $installer = $name -like 'BatCave*setup.exe'
     return [pscustomobject]@{
         Status = $(if ($installer -and $env:TEST_REJECT_SIGNATURE -eq 'true') {
@@ -71,7 +202,7 @@ function Get-AuthenticodeSignature([string]$LiteralPath) {
 }
 try {
     $paths = @(Get-Content -LiteralPath $env:TEST_INPUTS -Raw | ConvertFrom-Json)
-    & $env:TEST_WRITER -Phase final -Path $paths -OutputPath $env:TEST_OUTPUT
+    & $env:TEST_WRITER -Phase final -Path $paths -GeneratedInstallerScript $env:TEST_GENERATED_INSTALLER -OutputPath $env:TEST_OUTPUT
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
@@ -96,6 +227,7 @@ try {
           BATCAVE_SIGNTOOL_PATH: tool,
           TEST_WRITER: path.join(ROOT, "scripts/write-windows-signature-inventory.ps1"),
           TEST_INPUTS: inputs,
+          TEST_GENERATED_INSTALLER: generatedInstaller,
           TEST_OUTPUT: output,
           TEST_SIGNATURE_CALLS: signatureCalls,
           TEST_TOOL_CALLS: toolCalls,
@@ -112,6 +244,7 @@ try {
     assert.ok(installer, "inventory must use the public release name");
     assert.equal(installer.sha256, digest(rawInstallerName));
     assert.equal(installer.publisher_subject, "CN=Albert Najjar");
+    assert.equal(inventory.files.find(({ name }) => name === "MicrosoftEdgeWebView2RuntimeInstaller.exe").sha256, digest(rawWebViewName));
     const utcTimestamp = (day) => new Date(2026, 9, day, 12, 39, 5).toISOString().replace(".000Z", "Z");
     assert.ok(inventory.files.every((file) => file.rfc3161_timestamp_utc === utcTimestamp(16)));
     assert.equal(fs.existsSync(path.join(root, installerName)), false);
@@ -248,7 +381,7 @@ test("keeps optional Artifact Signing isolated and preserves its byte order", ()
   const build = builder.indexOf('"build", "--no-bundle"');
   const sourceHash = builder.indexOf("Foundry Core source digest");
   const sourceSignature = builder.indexOf("Foundry Core re-signing is allowed");
-  const sign = builder.indexOf("foreach ($file in @($innerOwned + $thirdPartyResigned))");
+  const sign = builder.indexOf("foreach ($file in @($preBundleOwned + $thirdPartyResigned))");
   const bundle = builder.indexOf('"bundle", "--config"');
   const updater = builder.indexOf('"signer", "sign", $installer');
   const inventory = builder.indexOf("-Phase final");

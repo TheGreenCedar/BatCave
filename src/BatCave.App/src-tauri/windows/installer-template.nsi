@@ -1,5 +1,5 @@
 ; Pinned from Tauri CLI 2.11.4 (tauri-bundler 2.9.4, commit 8909f221d1515955fc843808032bdc5d62209c96).
-; BatCave deltas are limited to shortcut suppression in install, finish, and uninstall paths.
+; BatCave deltas cover shortcut suppression and exact signed payload exports.
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -71,6 +71,11 @@ ${StrLoc}
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
+
+; Preserve the signed package GUI before Tauri restores the build output.
+!if "$%BATCAVE_SIGNED_GUI_EXPORT_PATH%" != ""
+  !system '"$%ComSpec%" /D /C copy /Y "${MAINBINARYSRCPATH}" "$%BATCAVE_SIGNED_GUI_EXPORT_PATH%"' = 0
+!endif
 
 Var PassiveMode
 Var UpdateMode
