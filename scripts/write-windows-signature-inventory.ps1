@@ -118,7 +118,8 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
         throw "Packaged PE is missing: $candidate"
     }
-    $name = [System.IO.Path]::GetFileName($candidate)
+    # Match release staging names while verifying the original packaged path.
+    $name = [System.IO.Path]::GetFileName($candidate).Replace(' ', '.')
     if ($seenNames.ContainsKey($name)) {
         $prior = $seenNames[$name]
         if ((Get-FileHash -LiteralPath $prior -Algorithm SHA256).Hash -cne
@@ -222,7 +223,7 @@ $inventory = [ordered]@{
         url = $contract.timestamp.url
         digest = $contract.timestamp.digest
     }
-    files = @($records | Sort-Object name)
+    files = @($records | Sort-Object { $_.name })
 }
 
 $output = [System.IO.Path]::GetFullPath($OutputPath)

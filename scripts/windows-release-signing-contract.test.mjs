@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,11 +11,130 @@ import {
   buildWindowsStorePreflightReceipt,
   validateWindowsStoreListing,
 } from "./validate-windows-store-preflight.mjs";
+import { validateWindowsSigningInventory } from "./verify-release-candidate.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 const json = (file) => JSON.parse(read(file));
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
+
+test("production inventory binds the raw spaced NSIS installer to its canonical release name", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-signature-inventory-"));
+  try {
+    const tag = "v0.2.1-rc.1";
+    const rawInstallerName = "BatCave Monitor_0.2.1-rc.1_x64-setup.exe";
+    const installerName = "BatCave.Monitor_0.2.1-rc.1_x64-setup.exe";
+    const contract = json("scripts/windows-signing/artifact-signing-contract.v1.json");
+    const names = [
+      ...contract.batcave_owned_files,
+      ...contract.upstream_files,
+      ...contract.third_party_resigned_files.map(({ name }) => name),
+      rawInstallerName,
+    ];
+    for (const name of names) fs.writeFileSync(path.join(root, name), `fixture bytes for ${name}`);
+    const inputs = path.join(root, "inputs.json");
+    fs.writeFileSync(inputs, JSON.stringify(names.map((name) => path.join(root, name))));
+    const tool = path.join(root, "signtool.ps1");
+    fs.writeFileSync(tool, `
+[IO.File]::AppendAllLines($env:TEST_TOOL_CALLS, [string[]]@($args[-1]))
+$global:LASTEXITCODE = $(if ($env:TEST_REJECT_TRUST -eq 'true') { 1 } else { 0 })
+'The signature is timestamped: 10/16/2026 12:00:00 PM +00:00'
+`);
+    const harness = path.join(root, "inventory-test.ps1");
+    fs.writeFileSync(harness, `
+$ErrorActionPreference = 'Stop'
+Set-Variable IsWindows $true -Force
+if (-not ('System.Management.Automation.SignatureStatus' -as [type])) {
+    Add-Type 'namespace System.Management.Automation { public enum SignatureStatus { Valid, NotSigned, HashMismatch } }'
+}
+$key = [Security.Cryptography.RSA]::Create(2048)
+function New-TestCertificate([string]$Subject) {
+    $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+        $Subject, $key, [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    return $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(1))
+}
+$batcave = New-TestCertificate 'CN=Albert Najjar'
+$microsoft = New-TestCertificate 'CN=Microsoft Corporation'
+function Get-AuthenticodeSignature([string]$LiteralPath) {
+    [IO.File]::AppendAllLines($env:TEST_SIGNATURE_CALLS, [string[]]@($LiteralPath))
+    $name = [IO.Path]::GetFileName($LiteralPath)
+    $upstream = $name -in @('onnxruntime.dll', 'onnxruntime-genai.dll', 'MicrosoftEdgeWebView2RuntimeInstaller.exe')
+    $installer = $name -like 'BatCave*setup.exe'
+    return [pscustomobject]@{
+        Status = $(if ($installer -and $env:TEST_REJECT_SIGNATURE -eq 'true') {
+            [System.Management.Automation.SignatureStatus]::HashMismatch
+        } else { [System.Management.Automation.SignatureStatus]::Valid })
+        SignerCertificate = $(if ($upstream -or ($installer -and $env:TEST_REJECT_PUBLISHER -eq 'true')) { $microsoft } else { $batcave })
+        TimeStamperCertificate = $microsoft
+    }
+}
+try {
+    $paths = @(Get-Content -LiteralPath $env:TEST_INPUTS -Raw | ConvertFrom-Json)
+    & $env:TEST_WRITER -Phase final -Path $paths -OutputPath $env:TEST_OUTPUT
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+} finally {
+    $batcave.Dispose()
+    $microsoft.Dispose()
+    $key.Dispose()
+}
+`);
+    const output = path.join(root, "inventory.json");
+    const signatureCalls = path.join(root, "signature-calls.txt");
+    const toolCalls = path.join(root, "tool-calls.txt");
+    const run = (overrides = {}) => spawnSync(
+      process.env.PWSH_PATH || "pwsh",
+      ["-NoProfile", "-NonInteractive", "-File", harness],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          BATCAVE_WINDOWS_SIGNING_PROFILE: "production",
+          BATCAVE_SOURCE_COMMIT_SHA: sourceSha,
+          BATCAVE_SIGNTOOL_PATH: tool,
+          TEST_WRITER: path.join(ROOT, "scripts/write-windows-signature-inventory.ps1"),
+          TEST_INPUTS: inputs,
+          TEST_OUTPUT: output,
+          TEST_SIGNATURE_CALLS: signatureCalls,
+          TEST_TOOL_CALLS: toolCalls,
+          ...overrides,
+        },
+      },
+    );
+    const result = run();
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    const inventory = JSON.parse(fs.readFileSync(output, "utf8"));
+    const digest = (name) => `sha256:${crypto.createHash("sha256").update(fs.readFileSync(path.join(root, name))).digest("hex")}`;
+    const installer = inventory.files.find(({ name }) => name === installerName);
+    assert.ok(installer, "inventory must use the public release name");
+    assert.equal(installer.sha256, digest(rawInstallerName));
+    assert.equal(installer.publisher_subject, "CN=Albert Najjar");
+    assert.equal(fs.existsSync(path.join(root, installerName)), false);
+    for (const log of [signatureCalls, toolCalls]) {
+      assert.deepEqual(fs.readFileSync(log, "utf8").trim().split(/\r?\n/u).sort(),
+        names.map((name) => path.join(root, name)).sort());
+    }
+    const assets = [
+      [installerName, rawInstallerName],
+      ["batcave-monitor.exe", "batcave-monitor.exe"],
+      ["batcave-monitor-cli.exe", "batcave-monitor-cli.exe"],
+    ].map(([name, rawName]) => ({ name, digest: digest(rawName) }));
+    assert.equal(validateWindowsSigningInventory(inventory, tag, sourceSha, assets), inventory);
+    for (const [input, message] of [
+      ["TEST_REJECT_SIGNATURE", /has invalid Authenticode status HashMismatch/u],
+      ["TEST_REJECT_PUBLISHER", /has unexpected publisher CN=Microsoft Corporation/u],
+      ["TEST_REJECT_TRUST", /SignTool trust verification failed/u],
+    ]) {
+      const rejected = run({ [input]: "true" });
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.match(rejected.stderr, message);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("pins the OIDC identity and every new signing tool input", () => {
   const contract = json("scripts/windows-signing/artifact-signing-contract.v1.json");
