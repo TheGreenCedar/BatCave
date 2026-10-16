@@ -38,7 +38,7 @@ test("production inventory binds the raw spaced NSIS installer to its canonical 
     fs.writeFileSync(tool, `
 [IO.File]::AppendAllLines($env:TEST_TOOL_CALLS, [string[]]@($args[-1]))
 $global:LASTEXITCODE = $(if ($env:TEST_REJECT_TRUST -eq 'true') { 1 } else { 0 })
-'The signature is timestamped: 10/16/2026 12:00:00 PM +00:00'
+if ($env:TEST_NO_TIMESTAMP -ne 'true') { "The signature is timestamped: $env:TEST_TIMESTAMP" }
 `);
     const harness = path.join(root, "inventory-test.ps1");
     fs.writeFileSync(harness, `
@@ -99,6 +99,7 @@ try {
           TEST_OUTPUT: output,
           TEST_SIGNATURE_CALLS: signatureCalls,
           TEST_TOOL_CALLS: toolCalls,
+          TEST_TIMESTAMP: "Fri Oct 16 12:39:05 2026",
           ...overrides,
         },
       },
@@ -111,6 +112,8 @@ try {
     assert.ok(installer, "inventory must use the public release name");
     assert.equal(installer.sha256, digest(rawInstallerName));
     assert.equal(installer.publisher_subject, "CN=Albert Najjar");
+    const utcTimestamp = (day) => new Date(2026, 9, day, 12, 39, 5).toISOString().replace(".000Z", "Z");
+    assert.ok(inventory.files.every((file) => file.rfc3161_timestamp_utc === utcTimestamp(16)));
     assert.equal(fs.existsSync(path.join(root, installerName)), false);
     for (const log of [signatureCalls, toolCalls]) {
       assert.deepEqual(fs.readFileSync(log, "utf8").trim().split(/\r?\n/u).sort(),
@@ -122,10 +125,24 @@ try {
       ["batcave-monitor-cli.exe", "batcave-monitor-cli.exe"],
     ].map(([name, rawName]) => ({ name, digest: digest(rawName) }));
     assert.equal(validateWindowsSigningInventory(inventory, tag, sourceSha, assets), inventory);
+    for (const timestamp of ["Fri Oct 2 12:39:05 2026", "Fri Oct  2 12:39:05 2026", "Fri Oct 02 12:39:05 2026"]) {
+      const padded = run({ TEST_TIMESTAMP: timestamp });
+      assert.equal(padded.status, 0, padded.stderr);
+      const parsed = JSON.parse(fs.readFileSync(output, "utf8"));
+      assert.ok(parsed.files.every((file) => file.rfc3161_timestamp_utc === utcTimestamp(2)), timestamp);
+    }
+    for (const timestamp of ["Fri Oct 32 12:39:05 2026", "Thu Oct 16 12:39:05 2026", "Fri Oct 16 25:39:05 2026", "2026-10-16T12:39:05Z"]) {
+      fs.rmSync(output, { force: true });
+      const malformed = run({ TEST_TIMESTAMP: timestamp });
+      assert.equal(malformed.status, 1, timestamp);
+      assert.ok(malformed.stderr.includes(timestamp), malformed.stderr);
+      assert.equal(fs.existsSync(output), false);
+    }
     for (const [input, message] of [
       ["TEST_REJECT_SIGNATURE", /has invalid Authenticode status HashMismatch/u],
       ["TEST_REJECT_PUBLISHER", /has unexpected publisher CN=Microsoft Corporation/u],
       ["TEST_REJECT_TRUST", /SignTool trust verification failed/u],
+      ["TEST_NO_TIMESTAMP", /SignTool did not report a verified timestamp/u],
     ]) {
       const rejected = run({ [input]: "true" });
       assert.equal(rejected.status, 1, rejected.stderr);

@@ -166,9 +166,12 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
     if ($null -eq $timestampMatch) {
         throw "SignTool did not report a verified timestamp for $name."
     }
-    $timestamp = [DateTimeOffset]::Parse(
+    # SignTool prints local time without a zone, with space-padded single-digit days.
+    $timestamp = [DateTimeOffset]::ParseExact(
         $timestampMatch.Matches[0].Groups[1].Value,
-        [Globalization.CultureInfo]::GetCultureInfo("en-US")
+        "ddd MMM d HH:mm:ss yyyy",
+        [Globalization.CultureInfo]::GetCultureInfo("en-US"),
+        ([Globalization.DateTimeStyles]::AllowWhiteSpaces -bor [Globalization.DateTimeStyles]::AssumeLocal)
     ).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
     $records.Add([ordered]@{
