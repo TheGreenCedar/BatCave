@@ -120,6 +120,9 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
     }
     # Match release staging names while verifying the original packaged path.
     $name = [System.IO.Path]::GetFileName($candidate).Replace(' ', '.')
+    if ($name -ceq "MicrosoftEdgeWebView2RuntimeInstallerX64.exe") {
+        $name = "MicrosoftEdgeWebView2RuntimeInstaller.exe"
+    }
     if ($seenNames.ContainsKey($name)) {
         $prior = $seenNames[$name]
         if ((Get-FileHash -LiteralPath $prior -Algorithm SHA256).Hash -cne

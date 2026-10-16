@@ -56,11 +56,12 @@ Invoke-Checked "cargo" @(
     "--bin", "batcave-collector-service", "--bin", "batcave-monitor-cli"
 ) $repoRoot
 
-$innerOwned = @(
+$preBundleOwned = @(
     (Join-Path $targetRoot "batcave-collector-service.exe"),
-    (Join-Path $targetRoot "batcave-monitor-cli.exe"),
-    (Join-Path $targetRoot "batcave-monitor.exe")
+    (Join-Path $targetRoot "batcave-monitor-cli.exe")
 )
+$gui = Join-Path $targetRoot "batcave-monitor.exe"
+$innerOwned = @($preBundleOwned + $gui)
 $nativeRoot = Join-Path $tauriRoot ".generated/foundry-native"
 $thirdPartyContracts = @($signingContract.third_party_resigned_files)
 if ($thirdPartyContracts.Count -ne 1 -or
@@ -85,7 +86,7 @@ if ($thirdPartySourceSignature.Status -ne [System.Management.Automation.Signatur
 }
 
 $signer = Join-Path $tauriRoot "windows/sign-artifact.ps1"
-foreach ($file in @($innerOwned + $thirdPartyResigned)) {
+foreach ($file in @($preBundleOwned + $thirdPartyResigned)) {
     & $signer -Path $file
     if ($LASTEXITCODE -ne 0) { throw "Inner PE signing failed for $file." }
 }
@@ -94,15 +95,18 @@ $upstream = @(
     (Join-Path $nativeRoot "onnxruntime-genai.dll"),
     (Join-Path $nativeRoot "onnxruntime.dll")
 )
-$inventoryWriter = Join-Path $repoRoot "scripts/write-windows-signature-inventory.ps1"
-& $inventoryWriter -Phase inner -Path @($innerOwned + $thirdPartyResigned + $upstream) `
-    -OutputPath (Join-Path $evidenceRoot "windows-signatures-inner.json")
-
 $uninstaller = Join-Path $evidenceRoot "uninstall.exe"
 $env:BATCAVE_UNINSTALLER_EXPORT_PATH = $uninstaller
+$env:BATCAVE_SIGNED_GUI_EXPORT_PATH = Join-Path $evidenceRoot "batcave-monitor.exe"
 Invoke-Checked "npm" @(
     "run", "tauri", "--", "bundle", "--config", $releaseConfig, "--ci"
 ) $appRoot
+
+# Tauri restores the unpatched GUI after bundling; distribute the signed package bytes.
+Copy-Item -LiteralPath $env:BATCAVE_SIGNED_GUI_EXPORT_PATH -Destination $gui -Force
+$inventoryWriter = Join-Path $repoRoot "scripts/write-windows-signature-inventory.ps1"
+& $inventoryWriter -Phase inner -Path @($innerOwned + $thirdPartyResigned + $upstream) `
+    -OutputPath (Join-Path $evidenceRoot "windows-signatures-inner.json")
 
 $installers = @(Get-ChildItem -LiteralPath (Join-Path $targetRoot "bundle/nsis") -Filter "*.exe")
 if ($installers.Count -ne 1) {
