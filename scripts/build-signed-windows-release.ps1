@@ -53,7 +53,8 @@ Invoke-Checked "npm" @(
 ) $appRoot
 Invoke-Checked "cargo" @(
     "build", "--locked", "--release", "--manifest-path", (Join-Path $tauriRoot "Cargo.toml"),
-    "--bin", "batcave-collector-service", "--bin", "batcave-monitor-cli"
+    "--bin", "batcave-collector-service", "--bin", "batcave-monitor-cli",
+    "--bin", "batcave-verify-updater-signature"
 ) $repoRoot
 
 $preBundleOwned = @(
@@ -125,9 +126,8 @@ if ($installerDigestBeforeUpdater -cne $installerDigestAfterUpdater) {
 }
 
 $verifiedCopy = Join-Path $evidenceRoot "updater-verified-copy.exe"
-Invoke-Checked "cargo" @(
-    "run", "--quiet", "--locked", "--release", "--manifest-path",
-    (Join-Path $tauriRoot "Cargo.toml"), "--bin", "batcave-verify-updater-signature", "--",
+# Cargo can restage unsigned native resources, so verification must not rebuild.
+Invoke-Checked (Join-Path $targetRoot "batcave-verify-updater-signature.exe") @(
     $installer, $signature, (Join-Path $tauriRoot "tauri.conf.json"), $verifiedCopy
 ) $repoRoot
 if ((Get-FileHash -LiteralPath $verifiedCopy -Algorithm SHA256).Hash -cne $installerDigestAfterUpdater) {

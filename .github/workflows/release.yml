@@ -312,7 +312,7 @@ jobs:
         run: |
           $installer = @(Get-ChildItem -LiteralPath src/BatCave.App/src-tauri/target/release/bundle/nsis -Filter *.exe)
           if ($installer.Count -ne 1) { throw "Expected exactly one NSIS installer." }
-          cargo run --quiet --locked --manifest-path src/BatCave.App/src-tauri/Cargo.toml --bin batcave-verify-updater-signature -- $installer[0].FullName "$($installer[0].FullName).sig" src/BatCave.App/src-tauri/tauri.conf.json "${{ runner.temp }}/verified-installer.exe"
+          & ./src/BatCave.App/src-tauri/target/release/batcave-verify-updater-signature.exe $installer[0].FullName "$($installer[0].FullName).sig" src/BatCave.App/src-tauri/tauri.conf.json "${{ runner.temp }}/verified-installer.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect Windows distributables

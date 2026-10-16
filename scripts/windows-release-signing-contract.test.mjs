@@ -23,7 +23,7 @@ const webViewException = {
   signature_index: 0,
 };
 
-test("production builder preserves Tauri's packaged signed GUI after Tauri restores its original", () => {
+test("production builder preserves packaged signed GUI and Core bytes through updater verification", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-builder-order-"));
   try {
     const run = (missingExport) => {
@@ -49,6 +49,14 @@ test("production builder preserves Tauri's packaged signed GUI after Tauri resto
 param([string]$Phase, [string[]]$Path, [string]$OutputPath, [string]$GeneratedInstallerScript)
 Add-Content -LiteralPath $env:TEST_EVENTS -Value ($Phase + '-inventory')
 $files = @($Path | ForEach-Object {
+    if ([IO.Path]::GetFileName($_) -eq 'Microsoft.AI.Foundry.Local.Core.dll') {
+        if ((Get-AuthenticodeSignature -LiteralPath $_).Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw 'Foundry Core lost its signed packaged bytes before final inventory.'
+        }
+        if ((Get-FileHash -LiteralPath $_).Hash -ne (Get-FileHash -LiteralPath (Join-Path $env:TEST_FIXTURE 'packaged-core.dll')).Hash) {
+            throw 'Foundry Core inventory source differs from the packaged file.'
+        }
+    }
     @{ name = [IO.Path]::GetFileName($_); sha256 = 'sha256:' + (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
 })
 @{ files = $files } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $OutputPath
@@ -61,6 +69,14 @@ if ($args[0] -eq 'sign') {
     (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash | Set-Content -LiteralPath ($file + '.signature-hash')
     $global:LASTEXITCODE = 0
 } else { $global:LASTEXITCODE = 1 }
+`);
+      // A native executable boundary keeps the real builder unchanged on every test host.
+      fs.copyFileSync(process.execPath, path.join(fixture, "verifier-runtime"));
+      fs.writeFileSync(path.join(fixture, "verifier.cjs"), `
+const fs = require('node:fs');
+fs.appendFileSync(process.env.TEST_EVENTS, 'updater-verify\\n');
+fs.copyFileSync(process.argv[1], process.argv[4]);
+process.exit(0);
 `);
       const harness = path.join(fixture, "run.ps1");
       fs.writeFileSync(harness, `
@@ -89,6 +105,7 @@ function npm {
         [IO.File]::WriteAllText($gui, $original.Replace('unsigned', 'nsis-patched'))
         & (Join-Path $tauri 'windows/sign-artifact.ps1') -Path $gui
         Copy-Item -LiteralPath $gui -Destination (Join-Path $env:TEST_FIXTURE 'packaged-gui.exe')
+        Copy-Item -LiteralPath (Join-Path $tauri '.generated/foundry-native/Microsoft.AI.Foundry.Local.Core.dll') -Destination (Join-Path $env:TEST_FIXTURE 'packaged-core.dll')
         if ($env:TEST_MISSING_EXPORT -ne 'true' -and $env:BATCAVE_SIGNED_GUI_EXPORT_PATH) {
             Copy-Item -LiteralPath $gui -Destination $env:BATCAVE_SIGNED_GUI_EXPORT_PATH
             Copy-Item -LiteralPath $env:BATCAVE_SIGNED_GUI_EXPORT_PATH -Destination (Join-Path $env:TEST_FIXTURE 'exported-gui.exe')
@@ -103,7 +120,16 @@ function npm {
     $global:LASTEXITCODE = 0
 }
 function cargo {
-    if ($args -contains 'batcave-verify-updater-signature') { Copy-Item -LiteralPath $args[-4] -Destination $args[-1] }
+    Add-Content -LiteralPath $env:TEST_EVENTS -Value ('cargo-' + $args[0])
+    # build.rs stages the unsigned SDK resource on both cargo build and cargo run.
+    $tauri = Join-Path $env:TEST_FIXTURE 'src/BatCave.App/src-tauri'
+    $core = Join-Path $tauri '.generated/foundry-native/Microsoft.AI.Foundry.Local.Core.dll'
+    [IO.File]::WriteAllText($core, 'unsigned Core')
+    Remove-Item -LiteralPath ($core + '.signature-hash') -Force -ErrorAction SilentlyContinue
+    if ($args[0] -eq 'build' -and $args -contains 'batcave-verify-updater-signature') {
+        Copy-Item -LiteralPath (Join-Path $env:TEST_FIXTURE 'verifier-runtime') -Destination (Join-Path $tauri 'target/release/batcave-verify-updater-signature.exe')
+    }
+    if ($args[0] -eq 'run' -and $args -contains 'batcave-verify-updater-signature') { Copy-Item -LiteralPath $args[-4] -Destination $args[-1] }
     $global:LASTEXITCODE = 0
 }
 try {
@@ -125,6 +151,7 @@ try {
           BATCAVE_SIGNED_GUI_EXPORT_PATH: "",
           TAURI_SIGNING_PRIVATE_KEY: "fixture",
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "fixture",
+          NODE_OPTIONS: `--require=${JSON.stringify(path.join(fixture, "verifier.cjs"))}`,
         },
       });
       const eventsFile = path.join(fixture, "events.txt");
@@ -138,14 +165,19 @@ try {
     assert.deepEqual(fs.readFileSync(path.join(complete.fixture, "exported-gui.exe")), packaged);
     assert.deepEqual(fs.readFileSync(path.join(complete.target, "batcave-monitor.exe")), packaged);
     const expectedDigest = `sha256:${crypto.createHash("sha256").update(packaged).digest("hex")}`;
+    const packagedCore = fs.readFileSync(path.join(complete.fixture, "packaged-core.dll"));
+    assert.equal(packagedCore.toString(), "unsigned Core|signed");
+    assert.deepEqual(fs.readFileSync(path.join(complete.fixture, "src/BatCave.App/src-tauri/.generated/foundry-native/Microsoft.AI.Foundry.Local.Core.dll")), packagedCore);
+    const coreDigest = `sha256:${crypto.createHash("sha256").update(packagedCore).digest("hex")}`;
     for (const phase of ["inner", "final"]) {
       const inventory = JSON.parse(fs.readFileSync(path.join(complete.fixture, `evidence/windows-signatures-${phase}.json`), "utf8"));
       assert.equal(inventory.files.find(({ name }) => name === "batcave-monitor.exe").sha256, expectedDigest);
+      assert.equal(inventory.files.find(({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll").sha256, coreDigest);
     }
-    assert.deepEqual(complete.events, ["bundle", "inner-inventory", "updater-sign", "final-inventory"]);
+    assert.deepEqual(complete.events, ["cargo-build", "bundle", "inner-inventory", "updater-sign", "updater-verify", "final-inventory"]);
     const missing = run(true);
     assert.equal(missing.result.status, 1, missing.result.stderr);
-    assert.deepEqual(missing.events, ["bundle"], "missing GUI export must fail before inventory or updater signing");
+    assert.deepEqual(missing.events, ["cargo-build", "bundle"], "missing GUI export must fail before inventory or updater signing");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -425,9 +457,10 @@ test("keeps optional Artifact Signing isolated and preserves its byte order", ()
   assert.ok(signedJob.indexOf("Azure/login@") < signedJob.indexOf("prepare-artifact-signing-metadata.ps1"));
   const signedBuild = signedJob.indexOf("run: ./scripts/build-signed-windows-release.ps1");
   const generatedContract = signedJob.indexOf("npm run verify:windows-installer-generated");
-  const finalizedSignature = signedJob.indexOf("--bin batcave-verify-updater-signature");
+  const finalizedSignature = signedJob.indexOf("target/release/batcave-verify-updater-signature.exe");
   const collect = signedJob.indexOf("name: Collect Windows distributables");
   assert.ok(signedBuild > 0 && signedBuild < generatedContract && generatedContract < finalizedSignature && finalizedSignature < collect);
+  assert.doesNotMatch(signedJob.slice(signedBuild), /cargo\s+(?:run|build|check|test)\b/u);
   assert.doesNotMatch(signedJob.slice(finalizedSignature, collect), /signtool\s+sign|tauri\s+(?:build|bundle)|sign-artifact\.ps1/u);
   assert.match(signedJob, /name: windows-signing-evidence-\$\{\{ needs.prepare.outputs.tag \}\}/u);
   assert.doesNotMatch(signedJob, /store-preflight|AZURE_CLIENT_SECRET|ADMIN_READ/u);
