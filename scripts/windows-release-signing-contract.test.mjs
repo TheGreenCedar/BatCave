@@ -26,8 +26,8 @@ const webViewException = {
 test("production builder preserves packaged signed GUI and Core bytes through updater verification", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-builder-order-"));
   try {
-    const run = (missingExport) => {
-      const fixture = path.join(root, missingExport ? "missing-export" : "complete");
+    const run = (missingExport, acceptTamper = false) => {
+      const fixture = path.join(root, missingExport ? "missing-export" : acceptTamper ? "accepted-tamper" : "complete");
       const scripts = path.join(fixture, "scripts");
       const tauri = path.join(fixture, "src/BatCave.App/src-tauri");
       const target = path.join(tauri, "target/release");
@@ -68,7 +68,7 @@ if ($args[0] -eq 'sign') {
     [IO.File]::AppendAllText($file, '|signed')
     (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash | Set-Content -LiteralPath ($file + '.signature-hash')
     $global:LASTEXITCODE = 0
-} else { $global:LASTEXITCODE = 1 }
+} else { $global:LASTEXITCODE = $(if ($env:TEST_ACCEPT_TAMPER -eq 'true') { 0 } else { 1 }) }
 `);
       // A native executable boundary keeps the real builder unchanged on every test host.
       fs.copyFileSync(process.execPath, path.join(fixture, "verifier-runtime"));
@@ -134,7 +134,9 @@ function cargo {
 }
 try {
     & (Join-Path $env:TEST_FIXTURE 'scripts/build-signed-windows-release.ps1') -EvidenceDirectory (Join-Path $env:TEST_FIXTURE 'evidence')
+    Add-Content -LiteralPath $env:TEST_EVENTS -Value 'builder-returned'
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+if (Test-Path -LiteralPath variable:\\LASTEXITCODE) { exit $LASTEXITCODE }
 `);
       const result = spawnSync(process.env.PWSH_PATH || "pwsh", ["-NoProfile", "-NonInteractive", "-File", harness], {
         encoding: "utf8",
@@ -143,6 +145,7 @@ try {
           TEST_FIXTURE: fixture,
           TEST_EVENTS: path.join(fixture, "events.txt"),
           TEST_MISSING_EXPORT: String(missingExport),
+          TEST_ACCEPT_TAMPER: String(acceptTamper),
           BATCAVE_WINDOWS_SIGNING_PROFILE: "production",
           BATCAVE_SOURCE_COMMIT_SHA: sourceSha,
           BATCAVE_ARTIFACT_SIGNING_DLIB: signTool,
@@ -158,6 +161,11 @@ try {
       const events = fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, "utf8").trim().split(/\r?\n/u) : [];
       return { result, fixture, target, events };
     };
+    const acceptedTamper = run(false, true);
+    assert.equal(acceptedTamper.result.status, 1, acceptedTamper.result.stderr);
+    assert.match(acceptedTamper.result.stderr, /Byte-tampered installer unexpectedly passed/u);
+    assert.equal(fs.existsSync(path.join(acceptedTamper.fixture, "evidence/windows-release-signing-receipt.json")), false);
+    assert.ok(!acceptedTamper.events.includes("builder-returned"));
     const complete = run(false);
     assert.equal(complete.result.status, 0, complete.result.stderr || complete.result.error?.message);
     const packaged = fs.readFileSync(path.join(complete.fixture, "packaged-gui.exe"));
@@ -174,7 +182,9 @@ try {
       assert.equal(inventory.files.find(({ name }) => name === "batcave-monitor.exe").sha256, expectedDigest);
       assert.equal(inventory.files.find(({ name }) => name === "Microsoft.AI.Foundry.Local.Core.dll").sha256, coreDigest);
     }
-    assert.deepEqual(complete.events, ["cargo-build", "bundle", "inner-inventory", "updater-sign", "updater-verify", "final-inventory"]);
+    assert.deepEqual(complete.events, ["cargo-build", "bundle", "inner-inventory", "updater-sign", "updater-verify", "final-inventory", "builder-returned"]);
+    const receipt = JSON.parse(fs.readFileSync(path.join(complete.fixture, "evidence/windows-release-signing-receipt.json"), "utf8"));
+    assert.equal(receipt.tamper_probe, "rejected");
     const missing = run(true);
     assert.equal(missing.result.status, 1, missing.result.stderr);
     assert.deepEqual(missing.events, ["cargo-build", "bundle"], "missing GUI export must fail before inventory or updater signing");
