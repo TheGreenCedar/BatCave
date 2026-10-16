@@ -178,3 +178,4 @@ $receipt = [ordered]@{
 $receipt | ConvertTo-Json -Depth 4 |
     Set-Content -LiteralPath (Join-Path $evidenceRoot "windows-release-signing-receipt.json") -Encoding utf8
 Write-Host "Built the signed Windows NSIS installer, then generated and verified its updater signature."
+exit 0
