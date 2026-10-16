@@ -16,7 +16,7 @@ Dispatch `Versioned release` manually from `main` with the tag, channel, and app
 
 Use the default `publish: false` for a dry run. It retains the complete workflow artifact and candidate inventory without creating a tag or GitHub Release or moving the public latest release. A dry run still builds packages and invokes the selected signing providers. Use `publish: true` only for an approved release.
 
-The repository owner can merge a PR after its six required checks pass; a second account is not required. Release preparation then requires successful `Validation` on the exact `main` commit. The workflow checks the latest run and attempt, requires all five main validation jobs to pass, and allows only the PR-only dependency review to be skipped. It repeats this check before publication. These reads use the built-in `GITHUB_TOKEN`; no admin-read token is needed. The default unsigned Windows path needs no release environment approval.
+The repository owner can merge a PR after its six required checks pass; a second account is not required. Release preparation then requires successful `Validation` on the exact `main` commit. The workflow checks the latest run and attempt, requires all five main validation jobs to pass, and allows only the PR-only dependency review to be skipped. It repeats this check before publication. These reads use the built-in `GITHUB_TOKEN`; no admin-read token is needed. Neither Windows signing mode requires manual release environment approval.
 
 Repository immutable releases must remain enabled. The workflow verifies the published release's immutable state, attestations, and public bytes. It does not read repository administration settings during the build.
 
@@ -105,7 +105,7 @@ The signed job requires these configured `release` environment variables, rather
 
 The configured shared service is `thegreencedar-signing` on its existing Basic plan, with the active `public-release` Public Trust profile in East US (`https://eus.codesigning.azure.net`). Its verified publisher is Albert Najjar. BatCave uses a dedicated `BatCave GitHub Release Signing` application with no client secret and only the certificate-profile signer role at that profile. Speakerdesk continues to use its own signing authorization and updater key.
 
-The `release` environment restricts deployments to the `main` branch, requires approval by `TheGreenCedar`, and disables administrator bypass. The owner may approve an owner-dispatched run; this does not require a second account. Keep the required approval and branch restriction when changing environment variables. Readiness records configuration review; the retained Azure dry-run artifacts establish whether signing actually succeeded.
+The `release` environment restricts deployments to the `main` branch and has no required reviewers or manual deployment approval. Administrator bypass remains disabled. Keep the branch restriction when changing environment variables. Readiness records configuration review; the retained Azure dry-run artifacts establish whether signing actually succeeded.
 
 Only the Azure Windows job receives signing OIDC authority. Its pinned Azure login authenticates the metadata helper's Azure CLI credential; a client secret is not used. The existing Tauri signing secrets remain mandatory. Required inputs are checked before login, and selected-mode success is required before any platform assets are finalized.
 
