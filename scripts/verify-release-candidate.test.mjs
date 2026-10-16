@@ -20,6 +20,7 @@ import {
   verifyReleaseDirectory,
   verifyLatestRelease,
   verifyReleaseReadback,
+  validateWindowsSigningInventory,
 } from "./verify-release-candidate.mjs";
 
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
@@ -134,6 +135,34 @@ function windowsStoreFixture(tag = stableTag) {
     limitation: "native_clean_machine_silent_install_pending",
   };
 }
+
+test("accepts primary-only trust only for the exact approved WebView payload", () => {
+  const signing = windowsSigningFixture();
+  const webView = signing.files.find(({ name }) => name === "MicrosoftEdgeWebView2RuntimeInstaller.exe");
+  webView.sha256 = "sha256:3505a37b54a294c2bc423b30d6c02cd33a2e58dbcdc7e03b50d7a4112746c986";
+  webView.signtool_policy = "pa_primary_0";
+  assert.equal(validateWindowsSigningInventory(signing, stableTag, sourceSha, contractAssets()), signing);
+  for (const [label, mutate, error] of [
+    ["digest", (file) => file.sha256 = `sha256:${"e".repeat(64)}`, /not fully verified/u],
+    ["publisher", (file) => file.publisher_subject = "CN=EdgeBuild", /trusted Microsoft signature/u],
+    ["timestamp", (file) => file.rfc3161_timestamp_utc = null, /invalid timestamp/u],
+    ["timestamp certificate", (file) => file.timestamp_certificate_sha256 = null, /invalid timestamper/u],
+    ["status", (file) => file.authenticode_status = "not_trusted", /not fully verified/u],
+    ["index", (file) => file.signtool_policy = "pa_primary_1", /not fully verified/u],
+    ["implicit primary", (file) => file.signtool_policy = "pa", /not fully verified/u],
+  ]) {
+    const invalid = structuredClone(signing);
+    mutate(invalid.files.find(({ name }) => name === webView.name));
+    assert.throws(() => validateWindowsSigningInventory(invalid, stableTag, sourceSha, contractAssets()), error, label);
+  }
+  const wrongName = windowsSigningFixture();
+  const onnx = wrongName.files.find(({ name }) => name === "onnxruntime.dll");
+  onnx.sha256 = webView.sha256;
+  onnx.signtool_policy = webView.signtool_policy;
+  assert.throws(() => validateWindowsSigningInventory(wrongName, stableTag, sourceSha, contractAssets()), /not fully verified/u);
+  webView.signtool_policy = "pa_all";
+  assert.equal(validateWindowsSigningInventory(signing, stableTag, sourceSha, contractAssets()), signing);
+});
 
 test("accepts an explicitly approved main-tip candidate", () => {
   assert.deepEqual(

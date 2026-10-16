@@ -17,6 +17,8 @@ const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
 const FOUNDRY_CORE_NAME = "Microsoft.AI.Foundry.Local.Core.dll";
 const FOUNDRY_CORE_SOURCE_SHA256 =
   "sha256:316a50a492180b192c2cae06f791bbe8c6e66c096a7415c642a599d1735666ea";
+const WEBVIEW_PRIMARY_SIGNATURE_SHA256 =
+  "sha256:3505a37b54a294c2bc423b30d6c02cd33a2e58dbcdc7e03b50d7a4112746c986";
 
 function exactObjectKeys(value, expected, owner) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -213,7 +215,14 @@ export function validateWindowsSigningInventory(inventory, tag, sourceSha, asset
     if (!UTC_TIMESTAMP.test(record.rfc3161_timestamp_utc)) {
       throw new Error(`windows signing inventory record ${record.name} has an invalid timestamp`);
     }
-    if (record.authenticode_status !== "valid" || record.signtool_policy !== "pa_all") {
+    const pinnedPrimarySignature =
+      record.name === "MicrosoftEdgeWebView2RuntimeInstaller.exe" &&
+      record.sha256 === WEBVIEW_PRIMARY_SIGNATURE_SHA256 &&
+      record.signtool_policy === "pa_primary_0";
+    if (
+      record.authenticode_status !== "valid" ||
+      (record.signtool_policy !== "pa_all" && !pinnedPrimarySignature)
+    ) {
       throw new Error(`windows signing inventory record ${record.name} is not fully verified`);
     }
     if (upstream.has(record.name)) {
