@@ -656,8 +656,11 @@ test("rejects runner, ABI, package, and runtime drift from the integrated #123 s
     {
       ...sources,
       releaseWorkflow: sources.releaseWorkflow.replace(
-        `runs-on: ${source.hosted_runner}`,
-        "runs-on: ubuntu-latest",
+        workflowJob(sources.releaseWorkflow, "linux"),
+        workflowJob(sources.releaseWorkflow, "linux").replace(
+          `runs-on: ${source.hosted_runner}`,
+          "runs-on: ubuntu-latest",
+        ),
       ),
     },
     {
