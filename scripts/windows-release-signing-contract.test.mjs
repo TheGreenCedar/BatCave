@@ -17,6 +17,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 const json = (file) => JSON.parse(read(file));
 const sourceSha = "0123456789abcdef0123456789abcdef01234567";
+const webViewException = {
+  name: "MicrosoftEdgeWebView2RuntimeInstaller.exe",
+  sha256: "3505a37b54a294c2bc423b30d6c02cd33a2e58dbcdc7e03b50d7a4112746c986",
+  signature_index: 0,
+};
 
 test("production builder preserves Tauri's packaged signed GUI after Tauri restores its original", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "batcave-builder-order-"));
@@ -168,8 +173,11 @@ test("production inventory binds the raw spaced NSIS installer to its canonical 
     const tool = path.join(root, "signtool.ps1");
     fs.writeFileSync(tool, `
 [IO.File]::AppendAllLines($env:TEST_TOOL_CALLS, [string[]]@($args[-1]))
-$global:LASTEXITCODE = $(if ($env:TEST_REJECT_TRUST -eq 'true') { 1 } else { 0 })
-if ($env:TEST_NO_TIMESTAMP -ne 'true') { "The signature is timestamped: $env:TEST_TIMESTAMP" }
+[IO.File]::AppendAllLines($env:TEST_TOOL_ARGUMENTS, [string[]]@(ConvertTo-Json -InputObject @($args) -Compress))
+$dualSignature = [IO.Path]::GetFileName($args[-1]) -eq $env:TEST_DUAL_SIGNATURE_FILE
+$global:LASTEXITCODE = $(if ($env:TEST_REJECT_TRUST -eq 'true' -or ($dualSignature -and ($args -contains '/all' -or $env:TEST_REJECT_PRIMARY -eq 'true'))) { 1 } else { 0 })
+if ($global:LASTEXITCODE -ne 0) { 'SignTool Error: EdgeBuild untrusted root diagnostic' }
+if ($env:TEST_NO_TIMESTAMP -ne 'true' -and [IO.Path]::GetFileName($args[-1]) -ne $env:TEST_NO_TIMESTAMP_FILE) { "The signature is timestamped: $env:TEST_TIMESTAMP" }
 `);
     const harness = path.join(root, "inventory-test.ps1");
     fs.writeFileSync(harness, `
@@ -193,11 +201,11 @@ function Get-AuthenticodeSignature([string]$LiteralPath) {
     $upstream = $name -in @('onnxruntime.dll', 'onnxruntime-genai.dll', 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe')
     $installer = $name -like 'BatCave*setup.exe'
     return [pscustomobject]@{
-        Status = $(if ($installer -and $env:TEST_REJECT_SIGNATURE -eq 'true') {
+        Status = $(if (($installer -and $env:TEST_REJECT_SIGNATURE -eq 'true') -or $name -eq $env:TEST_REJECT_SIGNATURE_FILE) {
             [System.Management.Automation.SignatureStatus]::HashMismatch
         } else { [System.Management.Automation.SignatureStatus]::Valid })
-        SignerCertificate = $(if ($upstream -or ($installer -and $env:TEST_REJECT_PUBLISHER -eq 'true')) { $microsoft } else { $batcave })
-        TimeStamperCertificate = $microsoft
+        SignerCertificate = $(if ($name -eq $env:TEST_REJECT_PUBLISHER_FILE) { $batcave } elseif ($upstream -or ($installer -and $env:TEST_REJECT_PUBLISHER -eq 'true')) { $microsoft } else { $batcave })
+        TimeStamperCertificate = $(if ($name -ne $env:TEST_NO_TIMESTAMP_CERT_FILE) { $microsoft })
     }
 }
 try {
@@ -215,6 +223,7 @@ try {
     const output = path.join(root, "inventory.json");
     const signatureCalls = path.join(root, "signature-calls.txt");
     const toolCalls = path.join(root, "tool-calls.txt");
+    const toolArguments = path.join(root, "tool-arguments.jsonl");
     const run = (overrides = {}) => spawnSync(
       process.env.PWSH_PATH || "pwsh",
       ["-NoProfile", "-NonInteractive", "-File", harness],
@@ -231,6 +240,7 @@ try {
           TEST_OUTPUT: output,
           TEST_SIGNATURE_CALLS: signatureCalls,
           TEST_TOOL_CALLS: toolCalls,
+          TEST_TOOL_ARGUMENTS: toolArguments,
           TEST_TIMESTAMP: "Fri Oct 16 12:39:05 2026",
           ...overrides,
         },
@@ -281,6 +291,53 @@ try {
       assert.equal(rejected.status, 1, rejected.stderr);
       assert.match(rejected.stderr, message);
     }
+
+    // Exercise the real writer with small fixture bytes; the production pin is checked separately.
+    const fixtureScripts = path.join(root, "scripts");
+    fs.mkdirSync(path.join(fixtureScripts, "windows-signing"), { recursive: true });
+    const fixtureWriter = path.join(fixtureScripts, "write-windows-signature-inventory.ps1");
+    fs.copyFileSync(path.join(ROOT, "scripts/write-windows-signature-inventory.ps1"), fixtureWriter);
+    contract.upstream_primary_signature_exception = { ...webViewException, sha256: digest(rawWebViewName).slice(7) };
+    fs.writeFileSync(path.join(fixtureScripts, "windows-signing/artifact-signing-contract.v1.json"), JSON.stringify(contract));
+    const originalBytes = new Map(names.map((name) => [name, fs.readFileSync(path.join(root, name))]));
+    const exceptionRun = (overrides = {}) => {
+      fs.rmSync(output, { force: true });
+      fs.rmSync(toolArguments, { force: true });
+      return run({ TEST_WRITER: fixtureWriter, TEST_DUAL_SIGNATURE_FILE: rawWebViewName, ...overrides });
+    };
+    const argumentsFor = (name) => fs.readFileSync(toolArguments, "utf8").trim().split(/\r?\n/u)
+      .map((line) => JSON.parse(line)).find((args) => args.at(-1) === path.join(root, name));
+    const accepted = exceptionRun();
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const exceptedInventory = JSON.parse(fs.readFileSync(output, "utf8"));
+    assert.equal(exceptedInventory.files.find(({ name }) => name === webViewException.name).signtool_policy, "pa_primary_0");
+    for (const name of names) {
+      assert.deepEqual(argumentsFor(name), name === rawWebViewName
+        ? ["verify", "/pa", "/ds", "0", "/v", path.join(root, name)]
+        : ["verify", "/pa", "/all", "/v", path.join(root, name)]);
+      assert.deepEqual(fs.readFileSync(path.join(root, name)), originalBytes.get(name), name);
+    }
+    for (const overrides of [
+      { TEST_REJECT_PRIMARY: "true" },
+      { TEST_REJECT_SIGNATURE_FILE: rawWebViewName },
+      { TEST_REJECT_PUBLISHER_FILE: rawWebViewName },
+      { TEST_NO_TIMESTAMP_CERT_FILE: rawWebViewName },
+      { TEST_NO_TIMESTAMP_FILE: rawWebViewName },
+    ]) {
+      const rejected = exceptionRun(overrides);
+      assert.equal(rejected.status, 1, JSON.stringify(overrides));
+      assert.equal(fs.existsSync(output), false);
+      if (overrides.TEST_REJECT_PRIMARY) assert.match(rejected.stderr, /EdgeBuild untrusted root diagnostic/u);
+    }
+    for (const name of [rawWebViewName, "onnxruntime.dll"]) {
+      fs.writeFileSync(path.join(root, name), name === rawWebViewName ? "changed upstream bytes" : originalBytes.get(rawWebViewName));
+      const rejected = exceptionRun({ TEST_DUAL_SIGNATURE_FILE: name });
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.deepEqual(argumentsFor(name), ["verify", "/pa", "/all", "/v", path.join(root, name)]);
+      assert.match(rejected.stderr, /EdgeBuild untrusted root diagnostic/u);
+      assert.equal(fs.existsSync(output), false);
+      fs.writeFileSync(path.join(root, name), originalBytes.get(name));
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -310,6 +367,7 @@ test("pins the OIDC identity and every new signing tool input", () => {
     },
   ]);
   assert.ok(!contract.upstream_files.includes("Microsoft.AI.Foundry.Local.Core.dll"));
+  assert.deepEqual(contract.upstream_primary_signature_exception, webViewException);
 });
 
 test("keeps the local signing test profile isolated from production evidence", () => {

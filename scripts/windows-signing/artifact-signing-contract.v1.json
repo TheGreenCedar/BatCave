@@ -51,6 +51,11 @@
     "onnxruntime-genai.dll",
     "onnxruntime.dll"
   ],
+  "upstream_primary_signature_exception": {
+    "name": "MicrosoftEdgeWebView2RuntimeInstaller.exe",
+    "sha256": "3505a37b54a294c2bc423b30d6c02cd33a2e58dbcdc7e03b50d7a4112746c986",
+    "signature_index": 0
+  },
   "third_party_resigned_files": [
     {
       "name": "Microsoft.AI.Foundry.Local.Core.dll",

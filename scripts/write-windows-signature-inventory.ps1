@@ -159,9 +159,21 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
         }
     }
 
-    $verificationOutput = & $env:BATCAVE_SIGNTOOL_PATH verify /pa /all /v $candidate 2>&1
+    $digest = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+    $exception = $contract.upstream_primary_signature_exception
+    $signatureSelection = @('/all')
+    $signaturePolicy = 'pa_all'
+    if ($name -ceq $exception.name -and $digest -ceq $exception.sha256) {
+        if ($exception.signature_index -ne 0) {
+            throw "The pinned upstream exception must select the primary signature."
+        }
+        # These exact Microsoft bytes also carry an untrusted EdgeBuild secondary signature.
+        $signatureSelection = @('/ds', '0')
+        $signaturePolicy = 'pa_primary_0'
+    }
+    $verificationOutput = & $env:BATCAVE_SIGNTOOL_PATH verify /pa @signatureSelection /v $candidate 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "SignTool trust verification failed for $name with exit code $LASTEXITCODE."
+        throw "SignTool trust verification failed for $name with exit code $LASTEXITCODE.`n$($verificationOutput -join [Environment]::NewLine)"
     }
     $timestampMatch = $verificationOutput |
         Select-String -Pattern '^The signature is timestamped:\s*(.+)$' |
@@ -187,7 +199,7 @@ foreach ($candidate in ($allPaths | Sort-Object)) {
         rfc3161_timestamp_utc = $timestamp
         timestamp_certificate_sha256 = "sha256:$(Get-CertificateSha256 $signature.TimeStamperCertificate)"
         authenticode_status = "valid"
-        signtool_policy = "pa_all"
+        signtool_policy = $signaturePolicy
     })
 }
 
